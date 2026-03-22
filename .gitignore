@@ -1,0 +1,39 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# CMake / C++
+build/
+out/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Flutter/Dart (w katalogu app powinny mieć własny .gitignore, ale na wszelki wypadek)
+.dart_tool/
+.packages
+build/
+.pub-cache/
+.pub/
+/build/
+
+# Android
+*.apk
+*.aab
+*.keystore
+local.properties
