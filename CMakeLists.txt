@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(agri_nav_core STATIC
     core/src/NavEngine.cpp
     core/src/GnssProcessor.cpp
+    core/src/GnssSimulator.cpp
+    core/src/SwathPlanner.cpp
 )
 target_include_directories(agri_nav_core PUBLIC core/include)
 
@@ -16,4 +18,8 @@ add_library(agri_nav_ffi SHARED
     bridge/agri_nav_ffi.cpp
 )
 target_link_libraries(agri_nav_ffi PRIVATE agri_nav_core)
-target_include_directories(agri_nav_ffi PUBLIC bridge)
+target_include_directories(agri_nav_ffi
+    PRIVATE
+        bridge
+        core/include
+)

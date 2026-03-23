@@ -1,7 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'ui/map_view.dart';
 
-void main() => runApp(const AgriNavApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Inicjalizacja FMTC — tworzy lokalną bazę kafelków na urządzeniu.
+  await FMTCObjectBoxBackend().initialise();
+  // Utwórz domyślny magazyn jeśli jeszcze nie istnieje.
+  await const FMTCStore('osmTiles').manage.create();
+
+  runApp(const AgriNavApp());
+}
 
 class AgriNavApp extends StatelessWidget {
   const AgriNavApp({super.key});

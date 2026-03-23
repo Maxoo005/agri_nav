@@ -23,6 +23,8 @@ public:
 
     // Ustaw linię AB (dwa punkty na polu)
     void setAbLine(Vec2 pointA, Vec2 pointB);
+    // Wyczyść linię AB — do kolejnego setAbLine isValid() będzie false
+    void resetAbLine();
 
     // Wywołaj z każdą nową pozycją GNSS
     GuidanceOutput update();
