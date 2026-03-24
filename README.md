@@ -16,6 +16,8 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 | Planowanie ścieżek uprawowych (swath planning) | ✅ |
 | Nagrywanie granic pola (długie naciśnięcie) | ✅ |
 | Ikona ciągnika obracająca się wg kursu GPS | ✅ |
+| Trwały zapis pól (Hive) — CRUD + serializacja JSON | ✅ |
+| Ekran zarządzania polami (lista, wybór, usuwanie) | ✅ |
 
 ---
 
@@ -46,8 +48,13 @@ agri_nav/
         ├── offline/
         │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
         │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
+        ├── models/
+        │   └── field_model.dart          # FieldModel: granica, linia AB, szerokość robocza
+        ├── services/
+        │   └── field_service.dart        # Hive CRUD: save/get/delete pól uprawowych
         └── ui/
-            └── map_view.dart   # Główny ekran: mapa satelitarna, AB, swaths, ciągnik
+            ├── map_view.dart   # Główny ekran: mapa satelitarna, AB, swaths, ciągnik
+            └── field_manager_screen.dart  # Ekran listy i zarządzania polami
 ```
 
 ---

@@ -15,6 +15,10 @@ dependencies:
   flutter_map_tile_caching: ^9.1.0
   # Wykrywanie dostępności sieci
   connectivity_plus: ^6.0.0
+  # Trwałe przechowywanie danych (pola uprawowe)
+  hive_flutter: ^1.1.0
+  # Generowanie unikalnych ID pól
+  uuid: ^4.4.0
 
 dev_dependencies:
   flutter_test:

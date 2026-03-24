@@ -5,10 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
+import '../models/field_model.dart';
 import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
+import '../services/field_service.dart';
+import 'field_manager_screen.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapView — główny ekran nawigacji rolniczej
@@ -42,7 +46,15 @@ class _MapViewState extends State<MapView> {
   List<Swath> _swaths = [];
   // ── Tryb śledzenia ciągnika ─────────────────────────────────────────────────
   bool _followTractor = true;
+  // ── Rysowanie granicy (DrawingMode) ───────────────────────────────
+  /// Czy użytkownik aktywnie rysuje granicę palcem.
+  bool _drawingMode = false;
 
+  // ── Zapisane pola (Hive) ────────────────────────────────────────────
+  List<FieldModel> _savedFields = [];
+
+  /// Aktywnie załadowane pole (granica + linia AB z pamięci).
+  FieldModel? _activeField;
   LatLng? _prevPos;
 
   // ── Cykl życia ──────────────────────────────────────────────────────────────
@@ -54,6 +66,9 @@ class _MapViewState extends State<MapView> {
     final sim = GnssSimulatorBridge.instance;
     sim.onPosition = _onSimPosition;
     sim.start(startLat: 52.2297, startLon: 21.0122);
+
+    // Załaduj zapisane pola z Hive
+    _savedFields = FieldService.instance.getAll();
   }
 
   @override
@@ -141,28 +156,149 @@ class _MapViewState extends State<MapView> {
     NavBridge.instance.resetAbLine();
   }
 
-  // ── Granica pola ───────────────────────────────────────────────────────
+  // ── Granica pola (DrawingMode) ────────────────────────────────────────────
 
-  /// Przełącza tryb nagrywania granicy pola.
-  /// Każdy krok: dodaje bieżącą pozycję do listy wierzchołków.
-  void _toggleBoundaryRecording() {
-    if (!_recordingBoundary) {
-      // Rozpocznij nagrywanie — wyczyść stary
-      setState(() {
+  void _toggleDrawingMode() {
+    setState(() {
+      _drawingMode = !_drawingMode;
+      if (_drawingMode) {
         _fieldBoundary.clear();
         _swaths = [];
+        _activeField = null;
         _recordingBoundary = true;
-      });
-    } else {
-      // Zatrzymaj nagrywanie
-      setState(() => _recordingBoundary = false);
+      } else {
+        _recordingBoundary = false;
+        if (_fieldBoundary.length >= 3) {
+          WidgetsBinding.instance
+              .addPostFrameCallback((_) => _showSaveFieldDialog());
+        }
+      }
+    });
+  }
+
+  LatLng _screenToLatLng(Offset offset) => _mapController.camera.pointToLatLng(
+        math.Point(offset.dx, offset.dy),
+      );
+
+  bool _shouldAddPoint(LatLng candidate) {
+    if (_fieldBoundary.isEmpty) return true;
+    final last = _fieldBoundary.last;
+    return (candidate.latitude - last.latitude).abs() +
+            (candidate.longitude - last.longitude).abs() >
+        0.00003;
+  }
+
+  // ── Zapis pola (dialog) ────────────────────────────────────────────────────
+
+  Future<void> _showSaveFieldDialog() async {
+    final ctrl = TextEditingController(
+        text: 'Pole ${FieldService.instance.getAll().length + 1}');
+    double workingWidth = _activeField?.workingWidthM ?? 3.0;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          title:
+              const Text('Zapisz pole', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: ctrl,
+                style: const TextStyle(color: Colors.white),
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Nazwa pola',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white38)),
+                  focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.greenAccent)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Szerokość robocza: ${workingWidth.toStringAsFixed(1)} m',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              Slider(
+                min: 1.0,
+                max: 12.0,
+                divisions: 22,
+                value: workingWidth,
+                activeColor: Colors.greenAccent,
+                onChanged: (v) => setDlg(() => workingWidth = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Odrzuć')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Zapisz'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (saved != true || !mounted) return;
+    final name = ctrl.text.trim().isEmpty ? 'Pole' : ctrl.text.trim();
+
+    final field = FieldModel(
+      id: const Uuid().v4(),
+      name: name,
+      boundaryLats: _fieldBoundary.map((e) => e.latitude).toList(),
+      boundaryLons: _fieldBoundary.map((e) => e.longitude).toList(),
+      workingWidthM: workingWidth,
+      lineALat: _pointA?.latitude,
+      lineALon: _pointA?.longitude,
+      lineBLat: _pointB?.latitude,
+      lineBLon: _pointB?.longitude,
+    );
+
+    await FieldService.instance.save(field);
+    setState(() {
+      _savedFields = FieldService.instance.getAll();
+      _activeField = field;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Zapisano: $name'),
+        backgroundColor: Colors.green[700],
+        duration: const Duration(seconds: 2),
+      ));
     }
   }
 
-  /// Dodaje punkt do granicy pola (wywoływane z długiego naciśnięcia mapy).
-  void _addBoundaryPoint(LatLng pt) {
-    if (!_recordingBoundary) return;
-    setState(() => _fieldBoundary.add(pt));
+  // ── Ładowanie pola z listy ─────────────────────────────────────────────────
+
+  void _loadField(FieldModel field) {
+    setState(() {
+      _fieldBoundary
+        ..clear()
+        ..addAll(field.boundary);
+      _activeField = field;
+      _swaths = [];
+      if (field.lineA != null) _pointA = field.lineA;
+      if (field.lineB != null) _pointB = field.lineB;
+    });
+    if (_pointA != null && _pointB != null) {
+      NavBridge.instance.setAbLine(
+        _pointA!.latitude,
+        _pointA!.longitude,
+        _pointB!.latitude,
+        _pointB!.longitude,
+      );
+    }
+    _mapController.move(field.center, 16);
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -244,10 +380,14 @@ class _MapViewState extends State<MapView> {
             options: MapOptions(
               initialCenter: _tractorPos,
               initialZoom: 17,
-              // Krótkie naciśnięcie: wyłącza śledzenie
-              onTap: (_, __) => setState(() => _followTractor = false),
-              // Długie naciśnięcie: dodaje wierzchołek granicy pola
-              onLongPress: (_, latLng) => _addBoundaryPoint(latLng),
+              onTap: (_, __) {
+                if (!_drawingMode) setState(() => _followTractor = false);
+              },
+              onLongPress: (_, latLng) {
+                if (!_drawingMode && _recordingBoundary) {
+                  setState(() => _fieldBoundary.add(latLng));
+                }
+              },
             ),
             children: [
               // ── Podkład satelitarny Esri (offline-first przez FMTC) ─────────
@@ -259,42 +399,54 @@ class _MapViewState extends State<MapView> {
                     behavior: CacheBehavior.cacheFirst,
                   ),
                 ),
-                // Brak zasięgu = pusta kafelka, aplikacja nie crashuje
               ),
 
-              // ── Granice pola (PolygonLayer) ───────────────────────────────────
+              // ── Wszystkie zapisane pola (szare) ─────────────────────────────
+              if (_savedFields.isNotEmpty)
+                PolygonLayer(
+                  polygons: _savedFields
+                      .where((f) =>
+                          f.id != _activeField?.id &&
+                          f.boundaryLats.length >= 3)
+                      .map((f) => Polygon(
+                            points: f.boundary,
+                            color: Colors.white.withOpacity(0.06),
+                            borderColor: Colors.white38,
+                            borderStrokeWidth: 1.0,
+                          ))
+                      .toList(),
+                ),
+
+              // ── Aktywna granica pola (PolygonLayer) ─────────────────────────
               if (_fieldBoundary.length >= 3)
                 PolygonLayer(
                   polygons: [
                     Polygon(
                       points: _fieldBoundary,
                       color: Colors.yellow.withOpacity(0.12),
-                      borderColor: _recordingBoundary
-                          ? Colors.orange
-                          : Colors.yellowAccent,
+                      borderColor:
+                          _drawingMode ? Colors.orange : Colors.yellowAccent,
                       borderStrokeWidth: 2.0,
                     ),
                   ],
                 ),
 
-              // ── Ścieżki uprawowe (swaths) ──────────────────────────────────
+              // ── Ścieżki uprawowe (swaths) ────────────────────────────────────
               if (_swaths.isNotEmpty)
                 PolylineLayer(
                   polylines: _swaths
-                      .map(
-                        (s) => Polyline(
-                          points: [
-                            LatLng(s.startLat, s.startLon),
-                            LatLng(s.endLat, s.endLon),
-                          ],
-                          color: Colors.greenAccent.withOpacity(0.7),
-                          strokeWidth: 1.4,
-                        ),
-                      )
+                      .map((s) => Polyline(
+                            points: [
+                              LatLng(s.startLat, s.startLon),
+                              LatLng(s.endLat, s.endLon),
+                            ],
+                            color: Colors.greenAccent.withOpacity(0.7),
+                            strokeWidth: 1.4,
+                          ))
                       .toList(),
                 ),
 
-              // ── Linia AB ────────────────────────────────────────────────────
+              // ── Linia AB ─────────────────────────────────────────────────────
               if (_pointA != null && _pointB != null)
                 PolylineLayer(
                   polylines: [
@@ -306,12 +458,11 @@ class _MapViewState extends State<MapView> {
                   ],
                 ),
 
-              // ── Markery A, B + ikona ciągnika ───────────────────────────────
+              // ── Markery A, B + ikona ciągnika ────────────────────────────────
               MarkerLayer(
                 markers: [
                   if (_pointA != null) _abMarker(_pointA!, 'A'),
                   if (_pointB != null) _abMarker(_pointB!, 'B'),
-                  // Ikona ciągnika — obraca się zgodnie z kursem GPS
                   Marker(
                     point: _tractorPos,
                     width: 52,
@@ -331,7 +482,48 @@ class _MapViewState extends State<MapView> {
             ],
           ),
 
-          // ── Przyciski top-right: follow + offline ───────────────────────────
+          // ── DrawingMode overlay ──────────────────────────────────────────────
+          if (_drawingMode)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onPanStart: (d) {
+                  final pt = _screenToLatLng(d.localPosition);
+                  setState(() => _fieldBoundary
+                    ..clear()
+                    ..add(pt));
+                },
+                onPanUpdate: (d) {
+                  final pt = _screenToLatLng(d.localPosition);
+                  if (_shouldAddPoint(pt))
+                    setState(() => _fieldBoundary.add(pt));
+                },
+                onPanEnd: (_) {
+                  setState(() => _drawingMode = false);
+                  if (_fieldBoundary.length >= 3) _showSaveFieldDialog();
+                },
+                child: Container(
+                  color: Colors.transparent,
+                  alignment: Alignment.topCenter,
+                  padding: const EdgeInsets.only(top: 48),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      '✍  Rysuj granicę — przeciągnij palcem',
+                      style: TextStyle(
+                          color: Colors.orange, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // ── Przyciski top-right ──────────────────────────────────────────────
           SafeArea(
             child: Align(
               alignment: Alignment.topRight,
@@ -372,31 +564,57 @@ class _MapViewState extends State<MapView> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // ── Nagrywanie granicy pola ───────────────────────
+                    // ── Lista zapisanych pól ──────────────────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'boundary',
-                      tooltip: _recordingBoundary
-                          ? 'Zakończ nagrywanie granicy'
-                          : 'Nagraj granicę pola',
-                      backgroundColor: _recordingBoundary
+                      heroTag: 'fields',
+                      tooltip: 'Zapisane pola',
+                      backgroundColor: _activeField != null
+                          ? const Color(0xFF1B5E20)
+                          : const Color(0xAA000000),
+                      onPressed: () async {
+                        final selected = await FieldManagerScreen.open(context);
+                        if (selected != null && mounted) _loadField(selected);
+                        if (mounted) {
+                          setState(() =>
+                              _savedFields = FieldService.instance.getAll());
+                        }
+                      },
+                      child: Badge(
+                        isLabelVisible: _savedFields.isNotEmpty,
+                        label: Text('${_savedFields.length}'),
+                        backgroundColor: Colors.greenAccent,
+                        textColor: Colors.black,
+                        child: const Icon(Icons.agriculture,
+                            color: Colors.white, size: 20),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // ── Rysowanie granicy palcem ──────────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'draw',
+                      tooltip: _drawingMode
+                          ? 'Anuluj rysowanie'
+                          : 'Rysuj granicę pola',
+                      backgroundColor: _drawingMode
                           ? Colors.orange[800]
                           : const Color(0xAA000000),
-                      onPressed: _toggleBoundaryRecording,
+                      onPressed: _toggleDrawingMode,
                       child: Icon(
-                        _recordingBoundary ? Icons.stop : Icons.crop_free,
+                        _drawingMode ? Icons.cancel_outlined : Icons.edit,
                         color: Colors.white,
                         size: 20,
                       ),
                     ),
                     const SizedBox(height: 8),
-                    // ── Generowanie ścieżek ────────────────────────────
+                    // ── Generowanie ścieżek ────────────────────────────────────
                     FloatingActionButton.small(
                       heroTag: 'swaths',
-                      tooltip: 'Generuj ścieżki (3 m)',
+                      tooltip: 'Generuj ścieżki',
                       backgroundColor: _swaths.isNotEmpty
                           ? Colors.green[700]
                           : const Color(0xAA000000),
-                      onPressed: () => _generateSwaths(workingWidthM: 3.0),
+                      onPressed: () => _generateSwaths(
+                          workingWidthM: _activeField?.workingWidthM ?? 3.0),
                       child: Icon(
                         _swaths.isNotEmpty ? Icons.grid_on : Icons.grid_off,
                         color: Colors.white,
@@ -409,7 +627,7 @@ class _MapViewState extends State<MapView> {
             ),
           ),
 
-          // ── Panel dolny: odchylenie + przyciski AB ──────────────────────────
+          // ── Panel dolny: odchylenie + przyciski AB ────────────────────────────
           Positioned(
             bottom: 0,
             left: 0,
