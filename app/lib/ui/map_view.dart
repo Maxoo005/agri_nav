@@ -864,21 +864,22 @@ class _MapViewState extends State<MapView> {
 
               // ── Opcjonalna warstwa katastralna WMS (działki GUGiK) ──────────
               if (_cadastralLayerVisible)
-                TileLayer(
-                  wmsOptions: WMSTileLayerOptions(
-                    baseUrl:
-                        'https://mapy.geoportal.gov.pl/wss/service/PZGIK/'
-                        'Parcel/WMS/ParcelOrder?',
-                    layers: const ['dzialki'],
-                    format: 'image/png',
-                    transparent: true,
-                    version: '1.3.0',
-                  ),
-                  userAgentPackageName: 'com.example.agri_nav',
-                  backgroundColor: Colors.transparent,
-                  tileSize: 512,
-                  maxNativeZoom: 19,
+                Opacity(
                   opacity: 0.70,
+                  child: TileLayer(
+                    wmsOptions: WMSTileLayerOptions(
+                      baseUrl:
+                          'https://mapy.geoportal.gov.pl/wss/service/PZGIK/'
+                          'Parcel/WMS/ParcelOrder?',
+                      layers: const ['dzialki'],
+                      format: 'image/png',
+                      transparent: true,
+                      version: '1.3.0',
+                    ),
+                    userAgentPackageName: 'com.example.agri_nav',
+                    tileSize: 512,
+                    maxNativeZoom: 19,
+                  ),
                 ),
 
               // ── Wszystkie zapisane pola (szare) ─────────────────────────────
@@ -1212,6 +1213,8 @@ class _MapViewState extends State<MapView> {
                       ),
                       const SizedBox(height: 8),
                     ],
+                    FloatingActionButton.small(
+                      heroTag: 'follow',
                       tooltip: _followTractor
                           ? 'Zatrzymaj śledzenie'
                           : 'Śledź ciągnik',
