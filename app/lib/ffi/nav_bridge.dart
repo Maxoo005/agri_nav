@@ -1,6 +1,8 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:ffi/ffi.dart';
+import 'package:latlong2/latlong.dart';
 
 // ── Typy C ────────────────────────────────────────────────────────────────────
 
@@ -387,4 +389,338 @@ class SwathPlannerBridge {
     _freeSwaths(result);
     return swaths;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Full SwathPlanner — bindingi do agrinav_plan_full / agrinav_free_plan
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Natywna struktura FfiPlanResult (64-bit layout, 32 bytes):
+///   +0   Pointer<Double>  swathData
+///   +8   Pointer<Double>  ringPointData
+///   +16  Pointer<Int32>   ringPointCounts
+///   +24  Int32            swathCount
+///   +28  Int32            ringCount
+final class FfiPlanResult extends Struct {
+  external Pointer<Double> swathData;
+  external Pointer<Double> ringPointData;
+  external Pointer<Int32> ringPointCounts;
+  @Int32()
+  external int swathCount;
+  @Int32()
+  external int ringCount;
+}
+
+typedef _PlanFullNative = Pointer<FfiPlanResult> Function(Pointer<Double>,
+    Int32, Double, Double, Double, Double, Double, Double, Int32);
+typedef _FreePlanNative = Void Function(Pointer<FfiPlanResult>);
+
+/// Wynik pełnego planowania: ścieżki wewnętrzne + pierścienie uwrociowe.
+class PlanResult {
+  const PlanResult({required this.swaths, required this.headlandRings});
+
+  /// Równoległe ścieżki uprawowe wewnątrz pola.
+  final List<Swath> swaths;
+
+  /// Pierścienie uwrociowe jako listy punktów.
+  /// Index 0 = zewnętrzny (objazd 1), ostatni = wewnętrzny (przy polu).
+  final List<List<(double lat, double lon)>> headlandRings;
+
+  static const PlanResult empty = PlanResult(swaths: [], headlandRings: []);
+}
+
+/// Singleton opakowujący agrinav_plan_full — zwraca swath'y + pierścienie uwroci.
+class SwathPlannerFullBridge {
+  SwathPlannerFullBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+
+    _planFull = lib.lookupFunction<
+        _PlanFullNative,
+        Pointer<FfiPlanResult> Function(Pointer<Double>, int, double, double,
+            double, double, double, double, int)>('agrinav_plan_full');
+
+    _freePlan = lib.lookupFunction<_FreePlanNative,
+        void Function(Pointer<FfiPlanResult>)>('agrinav_free_plan');
+  }
+
+  static final instance = SwathPlannerFullBridge._();
+  late final Pointer<FfiPlanResult> Function(Pointer<Double>, int, double,
+      double, double, double, double, double, int) _planFull;
+  late final void Function(Pointer<FfiPlanResult>) _freePlan;
+
+  /// Generuje ścieżki wewnętrzne ORAZ pierścienie uwrocia.
+  ///
+  /// [polygon]       — granica pola (lat/lon, ≥ 3 punkty).
+  /// [overlapM]      — zakładka między pasami [m]  (0 = brak zakładki).
+  /// [headlandLaps]  — liczba objazdów uwrocia (0 = tylko ścieżki wewnętrzne).
+  PlanResult planFull({
+    required List<(double lat, double lon)> polygon,
+    required double ax,
+    required double ay,
+    required double bx,
+    required double by,
+    required double workingWidthM,
+    double overlapM = 0.0,
+    int headlandLaps = 0,
+  }) {
+    if (polygon.length < 3) return PlanResult.empty;
+
+    final buf = calloc<Double>(polygon.length * 2);
+    for (int i = 0; i < polygon.length; i++) {
+      buf[i * 2] = polygon[i].$1;
+      buf[i * 2 + 1] = polygon[i].$2;
+    }
+
+    final r = _planFull(buf, polygon.length, ax, ay, bx, by, workingWidthM,
+        overlapM, headlandLaps);
+    calloc.free(buf);
+
+    // ── Ścieżki wewnętrzne ─────────────────────────────────────────────────
+    final swathCount = r.ref.swathCount;
+    final List<Swath> swaths = List.generate(swathCount, (i) {
+      final d = r.ref.swathData;
+      return Swath(
+        startLat: d[i * 4 + 0],
+        startLon: d[i * 4 + 1],
+        endLat: d[i * 4 + 2],
+        endLon: d[i * 4 + 3],
+      );
+    });
+
+    // ── Pierścienie uwrocia ────────────────────────────────────────────────
+    final ringCount = r.ref.ringCount;
+    final List<List<(double, double)>> rings = [];
+    if (ringCount > 0) {
+      int offset = 0;
+      for (int k = 0; k < ringCount; k++) {
+        final pts = r.ref.ringPointCounts[k];
+        final List<(double, double)> ring = List.generate(pts, (j) {
+          final idx = (offset + j) * 2;
+          return (r.ref.ringPointData[idx], r.ref.ringPointData[idx + 1]);
+        });
+        rings.add(ring);
+        offset += pts;
+      }
+    }
+
+    _freePlan(r);
+    return PlanResult(swaths: swaths, headlandRings: rings);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SwathGuidance — snap-to-nearest-swath FFI bridge
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Mirrors the C struct FfiSnapResult (16 bytes: float, int32, int32, float).
+final class FfiSnapResult extends Struct {
+  @Float()
+  external double distanceM;
+  @Int32()
+  external int swathIndex;
+  @Int32()
+  external int side;
+  @Float()
+  external double headingErrorDeg;
+}
+
+/// Dart-friendly result of a snap-to-nearest-swath query.
+class SnapInfo {
+  const SnapInfo({
+    required this.distanceM,
+    required this.swathIndex,
+    required this.side,
+    required this.headingErrorDeg,
+  });
+
+  /// Unsigned perpendicular distance to the nearest swath [m].
+  final double distanceM;
+
+  /// Index into the current swath list (−1 = no swaths loaded).
+  final int swathIndex;
+
+  /// +1 = right of swath direction, −1 = left, 0 = on-line.
+  final int side;
+
+  /// Signed heading error [deg]: machine heading − swath direction.
+  final double headingErrorDeg;
+
+  static const SnapInfo none =
+      SnapInfo(distanceM: 0, swathIndex: -1, side: 0, headingErrorDeg: 0);
+}
+
+typedef _GuidanceCreateNative = Pointer<Void> Function();
+typedef _GuidanceDestroyNative = Void Function(Pointer<Void>);
+typedef _GuidanceSetSwathsNative = Void Function(
+    Pointer<Void>, Pointer<Double>, Int32, Double, Double);
+typedef _GuidanceQueryNative = FfiSnapResult Function(
+    Pointer<Void>, Double, Double, Float);
+
+/// Singleton wrapping the C++ SwathGuidance engine via dart:ffi.
+class SwathGuidanceBridge {
+  SwathGuidanceBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+    _create =
+        lib.lookupFunction<_GuidanceCreateNative, Pointer<Void> Function()>(
+            'agrinav_guidance_create');
+    _destroy = lib.lookupFunction<_GuidanceDestroyNative,
+        void Function(Pointer<Void>)>('agrinav_guidance_destroy');
+    _setSwaths = lib.lookupFunction<_GuidanceSetSwathsNative,
+        void Function(Pointer<Void>, Pointer<Double>, int, double, double)>(
+      'agrinav_guidance_set_swaths',
+    );
+    _query = lib.lookupFunction<_GuidanceQueryNative,
+        FfiSnapResult Function(Pointer<Void>, double, double, double)>(
+      'agrinav_guidance_query',
+    );
+    _handle = _create();
+  }
+
+  static final instance = SwathGuidanceBridge._();
+
+  late final Pointer<Void> _handle;
+  late final Pointer<Void> Function() _create;
+  late final void Function(Pointer<Void>) _destroy;
+  late final void Function(Pointer<Void>, Pointer<Double>, int, double, double)
+      _setSwaths;
+  late final FfiSnapResult Function(Pointer<Void>, double, double, double)
+      _query;
+
+  /// Load (or replace) the swath list used for snap-to-path queries.
+  ///
+  /// Call after [SwathPlannerFullBridge.planFull] succeeds.
+  /// [originLat] / [originLon] should be AB-line point A coordinates.
+  void setSwaths(List<Swath> swaths, double originLat, double originLon) {
+    if (swaths.isEmpty) return;
+    final buf = calloc<Double>(swaths.length * 4);
+    for (int i = 0; i < swaths.length; i++) {
+      buf[i * 4 + 0] = swaths[i].startLat;
+      buf[i * 4 + 1] = swaths[i].startLon;
+      buf[i * 4 + 2] = swaths[i].endLat;
+      buf[i * 4 + 3] = swaths[i].endLon;
+    }
+    _setSwaths(_handle, buf, swaths.length, originLat, originLon);
+    calloc.free(buf);
+  }
+
+  /// Query the nearest swath for the given position and machine heading.
+  SnapInfo query(double lat, double lon, double headingDeg) {
+    final r = _query(_handle, lat, lon, headingDeg);
+    return SnapInfo(
+      distanceM: r.distanceM.toDouble(),
+      swathIndex: r.swathIndex,
+      side: r.side,
+      headingErrorDeg: r.headingErrorDeg.toDouble(),
+    );
+  }
+
+  void dispose() => _destroy(_handle);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SectionControl — Coverage area + overlap detection FFI bridge
+// ═══════════════════════════════════════════════════════════════════════════════
+
+typedef _SectionCreateNative = Pointer<Void> Function(Double);
+typedef _SectionDestroyNative = Void Function(Pointer<Void>);
+typedef _SectionSetOriginNative = Void Function(Pointer<Void>, Double, Double);
+typedef _SectionCheckOverlapNative = Float Function(
+    Pointer<Void>, Double, Double, Float, Double);
+typedef _SectionAddStripNative = Float Function(
+    Pointer<Void>, Double, Double, Float, Double);
+typedef _SectionCoveredHaNative = Double Function(Pointer<Void>);
+typedef _SectionClearNative = Void Function(Pointer<Void>);
+
+/// Singleton wrapping the C++ SectionControl engine via dart:ffi.
+///
+/// Provides grid-based coverage area tracking (1 m² cells) and per-strip
+/// overlap detection.  Call [setOrigin] before [addStrip].
+class SectionControlBridge {
+  SectionControlBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+    _create = lib.lookupFunction<_SectionCreateNative,
+        Pointer<Void> Function(double)>('agrinav_section_create');
+    _destroy =
+        lib.lookupFunction<_SectionDestroyNative, void Function(Pointer<Void>)>(
+            'agrinav_section_destroy');
+    _setOriginFn = lib.lookupFunction<_SectionSetOriginNative,
+        void Function(Pointer<Void>, double, double)>(
+      'agrinav_section_set_origin',
+    );
+    _checkOverlapFn = lib.lookupFunction<_SectionCheckOverlapNative,
+        double Function(Pointer<Void>, double, double, double, double)>(
+      'agrinav_section_check_overlap',
+    );
+    _addStripFn = lib.lookupFunction<_SectionAddStripNative,
+        double Function(Pointer<Void>, double, double, double, double)>(
+      'agrinav_section_add_strip',
+    );
+    _coveredHaFn = lib.lookupFunction<_SectionCoveredHaNative,
+        double Function(Pointer<Void>)>('agrinav_section_covered_ha');
+    _clearFn =
+        lib.lookupFunction<_SectionClearNative, void Function(Pointer<Void>)>(
+            'agrinav_section_clear');
+    _handle = _create(1.0); // 1 m² cells
+  }
+
+  static final instance = SectionControlBridge._();
+
+  late final Pointer<Void> _handle;
+  late final Pointer<Void> Function(double) _create;
+  late final void Function(Pointer<Void>) _destroy;
+  late final void Function(Pointer<Void>, double, double) _setOriginFn;
+  late final double Function(Pointer<Void>, double, double, double, double)
+      _checkOverlapFn;
+  late final double Function(Pointer<Void>, double, double, double, double)
+      _addStripFn;
+  late final double Function(Pointer<Void>) _coveredHaFn;
+  late final void Function(Pointer<Void>) _clearFn;
+
+  /// Set ENU origin to the field centre.  Must be called before [addStrip].
+  void setOrigin(double lat, double lon) => _setOriginFn(_handle, lat, lon);
+
+  /// Read-only overlap check; returns fraction [0–1] already covered.
+  double checkOverlap(
+          double lat, double lon, double headingDeg, double toolWidthM) =>
+      _checkOverlapFn(_handle, lat, lon, headingDeg, toolWidthM);
+
+  /// Mark tool footprint covered; returns overlap fraction BEFORE this strip.
+  double addStrip(
+          double lat, double lon, double headingDeg, double toolWidthM) =>
+      _addStripFn(_handle, lat, lon, headingDeg, toolWidthM);
+
+  /// Total covered area [ha].
+  double coveredAreaHa() => _coveredHaFn(_handle);
+
+  /// Erase all coverage (retains origin + cell size).
+  void clear() => _clearFn(_handle);
+
+  /// Replay a saved track to restore the coverage grid after app relaunch.
+  /// Uses consecutive point pairs to determine heading.
+  void replayTrack(List<LatLng> track, double toolWidthM) {
+    if (track.length < 2) return;
+    for (int i = 1; i < track.length; i++) {
+      final heading = _bearing(track[i - 1], track[i]);
+      addStrip(track[i].latitude, track[i].longitude, heading, toolWidthM);
+    }
+  }
+
+  static double _bearing(LatLng from, LatLng to) {
+    const toRad = math.pi / 180.0;
+    final dLon = (to.longitude - from.longitude) * toRad;
+    final lat1 = from.latitude * toRad;
+    final lat2 = to.latitude * toRad;
+    final y = math.sin(dLon) * math.cos(lat2);
+    final x = math.cos(lat1) * math.sin(lat2) -
+        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
+    return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
+  }
+
+  void dispose() => _destroy(_handle);
 }

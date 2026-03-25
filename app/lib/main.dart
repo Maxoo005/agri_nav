@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
+import 'services/coverage_service.dart';
 import 'services/field_service.dart';
 import 'ui/map_view.dart';
 
@@ -13,9 +14,10 @@ void main() async {
   // Utwórz domyślny magazyn jeśli jeszcze nie istnieje.
   await const FMTCStore('osmTiles').manage.create();
 
-  // Inicjalizacja Hive — trwały magazyn pól uprawowych.
+  // Inicjalizacja Hive — trwały magazyn pól uprawowych i pokrycia.
   await Hive.initFlutter();
   await FieldService.init();
+  await CoverageService.init();
 
   runApp(const AgriNavApp());
 }
