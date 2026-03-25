@@ -13,6 +13,8 @@ import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
+import '../services/geoportal_service.dart';
+import 'cadastral_widgets.dart';
 import 'field_manager_screen.dart';
 import 'work_mode_view.dart';
 
@@ -69,6 +71,17 @@ class _MapViewState extends State<MapView> {
   // ── Rysowanie granicy (DrawingMode) ───────────────────────────────
   /// Czy użytkownik aktywnie rysuje granicę palcem.
   bool _drawingMode = false;
+
+  // ── Warstwa katastralna WMS ──────────────────────────────────────────────────
+  bool _cadastralLayerVisible = false;
+
+  // ── Tryb katastralny ULDK ────────────────────────────────────────────────────
+  /// Tap na mapie pobiera działkę z API GUGiK.
+  bool _cadastralPickMode = false;
+  bool _uLDKLoading = false;
+
+  // ── Korekta przesunięcia (Nudge) ─────────────────────────────────────────────
+  bool _nudgePanelVisible = false;
 
   // ── Zapisane pola (Hive) ────────────────────────────────────────────
   List<FieldModel> _savedFields = [];
@@ -641,6 +654,70 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  // ── ULDK — pobieranie działki przez kliknięcie ──────────────────────────────────────────
+
+  Future<void> _fetchParcelAt(LatLng pos) async {
+    if (_uLDKLoading) return;
+    setState(() => _uLDKLoading = true);
+    try {
+      final field = await GeoportalService.instance
+          .fetchAndCacheParcel(pos.latitude, pos.longitude);
+      if (!mounted) return;
+      setState(() {
+        _savedFields = FieldService.instance.getAll();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Pobrano: ${field.name}'),
+          backgroundColor: Colors.green[700],
+          duration: const Duration(seconds: 3),
+        ));
+      }
+    } on NoNetworkException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString()),
+          backgroundColor: Colors.orange[800],
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e.toString()),
+          backgroundColor: Colors.red[800],
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _uLDKLoading = false);
+    }
+  }
+
+  // ── Nudge — korekta przesunięcia granicy ───────────────────────────────────────────
+
+  Future<void> _nudgeActive(double dx, double dy) async {
+    if (_activeField == null) return;
+    final updated = await GeoportalService.instance
+        .nudgeField(_activeField!, dxM: dx, dyM: dy);
+    setState(() {
+      _activeField = updated;
+      _fieldBoundary
+        ..clear()
+        ..addAll(updated.boundary);
+    });
+  }
+
+  Future<void> _resetActiveNudge() async {
+    if (_activeField == null) return;
+    final updated =
+        await GeoportalService.instance.resetNudge(_activeField!);
+    setState(() {
+      _activeField = updated;
+      _fieldBoundary
+        ..clear()
+        ..addAll(updated.boundary);
+    });
+  }
+
   void _toggleCoverage() {
     if (_trackingCoverage) {
       CoverageService.instance.stopTracking();
@@ -760,7 +837,11 @@ class _MapViewState extends State<MapView> {
             options: MapOptions(
               initialCenter: _tractorPos,
               initialZoom: 17,
-              onTap: (_, __) {
+              onTap: (_, latLng) {
+                if (_cadastralPickMode) {
+                  _fetchParcelAt(latLng);
+                  return;
+                }
                 if (!_drawingMode) setState(() => _followTractor = false);
               },
               onLongPress: (_, latLng) {
@@ -770,7 +851,7 @@ class _MapViewState extends State<MapView> {
               },
             ),
             children: [
-              // ── Podkład satelitarny Esri (offline-first przez FMTC) ─────────
+              // ── Podkład satelitarny Esri (offline-first przez FMTC) ──────────
               TileLayer(
                 urlTemplate: kSatUrl,
                 userAgentPackageName: 'com.example.agri_nav',
@@ -780,6 +861,25 @@ class _MapViewState extends State<MapView> {
                   ),
                 ),
               ),
+
+              // ── Opcjonalna warstwa katastralna WMS (działki GUGiK) ──────────
+              if (_cadastralLayerVisible)
+                TileLayer(
+                  wmsOptions: WMSTileLayerOptions(
+                    baseUrl:
+                        'https://mapy.geoportal.gov.pl/wss/service/PZGIK/'
+                        'Parcel/WMS/ParcelOrder?',
+                    layers: const ['dzialki'],
+                    format: 'image/png',
+                    transparent: true,
+                    version: '1.3.0',
+                  ),
+                  userAgentPackageName: 'com.example.agri_nav',
+                  backgroundColor: Colors.transparent,
+                  tileSize: 512,
+                  maxNativeZoom: 19,
+                  opacity: 0.70,
+                ),
 
               // ── Wszystkie zapisane pola (szare) ─────────────────────────────
               if (_savedFields.isNotEmpty)
@@ -891,6 +991,66 @@ class _MapViewState extends State<MapView> {
             ],
           ),
 
+          // ── Pasek statusu ULDK (tryb klikania działek) ──────────────────────
+          if (_cadastralPickMode)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                bottom: false,
+                child: Container(
+                  color: Colors.blueAccent.withAlpha(217),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      if (_uLDKLoading)
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      else
+                        const Icon(Icons.touch_app_rounded,
+                            color: Colors.white, size: 18),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Kliknij działkę, aby pobrać granicę z ULDK',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _cadastralPickMode = false),
+                        child: const Icon(Icons.close,
+                            color: Colors.white70, size: 20),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          // ── Panel korekty przesunięcia (Nudge) ──────────────────────────────
+          if (_nudgePanelVisible && _activeField != null)
+            Positioned(
+              left: 12,
+              bottom: 200,
+              child: NudgePanel(
+                field: _activeField!,
+                onNudge: (dx, dy) => _nudgeActive(dx, dy),
+                onReset: _resetActiveNudge,
+                onClose: () => setState(() => _nudgePanelVisible = false),
+              ),
+            ),
+
           // ── DrawingMode overlay ──────────────────────────────────────────────
           if (_drawingMode)
             Positioned.fill(
@@ -959,8 +1119,99 @@ class _MapViewState extends State<MapView> {
                       ),
                       const SizedBox(height: 8),
                     ],
+
+                    // ── Warstwa katastralna WMS ────────────────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'follow',
+                      heroTag: 'cadastral',
+                      tooltip: _cadastralLayerVisible
+                          ? 'Ukryj warstwę katastralną'
+                          : 'Pokaż działki GUGiK',
+                      backgroundColor: _cadastralLayerVisible
+                          ? Colors.blue[700]
+                          : const Color(0xAA000000),
+                      onPressed: () => setState(
+                          () => _cadastralLayerVisible =
+                              !_cadastralLayerVisible),
+                      child: const Icon(
+                        Icons.map_outlined,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // ── Tryb klikania działek ULDK ──────────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'uldkPick',
+                      tooltip: _cadastralPickMode
+                          ? 'Wyłącz pobieranie działek'
+                          : 'Pobierz granicę działki (kliknij)',
+                      backgroundColor: _cadastralPickMode
+                          ? Colors.blueAccent
+                          : const Color(0xAA000000),
+                      onPressed: () => setState(
+                          () => _cadastralPickMode = !_cadastralPickMode),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          const Icon(Icons.touch_app_rounded,
+                              color: Colors.white, size: 20),
+                          if (_uLDKLoading)
+                            const SizedBox(
+                              width: 34, height: 34,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // ── Szukaj po TERYT ────────────────────────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'terytSearch',
+                      tooltip: 'Szukaj działki po numerze TERYT',
+                      backgroundColor: const Color(0xAA000000),
+                      onPressed: () => TerytSearchSheet.show(
+                        context,
+                        onFieldFetched: (field) {
+                          setState(() {
+                            _savedFields = FieldService.instance.getAll();
+                          });
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Zapisano: ${field.name}'),
+                              backgroundColor: Colors.green[700],
+                            ),
+                          );
+                        },
+                      ),
+                      child: const Icon(
+                        Icons.search_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // ── Nudge (korekta offsetu działki) ──────────────────────────────
+                    if (_activeField != null) ...[
+                      FloatingActionButton.small(
+                        heroTag: 'nudge',
+                        tooltip: 'Koryguj położenie granicy',
+                        backgroundColor: _nudgePanelVisible
+                            ? Colors.orange[700]
+                            : const Color(0xAA000000),
+                        onPressed: () => setState(
+                            () => _nudgePanelVisible = !_nudgePanelVisible),
+                        child: const Icon(
+                          Icons.open_with_rounded,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                       tooltip: _followTractor
                           ? 'Zatrzymaj śledzenie'
                           : 'Śledź ciągnik',

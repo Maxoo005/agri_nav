@@ -19,6 +19,8 @@ dependencies:
   hive_flutter: ^1.1.0
   # Generowanie unikalnych ID pól
   uuid: ^4.4.0
+  # HTTP — zapytania do ULDK / GUGiK
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:

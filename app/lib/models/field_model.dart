@@ -1,5 +1,14 @@
 import 'package:latlong2/latlong.dart';
 
+/// Źródło pochodzenia granicy pola.
+enum FieldSource {
+  /// Ręcznie narysowane przez użytkownika.
+  manual,
+
+  /// Pobrane z ULDK/GUGiK.
+  uldk,
+}
+
 /// Model pola uprawowego przechowywany w Hive jako zwykła mapa JSON.
 /// Brak generatora kodu — serializacja ręczna.
 class FieldModel {
@@ -17,6 +26,20 @@ class FieldModel {
   double? lineALat, lineALon;
   double? lineBLat, lineBLon;
 
+  // ── Pola katastralne (ULDK) ─────────────────────────────────────────────────
+
+  /// Identyfikator działki z ULDK (np. "141201_2.0001.1234/2").
+  /// Null gdy pole narysowane ręcznie.
+  String? uLDKParcelId;
+
+  /// Źródło danych granicy.
+  FieldSource source;
+
+  /// Ręczna korekta przesunięcia granicy (WGS-84 stopnie).
+  /// Rolnik może przesunąć działkę strzałkami, aby pokryła się ze zdjęciem.
+  double offsetLat;
+  double offsetLon;
+
   FieldModel({
     required this.id,
     required this.name,
@@ -27,12 +50,25 @@ class FieldModel {
     this.lineALon,
     this.lineBLat,
     this.lineBLon,
+    this.uLDKParcelId,
+    this.source = FieldSource.manual,
+    this.offsetLat = 0.0,
+    this.offsetLon = 0.0,
   });
 
   // ── Wygoda ──────────────────────────────────────────────────────────────────
 
-  /// Granica jako lista LatLng (do rysowania w FlutterMap).
+  /// Granica jako lista LatLng z uwzględnieniem przesunięcia offsetowego.
   List<LatLng> get boundary => List.generate(
+        boundaryLats.length,
+        (i) => LatLng(
+          boundaryLats[i] + offsetLat,
+          boundaryLons[i] + offsetLon,
+        ),
+      );
+
+  /// Granica bez offsetu (oryginalne wartości z bazy).
+  List<LatLng> get boundaryRaw => List.generate(
         boundaryLats.length,
         (i) => LatLng(boundaryLats[i], boundaryLons[i]),
       );
@@ -60,6 +96,10 @@ class FieldModel {
         if (lineALon != null) 'lineALon': lineALon,
         if (lineBLat != null) 'lineBLat': lineBLat,
         if (lineBLon != null) 'lineBLon': lineBLon,
+        if (uLDKParcelId != null) 'uLDKParcelId': uLDKParcelId,
+        'source': source.name,
+        'offsetLat': offsetLat,
+        'offsetLon': offsetLon,
       };
 
   factory FieldModel.fromJson(Map<dynamic, dynamic> map) => FieldModel(
@@ -72,5 +112,12 @@ class FieldModel {
         lineALon: (map['lineALon'] as num?)?.toDouble(),
         lineBLat: (map['lineBLat'] as num?)?.toDouble(),
         lineBLon: (map['lineBLon'] as num?)?.toDouble(),
+        uLDKParcelId: map['uLDKParcelId'] as String?,
+        source: FieldSource.values.firstWhere(
+          (e) => e.name == (map['source'] as String?),
+          orElse: () => FieldSource.manual,
+        ),
+        offsetLat: (map['offsetLat'] as num?)?.toDouble() ?? 0.0,
+        offsetLon: (map['offsetLon'] as num?)?.toDouble() ?? 0.0,
       );
 }
