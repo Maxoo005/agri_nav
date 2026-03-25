@@ -11,11 +11,17 @@ namespace agrinav {
 
 // ── Stałe symulacji ──────────────────────────────────────────────────────────
 
-static constexpr int    SIM_INTERVAL_MS  = 100;       // okres generowania [ms]
-static constexpr double ORBIT_RADIUS_M   = 50.0;      // promień ruchu kołowego [m]
-static constexpr double ORBIT_PERIOD_S   = 60.0;      // czas jednego okrążenia [s]
-static constexpr double DEG_PER_M_LAT    = 1.0 / 111320.0;
-static constexpr double SIM_ACCURACY_M   = 0.02;      // RTK fix (< 0.05 m)
+static constexpr int    SIM_INTERVAL_MS = 100;      // tick period [ms]
+static constexpr double SIM_SPEED_MS    = 3.0;      // travel speed [m/s] ≈ 10.8 km/h
+static constexpr double PASS_SHIFT_M    = 5.0;      // lateral shift per pass [m]
+static constexpr double SIM_ACCURACY_M  = 0.02;     // RTK-level accuracy [m]
+static constexpr double DEG_PER_M_LAT   = 1.0 / 111320.0;
+
+// Fixed lawnmower field endpoints (WGS-84)
+static constexpr double SIM_A_LAT = 51.930428;
+static constexpr double SIM_A_LON = 17.726242;
+static constexpr double SIM_B_LAT = 51.933609;
+static constexpr double SIM_B_LON = 17.721690;
 
 #ifndef M_PI
 static constexpr double M_PI = 3.14159265358979323846;
@@ -135,20 +141,53 @@ void GnssSimulator::threadLoop() {
 // ── Generowanie pozycji i NMEA ───────────────────────────────────────────────
 
 std::string GnssSimulator::tick() {
-    // Ruch kołowy o promieniu ORBIT_RADIUS_M wokół punktu startowego
-    double stepsPerOrbit = (ORBIT_PERIOD_S * 1000.0) / SIM_INTERVAL_MS;
-    double angle = (2.0 * M_PI * _step) / stepsPerOrbit;
+    // ── ENU basis  (origin = point A) ────────────────────────────────────────
+    const double cosLat     = std::cos(SIM_A_LAT * (M_PI / 180.0));
+    const double mPerDegLon = 111320.0 * cosLat;   // [m/deg] at this latitude
 
-    double cosLat           = std::cos(_startLat * M_PI / 180.0);
-    double degPerMLon       = (cosLat > 1e-6) ? DEG_PER_M_LAT / cosLat : DEG_PER_M_LAT;
+    // Vector A→B in ENU [m]
+    const double abE   = (SIM_B_LON - SIM_A_LON) * mPerDegLon;
+    const double abN   = (SIM_B_LAT - SIM_A_LAT) * 111320.0;
+    const double abLen = std::sqrt(abE * abE + abN * abN);
 
+    // Unit vectors: d = along A→B,  l = left of A→B (CCW 90°)
+    const double dE = abE / abLen;
+    const double dN = abN / abLen;
+    const double lE = -dN;   // left perpendicular
+    const double lN =  dE;
+
+    // ── Advance parametric position ───────────────────────────────────────────
+    const double dt = SIM_INTERVAL_MS * 1e-3;       // tick duration [s]
+    _passT += (SIM_SPEED_MS * dt) / abLen;          // delta along unit-normalised pass
+
+    if (_passT >= 1.0) {
+        _passT  -= 1.0;       // carry fractional overshoot into the new pass
+        _forward = !_forward;
+        ++_passIndex;
+    }
+
+    // ── Compute ENU position ──────────────────────────────────────────────────
+    // Forward  (t: A_shifted → B_shifted):  pos = shift + t·AB
+    // Backward (t: B_shifted → A_shifted):  pos = shift + (1-t)·AB
+    const double curShift = static_cast<double>(_passIndex) * PASS_SHIFT_M;
+    const double sE = curShift * lE;
+    const double sN = curShift * lN;
+
+    double posE, posN;
+    if (_forward) {
+        posE = sE + _passT * abE;
+        posN = sN + _passT * abN;
+    } else {
+        posE = sE + abE * (1.0 - _passT);
+        posN = sN + abN * (1.0 - _passT);
+    }
+
+    // ── ENU → WGS-84 ──────────────────────────────────────────────────────────
     GnssPosition pos{};
-    pos.latitude   = _startLat + ORBIT_RADIUS_M * std::sin(angle) * DEG_PER_M_LAT;
-    pos.longitude  = _startLon + ORBIT_RADIUS_M * std::cos(angle) * degPerMLon;
-    pos.altitude   = _startAlt + 0.1 * std::sin(angle * 3.0); // lekki szum wys.
-    pos.accuracy   = static_cast<float>(SIM_ACCURACY_M);
-
-    // Znacznik czasu UNIX
+    pos.latitude  = SIM_A_LAT + posN / 111320.0;
+    pos.longitude = SIM_A_LON + posE / mPerDegLon;
+    pos.altitude  = _startAlt;
+    pos.accuracy  = static_cast<float>(SIM_ACCURACY_M);
     pos.timestamp = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
@@ -160,7 +199,6 @@ std::string GnssSimulator::tick() {
         _lastNmea = nmea;
     }
 
-    ++_step;
     return nmea;
 }
 

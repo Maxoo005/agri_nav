@@ -1,6 +1,8 @@
 #include "agri_nav_ffi.h"
 #include "GnssSimulator.h"
 #include "NavEngine.h"
+#include "SectionControl.h"
+#include "SwathGuidance.h"
 #include "SwathPlanner.h"
 #include <cstdint>
 #include <cstdlib>
@@ -123,6 +125,7 @@ FfiSwathList* agrinav_plan_swaths(
         { ax, ay },
         { bx, by },
         working_width
+        // overlapM = 0.0, headlandLaps = 0 (legacy call — no headland)
     );
 
     // Zaalokuj strukturę wynikową
@@ -154,6 +157,184 @@ void agrinav_free_swaths(FfiSwathList* list) {
     if (!list) return;
     std::free(list->data);
     std::free(list);
+}
+
+// ── Full planning (swaths + headland rings) ───────────────────────────────────
+
+FfiPlanResult* agrinav_plan_full(
+    const double* polygon,
+    int32_t       vertexCount,
+    double        ax, double ay,
+    double        bx, double by,
+    double        workingWidth,
+    double        overlapM,
+    int32_t       headlandLaps
+) {
+    // Decode flat polygon buffer [lat₀,lon₀, lat₁,lon₁, ...]
+    std::vector<agrinav::LatLon> pts;
+    pts.reserve(static_cast<size_t>(vertexCount));
+    for (int32_t i = 0; i < vertexCount; ++i)
+        pts.push_back({ polygon[i * 2], polygon[i * 2 + 1] });
+
+    const auto plan = agrinav::SwathPlanner::plan(
+        pts,
+        { ax, ay },
+        { bx, by },
+        workingWidth,
+        overlapM,
+        static_cast<int>(headlandLaps)
+    );
+
+    auto* r = static_cast<FfiPlanResult*>(std::malloc(sizeof(FfiPlanResult)));
+
+    // ── Swaths ────────────────────────────────────────────────────────────────
+    r->swathCount = static_cast<int32_t>(plan.swaths.size());
+    if (r->swathCount > 0) {
+        r->swathData = static_cast<double*>(
+            std::malloc(sizeof(double) * 4 * static_cast<size_t>(r->swathCount)));
+        for (int32_t i = 0; i < r->swathCount; ++i) {
+            const auto& s = plan.swaths[static_cast<size_t>(i)];
+            r->swathData[i * 4 + 0] = s.start.lat;
+            r->swathData[i * 4 + 1] = s.start.lon;
+            r->swathData[i * 4 + 2] = s.end.lat;
+            r->swathData[i * 4 + 3] = s.end.lon;
+        }
+    } else {
+        r->swathData = nullptr;
+    }
+
+    // ── Headland rings ────────────────────────────────────────────────────────
+    r->ringCount = static_cast<int32_t>(plan.headlandRings.size());
+    if (r->ringCount > 0) {
+        r->ringPointCounts = static_cast<int32_t*>(
+            std::malloc(sizeof(int32_t) * static_cast<size_t>(r->ringCount)));
+
+        size_t totalPts = 0;
+        for (int32_t k = 0; k < r->ringCount; ++k) {
+            const auto cnt =
+                static_cast<int32_t>(plan.headlandRings[static_cast<size_t>(k)].size());
+            r->ringPointCounts[k] = cnt;
+            totalPts += static_cast<size_t>(cnt);
+        }
+
+        r->ringPointData = static_cast<double*>(
+            std::malloc(sizeof(double) * 2 * totalPts));
+
+        size_t offset = 0;
+        for (int32_t k = 0; k < r->ringCount; ++k) {
+            for (const auto& ll : plan.headlandRings[static_cast<size_t>(k)]) {
+                r->ringPointData[offset * 2 + 0] = ll.lat;
+                r->ringPointData[offset * 2 + 1] = ll.lon;
+                ++offset;
+            }
+        }
+    } else {
+        r->ringPointData   = nullptr;
+        r->ringPointCounts = nullptr;
+    }
+
+    return r;
+}
+
+void agrinav_free_plan(FfiPlanResult* r) {
+    if (!r) return;
+    std::free(r->swathData);
+    std::free(r->ringPointData);
+    std::free(r->ringPointCounts);
+    std::free(r);
+}
+
+// ── Snap-to-nearest-swath guidance ───────────────────────────────────────────
+
+GuidanceHandle agrinav_guidance_create() {
+    return new agrinav::SwathGuidance();
+}
+
+void agrinav_guidance_destroy(GuidanceHandle h) {
+    delete static_cast<agrinav::SwathGuidance*>(h);
+}
+
+void agrinav_guidance_set_swaths(GuidanceHandle h,
+                                  const double*  swathData,
+                                  int32_t        swathCount,
+                                  double         originLat,
+                                  double         originLon) {
+    if (!h || !swathData || swathCount <= 0) return;
+
+    // Decode flat buffer: [startLat₀, startLon₀, endLat₀, endLon₀, ...]
+    std::vector<agrinav::Swath> swaths;
+    swaths.reserve(static_cast<size_t>(swathCount));
+    for (int32_t i = 0; i < swathCount; ++i) {
+        agrinav::Swath s;
+        s.start.lat = swathData[i * 4 + 0];
+        s.start.lon = swathData[i * 4 + 1];
+        s.end.lat   = swathData[i * 4 + 2];
+        s.end.lon   = swathData[i * 4 + 3];
+        swaths.push_back(s);
+    }
+
+    static_cast<agrinav::SwathGuidance*>(h)->setSwaths(
+        swaths, { originLat, originLon });
+}
+
+FfiSnapResult agrinav_guidance_query(GuidanceHandle h,
+                                      double         lat,
+                                      double         lon,
+                                      float          headingDeg) {
+    if (!h) return {0.f, -1, 0, 0.f};
+    const auto r = static_cast<agrinav::SwathGuidance*>(h)
+                       ->query(lat, lon, static_cast<double>(headingDeg));
+    return {
+        static_cast<float>(r.distanceM),
+        static_cast<int32_t>(r.swathIndex),
+        static_cast<int32_t>(r.side),
+        static_cast<float>(r.headingErrorDeg)
+    };
+}
+
+} // extern "C"
+
+// ── Section Control + Coverage Area ─────────────────────────────────────────────
+
+extern "C" {
+
+SectionHandle agrinav_section_create(double cell_size_m) {
+    return new agrinav::SectionControl(cell_size_m);
+}
+
+void agrinav_section_destroy(SectionHandle h) {
+    delete static_cast<agrinav::SectionControl*>(h);
+}
+
+void agrinav_section_set_origin(SectionHandle h, double lat, double lon) {
+    if (h) static_cast<agrinav::SectionControl*>(h)->setOrigin(lat, lon);
+}
+
+float agrinav_section_check_overlap(SectionHandle h,
+                                     double lat, double lon,
+                                     float  heading_deg,
+                                     double tool_width_m) {
+    if (!h) return 0.f;
+    return static_cast<agrinav::SectionControl*>(h)
+        ->checkOverlap(lat, lon, static_cast<double>(heading_deg), tool_width_m);
+}
+
+float agrinav_section_add_strip(SectionHandle h,
+                                 double lat, double lon,
+                                 float  heading_deg,
+                                 double tool_width_m) {
+    if (!h) return 0.f;
+    return static_cast<agrinav::SectionControl*>(h)
+        ->addStrip(lat, lon, static_cast<double>(heading_deg), tool_width_m);
+}
+
+double agrinav_section_covered_ha(SectionHandle h) {
+    if (!h) return 0.0;
+    return static_cast<agrinav::SectionControl*>(h)->coveredAreaHa();
+}
+
+void agrinav_section_clear(SectionHandle h) {
+    if (h) static_cast<agrinav::SectionControl*>(h)->clear();
 }
 
 } // extern "C"

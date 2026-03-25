@@ -51,7 +51,14 @@ private:
     static uint8_t     nmeaChecksum(const std::string& body); // body BEZ '$' i '*xx'
 
     double _startLat, _startLon, _startAlt;
-    uint32_t _step{0};
+
+    // ── Lawnmower simulation state ───────────────────────────────────────────
+    // The simulator moves the tractor along parallel strips defined by two
+    // fixed field endpoints (SIM_A / SIM_B in GnssSimulator.cpp).
+    // Each completed pass shifts 5 m to the geometric left of A→B.
+    uint32_t _passIndex{0};   // completed-pass counter → lateral offset index
+    bool     _forward{true};  // true = A→B direction, false = B→A
+    double   _passT{0.0};     // parametric position along the current pass [0,1)
 
     mutable std::mutex _mutex;
     GnssPosition       _current{};
