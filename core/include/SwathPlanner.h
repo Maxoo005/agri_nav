@@ -3,50 +3,62 @@
 
 namespace agrinav {
 
-/// Para współrzędnych WGS-84.
+/// WGS-84 coordinate pair.
 struct LatLon {
     double lat;
     double lon;
 };
 
-/// Jeden przejazd (swath): odcinek od punktu startowego do końcowego.
+/// A single parallel pass (straight A→B segment) inside the inner field.
 struct Swath {
     LatLon start;
     LatLon end;
 };
 
-/// Wynik planowania ścieżek uprawowych.
+/// Full planning result: inner-field swaths + concentric headland rings.
 struct SwathPlan {
+    /// Parallel inner-field fill swaths.
     std::vector<Swath> swaths;
+
+    /// Headland rings as closed polygons (ready to render as polylines).
+    /// Index 0 = nearest to field boundary (lap 1),
+    /// index n-1 = innermost lap (adjacent to inner field).
+    std::vector<std::vector<LatLon>> headlandRings;
 };
 
-/// Algorytm generowania równoległych ścieżek uprawowych (parallel swath lines).
+/// Parallel swath planner with polygon-offset headland support.
 ///
-/// Dane wejściowe są w WGS-84. Obliczenia wykonywane w lokalnym układzie ENU
-/// (East-North-Up) z punktem A jako początkiem układu — minimalizuje błędy
-/// projekcji dla typowych pól do ~10 km.
+/// All geographic inputs are WGS-84. Every computation is done in a local
+/// ENU frame (point A as origin), limiting projection error to < 1 mm for
+/// fields up to ~10 km.
 ///
-/// Algorytm:
-///  1. Wyznacz wektor kierunkowy AB i prostopadły (p).
-///  2. Rzutuj wierzchołki wielokąta na oś p → zakres [t_min, t_max].
-///  3. Dla każdego t_k = t_min + k * working_width:
-///     a. Dla każdej krawędzi wielokąta wyznacz punkt przecięcia z linią.
-///     b. Posortuj przecięcia wzdłuż kierunku d → pary wejście/wyjście.
-///     c. Każda para to jeden swath.
-///  4. Konwertuj punkty z powrotem na WGS-84.
+/// Algorithm:
+///  1. Convert boundary to ENU; normalise to CCW winding.
+///  2. Generate headlandLaps concentric rings via inward polygon offsetting
+///     (miter join, miter-limited to 5× strip width to guard against spikes
+///     at sharp corners; falls back to midpoint bevel automatically).
+///  3. Clip parallel scanlines against the inner field polygon (boundary
+///     remaining after removing all headland strips).
+///  4. Convert all results back to WGS-84.
 class SwathPlanner {
 public:
-    /// @param polygon        Wierzchołki granic pola (WGS-84, kolejność CW lub CCW).
-    ///                       Nie musi być zamknięty (ostatni = pierwszy).
-    /// @param a              Punkt A linii odniesienia (WGS-84).
-    /// @param b              Punkt B linii odniesienia (WGS-84).
-    /// @param workingWidthM  Szerokość robocza maszyny [m] — odstęp między liniami.
-    /// @return               Lista ścieżek gotowa do przesłania przez FFI.
+    /// @param polygon        Field boundary vertices (WGS-84, CW or CCW).
+    ///                       Need not be closed (last ≠ first).
+    /// @param a              Point A of the reference line (WGS-84).
+    /// @param b              Point B of the reference line (WGS-84).
+    /// @param workingWidthM  Machine working width [m].
+    /// @param overlapM       Strip overlap [m] subtracted from working width
+    ///                       (0 = no overlap).  Clamped to [0, workingWidthM).
+    /// @param headlandLaps   Number of concentric headland passes to produce
+    ///                       (0 = full-field swaths with no headland).
+    /// @return               SwathPlan ready for FFI transfer.
     static SwathPlan plan(
         const std::vector<LatLon>& polygon,
         LatLon                     a,
         LatLon                     b,
-        double                     workingWidthM
+        double                     workingWidthM,
+        double                     overlapM    = 0.0,
+        int                        headlandLaps = 0
     );
 };
 
