@@ -607,20 +607,20 @@ class _MapViewState extends State<MapView> {
       context,
       PageRouteBuilder(
         pageBuilder: (_, __, ___) => WorkModeView(
-          swaths:           _swaths,
-          headlandRings:    _headlandRings,
-          fieldBoundary:    _fieldBoundary,
-          initialSnapInfo:  _snapInfo,
+          swaths: _swaths,
+          headlandRings: _headlandRings,
+          fieldBoundary: _fieldBoundary,
+          initialSnapInfo: _snapInfo,
           initialCoveredHa: _coveredHa,
-          initialPos:       _tractorPos,
-          initialHeading:   _tractorHeading,
-          workingWidthM:    _activeField?.workingWidthM ?? 3.0,
-          fieldId:          _activeField?.id,
+          initialPos: _tractorPos,
+          initialHeading: _tractorHeading,
+          workingWidthM: _activeField?.workingWidthM ?? 3.0,
+          fieldId: _activeField?.id,
         ),
         transitionsBuilder: (_, anim, __, child) => SlideTransition(
           position: Tween<Offset>(
             begin: const Offset(0, 1),
-            end:   Offset.zero,
+            end: Offset.zero,
           ).animate(CurvedAnimation(parent: anim, curve: Curves.easeInOut)),
           child: FadeTransition(opacity: anim, child: child),
         ),
@@ -635,8 +635,8 @@ class _MapViewState extends State<MapView> {
     // Odśwież statystyki pokrycia po powrocie z trybu pracy
     final saved = CoverageService.instance.loadForField(_activeField?.id ?? '');
     setState(() {
-      _savedTrack       = saved;
-      _coveredHa        = SectionControlBridge.instance.coveredAreaHa();
+      _savedTrack = saved;
+      _coveredHa = SectionControlBridge.instance.coveredAreaHa();
       _trackingCoverage = false; // WorkModeView wywołał stopTracking
     });
   }
@@ -942,7 +942,7 @@ class _MapViewState extends State<MapView> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     // ── Tryb pracy (widoczny gdy pole + ścieżki są gotowe) ─────
-                    if (_activeField != null && _swaths.isNotEmpty) ..[
+                    if (_activeField != null && _swaths.isNotEmpty) ...[
                       Hero(
                         tag: 'workModeHero',
                         child: FloatingActionButton.small(

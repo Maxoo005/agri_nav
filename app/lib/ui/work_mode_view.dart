@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -7,13 +8,13 @@ import '../ffi/nav_bridge.dart';
 import '../services/coverage_service.dart';
 
 // ── Paleta kolorów Work Mode ──────────────────────────────────────────────────
-const _kBg          = Color(0xFF0A0A0A);
-const _kGrid        = Color(0x0CFFFFFF);
-const _kBoundary    = Color(0x55FFFFFF);
-const _kHeadland    = Color(0x55FF9800);
-const _kSwath       = Color(0x55E0E0E0);
+const _kBg = Color(0xFF0A0A0A);
+const _kGrid = Color(0x0CFFFFFF);
+const _kBoundary = Color(0x55FFFFFF);
+const _kHeadland = Color(0x55FF9800);
+const _kSwath = Color(0x55E0E0E0);
 const _kActiveSwath = Color(0xFFFFD600);
-const _kCoverage    = Color(0x5500BCD4);
+const _kCoverage = Color(0x5500BCD4);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WorkModeView — minimalistyczny widok prowadzenia geometrycznego
@@ -47,9 +48,9 @@ class WorkModeView extends StatefulWidget {
   final List<LatLng> fieldBoundary;
 
   final SnapInfo initialSnapInfo;
-  final double  initialCoveredHa;
-  final LatLng  initialPos;
-  final double  initialHeading;
+  final double initialCoveredHa;
+  final LatLng initialPos;
+  final double initialHeading;
 
   /// Szerokość robocza maszyny [m] — do wizualizacji śladu pokrycia.
   final double workingWidthM;
@@ -63,16 +64,16 @@ class WorkModeView extends StatefulWidget {
 
 class _WorkModeViewState extends State<WorkModeView> {
   // ── Stan dynamiczny ──────────────────────────────────────────────────────────
-  late LatLng  _tractorPos;
-  late double  _tractorHeading;
-  double _crossTrack      = 0.0;
-  bool   _guidanceValid   = false;
+  late LatLng _tractorPos;
+  late double _tractorHeading;
+  double _crossTrack = 0.0;
+  bool _guidanceValid = false;
   late SnapInfo _snapInfo;
-  late double   _coveredHa;
-  double _speedKmh        = 0.0;
+  late double _coveredHa;
+  double _speedKmh = 0.0;
   double _overlapFraction = 0.0;
 
-  LatLng?   _prevPos;
+  LatLng? _prevPos;
   DateTime? _prevTime;
 
   /// Poprzedni callback symulatora GPS — przywracany w [dispose].
@@ -84,10 +85,10 @@ class _WorkModeViewState extends State<WorkModeView> {
   @override
   void initState() {
     super.initState();
-    _tractorPos     = widget.initialPos;
+    _tractorPos = widget.initialPos;
     _tractorHeading = widget.initialHeading;
-    _snapInfo       = widget.initialSnapInfo;
-    _coveredHa      = widget.initialCoveredHa;
+    _snapInfo = widget.initialSnapInfo;
+    _coveredHa = widget.initialCoveredHa;
 
     // Przejęcie callbacku GPS od MapView
     _prevSimCallback = GnssSimulatorBridge.instance.onPosition;
@@ -106,12 +107,12 @@ class _WorkModeViewState extends State<WorkModeView> {
     if (!mounted) return;
 
     final newPos = LatLng(pos.latitude, pos.longitude);
-    final now    = DateTime.now();
-    double heading  = _tractorHeading;
+    final now = DateTime.now();
+    double heading = _tractorHeading;
     double speedKmh = _speedKmh;
 
     if (_prevPos != null) {
-      final dlat = (newPos.latitude  - _prevPos!.latitude).abs();
+      final dlat = (newPos.latitude - _prevPos!.latitude).abs();
       final dlon = (newPos.longitude - _prevPos!.longitude).abs();
       if (dlat + dlon > 1e-7) heading = _bearing(_prevPos!, newPos);
 
@@ -119,17 +120,18 @@ class _WorkModeViewState extends State<WorkModeView> {
         final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
         if (dt > 0.01) {
           final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
-          final de = (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
-          final dn = (newPos.latitude  - _prevPos!.latitude)  * 111320.0;
+          final de =
+              (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
+          final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
           speedKmh = math.sqrt(de * de + dn * dn) / dt * 3.6;
         }
       }
     }
 
     final guidance = NavBridge.instance.update(
-      lat:      pos.latitude,
-      lon:      pos.longitude,
-      alt:      pos.altitude,
+      lat: pos.latitude,
+      lon: pos.longitude,
+      alt: pos.altitude,
       accuracy: pos.accuracy,
     );
 
@@ -140,37 +142,40 @@ class _WorkModeViewState extends State<WorkModeView> {
     }
 
     double overlapFraction = _overlapFraction;
-    double coveredHa       = _coveredHa;
+    double coveredHa = _coveredHa;
     CoverageService.instance.addPoint(newPos);
     if (widget.fieldId != null) {
       overlapFraction = SectionControlBridge.instance.addStrip(
-        pos.latitude, pos.longitude, heading, widget.workingWidthM,
+        pos.latitude,
+        pos.longitude,
+        heading,
+        widget.workingWidthM,
       );
       coveredHa = SectionControlBridge.instance.coveredAreaHa();
     }
 
     setState(() {
-      _tractorPos      = newPos;
-      _tractorHeading  = heading;
-      _crossTrack      = guidance.crossTrack;
-      _guidanceValid   = guidance.valid;
-      _snapInfo        = snapInfo;
-      _speedKmh        = speedKmh;
+      _tractorPos = newPos;
+      _tractorHeading = heading;
+      _crossTrack = guidance.crossTrack;
+      _guidanceValid = guidance.valid;
+      _snapInfo = snapInfo;
+      _speedKmh = speedKmh;
       _overlapFraction = overlapFraction;
-      _coveredHa       = coveredHa;
+      _coveredHa = coveredHa;
     });
 
-    _prevPos  = newPos;
+    _prevPos = newPos;
     _prevTime = now;
   }
 
   static double _bearing(LatLng from, LatLng to) {
     final dLon = (to.longitude - from.longitude) * math.pi / 180.0;
     final lat1 = from.latitude * math.pi / 180.0;
-    final lat2 = to.latitude   * math.pi / 180.0;
+    final lat2 = to.latitude * math.pi / 180.0;
     final y = math.sin(dLon) * math.cos(lat2);
     final x = math.cos(lat1) * math.sin(lat2) -
-               math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
+        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
     return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
   }
 
@@ -182,7 +187,7 @@ class _WorkModeViewState extends State<WorkModeView> {
   // ── Build ─────────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    final padding       = MediaQuery.of(context).padding;
+    final padding = MediaQuery.of(context).padding;
     final coverageTrack = CoverageService.instance.currentTrack;
 
     return Scaffold(
@@ -192,8 +197,7 @@ class _WorkModeViewState extends State<WorkModeView> {
         onScaleUpdate: (d) {
           if (d.pointerCount >= 2) {
             setState(() {
-              _pixelsPerMeter =
-                  (_pixelsPerMeter * d.scale).clamp(1.0, 25.0);
+              _pixelsPerMeter = (_pixelsPerMeter * d.scale).clamp(1.0, 25.0);
             });
           }
         },
@@ -204,15 +208,15 @@ class _WorkModeViewState extends State<WorkModeView> {
               child: RepaintBoundary(
                 child: CustomPaint(
                   painter: _FieldCanvasPainter(
-                    tractorPos:      _tractorPos,
-                    tractorHeading:  _tractorHeading,
-                    swaths:          widget.swaths,
-                    headlandRings:   widget.headlandRings,
-                    fieldBoundary:   widget.fieldBoundary,
-                    coverageTrack:   coverageTrack,
+                    tractorPos: _tractorPos,
+                    tractorHeading: _tractorHeading,
+                    swaths: widget.swaths,
+                    headlandRings: widget.headlandRings,
+                    fieldBoundary: widget.fieldBoundary,
+                    coverageTrack: coverageTrack,
                     activeSwathIndex: _snapInfo.swathIndex,
-                    pixelsPerMeter:  _pixelsPerMeter,
-                    workingWidthM:   widget.workingWidthM,
+                    pixelsPerMeter: _pixelsPerMeter,
+                    workingWidthM: widget.workingWidthM,
                   ),
                 ),
               ),
@@ -220,23 +224,23 @@ class _WorkModeViewState extends State<WorkModeView> {
 
             // ── 2. Lightbar — pasek świetlny (pełna szerokość, pod safe area) ─
             Positioned(
-              top:   padding.top + 8,
-              left:  12,
+              top: padding.top + 8,
+              left: 12,
               right: 12,
               child: _Lightbar(
                 crossTrack: _crossTrack,
-                valid:      _guidanceValid,
+                valid: _guidanceValid,
               ),
             ),
 
             // ── 3. Panel statystyk (prawy bok, pod lightbarem) ────────────────
             Positioned(
               right: 12,
-              top:   padding.top + 8 + 82,
+              top: padding.top + 8 + 82,
               child: _StatsPanel(
-                speedKmh:        _speedKmh,
-                coveredHa:       _coveredHa,
-                snapInfo:        _snapInfo,
+                speedKmh: _speedKmh,
+                coveredHa: _coveredHa,
+                snapInfo: _snapInfo,
                 overlapFraction: _overlapFraction,
               ),
             ),
@@ -245,15 +249,15 @@ class _WorkModeViewState extends State<WorkModeView> {
             if (_snapInfo.swathIndex >= 0)
               Positioned(
                 left: 12,
-                top:  padding.top + 8 + 82,
+                top: padding.top + 8 + 82,
                 child: _SwathIndicator(snapInfo: _snapInfo),
               ),
 
             // ── 5. Przycisk "Zakończ pracę" (dół ekranu) ──────────────────────
             Positioned(
               bottom: padding.bottom + 20,
-              left:   20,
-              right:  20,
+              left: 20,
+              right: 20,
               child: Hero(
                 tag: 'workModeHero',
                 // Material zapobiega błędom renderowania Hero nad różnymi tłami
@@ -289,28 +293,28 @@ class _FieldCanvasPainter extends CustomPainter {
     required this.workingWidthM,
   });
 
-  final LatLng              tractorPos;
-  final double              tractorHeading;
-  final List<Swath>         swaths;
-  final List<List<LatLng>>  headlandRings;
-  final List<LatLng>        fieldBoundary;
-  final List<LatLng>        coverageTrack;
-  final int                 activeSwathIndex;
-  final double              pixelsPerMeter;
-  final double              workingWidthM;
+  final LatLng tractorPos;
+  final double tractorHeading;
+  final List<Swath> swaths;
+  final List<List<LatLng>> headlandRings;
+  final List<LatLng> fieldBoundary;
+  final List<LatLng> coverageTrack;
+  final int activeSwathIndex;
+  final double pixelsPerMeter;
+  final double workingWidthM;
 
   /// Przelicza WGS-84 na lokalne piksele ENU względem [tractorPos].
   /// +X = wschód, +Y = południe (Y odwrócone w stosunku do geograficznego N).
   Offset _toLocal(LatLng pt) {
     final cosLat = math.cos(tractorPos.latitude * math.pi / 180.0);
-    final dE =  (pt.longitude - tractorPos.longitude) * 111320.0 * cosLat;
-    final dN =  (pt.latitude  - tractorPos.latitude)  * 111320.0;
+    final dE = (pt.longitude - tractorPos.longitude) * 111320.0 * cosLat;
+    final dN = (pt.latitude - tractorPos.latitude) * 111320.0;
     return Offset(dE * pixelsPerMeter, -dN * pixelsPerMeter);
   }
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cx = size.width  / 2;
+    final cx = size.width / 2;
     final cy = size.height / 2;
 
     // ── Cały świat obrócony tak, by kierunek jazdy = góra ekranu ─────────────
@@ -337,21 +341,25 @@ class _FieldCanvasPainter extends CustomPainter {
 
     // ── Granica pola ──────────────────────────────────────────────────────────
     if (fieldBoundary.length >= 3) {
-      final path = Path();
+      final path = ui.Path();
       for (int i = 0; i < fieldBoundary.length; i++) {
         final o = _toLocal(fieldBoundary[i]);
         i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
       }
       path.close();
       canvas
-        ..drawPath(path, Paint()
-          ..color = const Color(0x18FFFFFF)
-          ..style = PaintingStyle.fill)
-        ..drawPath(path, Paint()
-          ..color = _kBoundary
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5
-          ..strokeJoin  = StrokeJoin.round);
+        ..drawPath(
+            path,
+            Paint()
+              ..color = const Color(0x18FFFFFF)
+              ..style = PaintingStyle.fill)
+        ..drawPath(
+            path,
+            Paint()
+              ..color = _kBoundary
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.5
+              ..strokeJoin = StrokeJoin.round);
     }
 
     // ── Pierścienie uwrociowe ─────────────────────────────────────────────────
@@ -361,7 +369,7 @@ class _FieldCanvasPainter extends CustomPainter {
       ..strokeWidth = 1.2;
     for (final ring in headlandRings) {
       if (ring.length < 2) continue;
-      final path = Path();
+      final path = ui.Path();
       for (int i = 0; i < ring.length; i++) {
         final o = _toLocal(ring[i]);
         i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
@@ -372,7 +380,7 @@ class _FieldCanvasPainter extends CustomPainter {
 
     // ── Ślad pokrycia ─────────────────────────────────────────────────────────
     if (coverageTrack.length >= 2) {
-      final path = Path();
+      final path = ui.Path();
       var first = true;
       for (final pt in coverageTrack) {
         final o = _toLocal(pt);
@@ -384,26 +392,29 @@ class _FieldCanvasPainter extends CustomPainter {
         }
       }
       final sw = (workingWidthM * pixelsPerMeter).clamp(2.0, 120.0);
-      canvas.drawPath(path, Paint()
-        ..color      = _kCoverage
-        ..style      = PaintingStyle.stroke
-        ..strokeWidth = sw
-        ..strokeCap  = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round);
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = _kCoverage
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = sw
+            ..strokeCap = StrokeCap.round
+            ..strokeJoin = StrokeJoin.round);
     }
 
     // ── Ścieżki uprawowe ──────────────────────────────────────────────────────
     final swathPaint = Paint()
-      ..color       = _kSwath
+      ..color = _kSwath
       ..strokeWidth = 1.0;
     final activeSwathPaint = Paint()
-      ..color       = _kActiveSwath
+      ..color = _kActiveSwath
       ..strokeWidth = 3.2;
     for (int i = 0; i < swaths.length; i++) {
-      final s  = swaths[i];
+      final s = swaths[i];
       final s0 = _toLocal(LatLng(s.startLat, s.startLon));
-      final s1 = _toLocal(LatLng(s.endLat,   s.endLon));
-      canvas.drawLine(s0, s1, i == activeSwathIndex ? activeSwathPaint : swathPaint);
+      final s1 = _toLocal(LatLng(s.endLat, s.endLon));
+      canvas.drawLine(
+          s0, s1, i == activeSwathIndex ? activeSwathPaint : swathPaint);
     }
 
     canvas.restore();
@@ -418,35 +429,42 @@ class _FieldCanvasPainter extends CustomPainter {
   void _drawTractorCursor(Canvas canvas) {
     const r = 22.0;
     // Strzałka z wcięciem: czubek na górze = kierunek jazdy
-    final path = Path()
-      ..moveTo(0,         -r)
-      ..lineTo( r * 0.6,  r * 0.72)
-      ..lineTo(0,          r * 0.25)
-      ..lineTo(-r * 0.6,  r * 0.72)
+    final path = ui.Path()
+      ..moveTo(0, -r)
+      ..lineTo(r * 0.6, r * 0.72)
+      ..lineTo(0, r * 0.25)
+      ..lineTo(-r * 0.6, r * 0.72)
       ..close();
 
     // Subtelna poświata (aura)
-    canvas.drawCircle(Offset.zero, r * 1.8, Paint()
-      ..color   = Colors.white.withOpacity(0.07)
-      ..style   = PaintingStyle.fill);
+    canvas.drawCircle(
+        Offset.zero,
+        r * 1.8,
+        Paint()
+          ..color = Colors.white.withOpacity(0.07)
+          ..style = PaintingStyle.fill);
 
     canvas
-      ..drawPath(path, Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.fill)
-      ..drawPath(path, Paint()
-        ..color       = Colors.black54
-        ..style       = PaintingStyle.stroke
-        ..strokeWidth = 1.8);
+      ..drawPath(
+          path,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.fill)
+      ..drawPath(
+          path,
+          Paint()
+            ..color = Colors.black54
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.8);
   }
 
   @override
   bool shouldRepaint(_FieldCanvasPainter old) =>
-      old.tractorPos       != tractorPos      ||
-      old.tractorHeading   != tractorHeading  ||
+      old.tractorPos != tractorPos ||
+      old.tractorHeading != tractorHeading ||
       old.activeSwathIndex != activeSwathIndex ||
-      old.pixelsPerMeter   != pixelsPerMeter  ||
-      old.coverageTrack    != coverageTrack;
+      old.pixelsPerMeter != pixelsPerMeter ||
+      old.coverageTrack != coverageTrack;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,7 +475,7 @@ class _Lightbar extends StatelessWidget {
   const _Lightbar({required this.crossTrack, required this.valid});
 
   final double crossTrack;
-  final bool   valid;
+  final bool valid;
 
   static Color _ctColor(double ct, bool valid) {
     if (!valid) return const Color(0x88FFFFFF);
@@ -470,9 +488,7 @@ class _Lightbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _ctColor(crossTrack, valid);
-    final absStr = valid
-        ? '${crossTrack.abs().toStringAsFixed(2)} m'
-        : '---';
+    final absStr = valid ? '${crossTrack.abs().toStringAsFixed(2)} m' : '---';
     final sideStr = valid
         ? (crossTrack > 0.05
             ? '  ▶'
@@ -499,7 +515,7 @@ class _Lightbar extends StatelessWidget {
               child: CustomPaint(
                 painter: _LightbarPainter(
                   crossTrack: crossTrack,
-                  valid:      valid,
+                  valid: valid,
                 ),
               ),
             ),
@@ -507,9 +523,9 @@ class _Lightbar extends StatelessWidget {
             Text(
               '$absStr$sideStr',
               style: TextStyle(
-                color:       color,
-                fontSize:    26,
-                fontWeight:  FontWeight.bold,
+                color: color,
+                fontSize: 26,
+                fontWeight: FontWeight.bold,
                 letterSpacing: 0.8,
                 shadows: const [Shadow(color: Colors.black, blurRadius: 8)],
               ),
@@ -525,17 +541,17 @@ class _LightbarPainter extends CustomPainter {
   const _LightbarPainter({required this.crossTrack, required this.valid});
 
   final double crossTrack;
-  final bool   valid;
+  final bool valid;
 
   // 31 komórek; środek = indeks 15 (0-based); zakres ±1.5 m → 0.1 m/komórkę
-  static const int    _n      = 31;
-  static const int    _center = 15;
-  static const double _range  = 1.5;
+  static const int _n = 31;
+  static const int _center = 15;
+  static const double _range = 1.5;
 
   @override
   void paint(Canvas canvas, Size size) {
     final cellW = size.width / _n;
-    const vPad  = 7.0;
+    const vPad = 7.0;
 
     // Przesunięcie od środka w komórkach (clamp do ±_center)
     final deviation = valid
@@ -545,7 +561,7 @@ class _LightbarPainter extends CustomPainter {
     final hi = math.max(_center, _center + deviation);
 
     for (int i = 0; i < _n; i++) {
-      final lit  = valid && i >= lo && i <= hi;
+      final lit = valid && i >= lo && i <= hi;
       final dist = (i - _center).abs();
       final color = _cellColor(dist, lit);
 
@@ -564,11 +580,11 @@ class _LightbarPainter extends CustomPainter {
 
   Color _cellColor(int dist, bool lit) {
     if (!lit) return const Color(0xFF181818);
-    if (dist == 0) return const Color(0xFF00E676);   // środek: jasna zieleń
-    if (dist <= 1) return const Color(0xFF69F0AE);   // ±0.1 m: zieleń
-    if (dist <= 3) return Colors.yellow;             // ±0.2–0.3 m: żółty
-    if (dist <= 7) return Colors.orange;             // ±0.4–0.7 m: pomarańcz
-    return Colors.redAccent;                          // > 0.8 m: czerwony
+    if (dist == 0) return const Color(0xFF00E676); // środek: jasna zieleń
+    if (dist <= 1) return const Color(0xFF69F0AE); // ±0.1 m: zieleń
+    if (dist <= 3) return Colors.yellow; // ±0.2–0.3 m: żółty
+    if (dist <= 7) return Colors.orange; // ±0.4–0.7 m: pomarańcz
+    return Colors.redAccent; // > 0.8 m: czerwony
   }
 
   @override
@@ -588,10 +604,10 @@ class _StatsPanel extends StatelessWidget {
     required this.overlapFraction,
   });
 
-  final double   speedKmh;
-  final double   coveredHa;
+  final double speedKmh;
+  final double coveredHa;
   final SnapInfo snapInfo;
-  final double   overlapFraction;
+  final double overlapFraction;
 
   @override
   Widget build(BuildContext context) {
@@ -606,30 +622,30 @@ class _StatsPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           _StatTile(
-            icon:  Icons.speed_rounded,
+            icon: Icons.speed_rounded,
             color: Colors.white70,
             label: 'Prędkość',
             value: '${speedKmh.toStringAsFixed(1)} km/h',
           ),
           const _TileDivider(),
           _StatTile(
-            icon:  Icons.crop_square_rounded,
+            icon: Icons.crop_square_rounded,
             color: Colors.greenAccent,
             label: 'Zrobione',
             value: '${coveredHa.toStringAsFixed(2)} ha',
           ),
           const _TileDivider(),
           _StatTile(
-            icon:  Icons.gps_fixed_rounded,
+            icon: Icons.gps_fixed_rounded,
             color: Colors.lightBlueAccent,
             label: 'GPS',
             value: 'RTK Fix',
-            dot:   Colors.greenAccent,
+            dot: Colors.greenAccent,
           ),
           if (snapInfo.swathIndex >= 0) ...[
             const _TileDivider(),
             _StatTile(
-              icon:  Icons.linear_scale_rounded,
+              icon: Icons.linear_scale_rounded,
               color: Colors.yellowAccent,
               label: 'Pas',
               value: '${snapInfo.swathIndex + 1}',
@@ -638,7 +654,7 @@ class _StatsPanel extends StatelessWidget {
           if (overlapFraction >= 0.10) ...[
             const _TileDivider(),
             _StatTile(
-              icon:  Icons.warning_amber_rounded,
+              icon: Icons.warning_amber_rounded,
               color: Colors.redAccent,
               label: 'Nakładka',
               value: '${(overlapFraction * 100).round()}%',
@@ -660,10 +676,10 @@ class _StatTile extends StatelessWidget {
   });
 
   final IconData icon;
-  final Color    color;
-  final String   label;
-  final String   value;
-  final Color?   dot;
+  final Color color;
+  final String label;
+  final String value;
+  final Color? dot;
 
   @override
   Widget build(BuildContext context) {
@@ -681,8 +697,8 @@ class _StatTile extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                    color:         Colors.white38,
-                    fontSize:      9,
+                    color: Colors.white38,
+                    fontSize: 9,
                     letterSpacing: 0.6,
                   ),
                 ),
@@ -691,15 +707,15 @@ class _StatTile extends StatelessWidget {
                     Text(
                       value,
                       style: const TextStyle(
-                        color:      Colors.white,
-                        fontSize:   14,
+                        color: Colors.white,
+                        fontSize: 14,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                     if (dot != null) ...[
                       const SizedBox(width: 5),
                       Container(
-                        width:  7,
+                        width: 7,
                         height: 7,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
@@ -773,16 +789,16 @@ class _SwathIndicator extends StatelessWidget {
               const Text(
                 'odl. od pasa',
                 style: TextStyle(
-                  color:         Colors.white38,
-                  fontSize:      9,
+                  color: Colors.white38,
+                  fontSize: 9,
                   letterSpacing: 0.6,
                 ),
               ),
               Text(
                 '${dist.toStringAsFixed(2)} m',
                 style: TextStyle(
-                  color:      indicatorColor,
-                  fontSize:   17,
+                  color: indicatorColor,
+                  fontSize: 17,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -809,19 +825,19 @@ class _ExitButton extends StatelessWidget {
       style: FilledButton.styleFrom(
         backgroundColor: const Color(0xAA7F0000),
         foregroundColor: Colors.white,
-        minimumSize:     const Size.fromHeight(54),
+        minimumSize: const Size.fromHeight(54),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
           side: const BorderSide(color: Colors.white24),
         ),
         textStyle: const TextStyle(
-          fontSize:      16,
-          fontWeight:    FontWeight.w700,
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
           letterSpacing: 0.5,
         ),
       ),
       onPressed: onPressed,
-      icon:  const Icon(Icons.stop_circle_outlined),
+      icon: const Icon(Icons.stop_circle_outlined),
       label: const Text('Zakończ pracę'),
     );
   }
