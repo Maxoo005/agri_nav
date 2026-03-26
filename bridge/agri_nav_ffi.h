@@ -220,6 +220,48 @@ double agrinav_section_covered_ha(SectionHandle h);
 /// Erase all coverage data (retains origin + cell size).
 void agrinav_section_clear(SectionHandle h);
 
+// ── Scalanie działek katastralnych (Kreator Pola) ────────────────────────────
+
+/// Typ pierścienia wynikowego.
+///   0 = OuterPrimary   — zewnętrzna granica głównej części
+///   1 = HolePrimary    — otwór w głównej części (np. las)
+///   2 = OuterSecondary — kolejna część pola wieloczęściowego
+///   3 = HoleSecondary  — otwór w kolejnej części
+typedef int32_t FfiRingType;
+
+/// Wynik scalania działek — płaski bufor wszystkich pierścieni.
+///
+/// Układ pamięci dla ring_data:
+///   ring 0: lat₀,lon₀, lat₁,lon₁, ... (ring_vertex_counts[0] par)
+///   ring 1: lat₀,lon₀, ... (ring_vertex_counts[1] par)
+///   ...
+typedef struct {
+    double*      ring_data;           ///< (Σ ring_vertex_counts) × 2 wartości double
+    int32_t*     ring_vertex_counts;  ///< liczba wierzchołków per pierścień
+    FfiRingType* ring_types;          ///< typ każdego pierścienia
+    int32_t      ring_count;          ///< łączna liczba pierścieni
+    int32_t      is_multipart;        ///< 1 gdy działki nie stykają się
+} FfiMergeResult;
+
+/// Scala wiele wielokątów działek w jeden obrys pola.
+///
+/// @param polygon_data   Płaski bufor par (lat,lon) dla wszystkich wielokątów.
+///                       Kolejność: polygon0_v0_lat, polygon0_v0_lon, ...
+/// @param vertex_counts  Tablica liczby wierzchołków dla każdego wielokąta.
+/// @param polygon_count  Liczba wielokątów wejściowych.
+/// @param buffer_m       Outward buffer [m] do eliminacji mikroszczelin (np. 0.05).
+/// @return               Wskaźnik na FfiMergeResult; zwolnij przez agrinav_free_merge_result().
+///                       Nigdy NULL (błąd → ring_count == 0).
+FfiMergeResult* agrinav_merge_parcels(
+    const double*  polygon_data,
+    const int32_t* vertex_counts,
+    int32_t        polygon_count,
+    double         buffer_m
+);
+
+/// Zwalnia pamięć przydzieloną przez agrinav_merge_parcels().
+void agrinav_free_merge_result(FfiMergeResult* result);
+
 #ifdef __cplusplus
 }
 #endif

@@ -32,6 +32,20 @@ class FieldModel {
   /// Null gdy pole narysowane ręcznie.
   String? uLDKParcelId;
 
+  /// Alias semantyczny — identyfikator urzędowy działki.
+  String? get officialId => uLDKParcelId;
+
+  /// Siedmiocyfrowy kod TERYT gminy, np. "1412012" (woj+pow+gm).
+  String? terytCode;
+
+  /// Data i godzina ostatniej synchronizacji z ULDK.
+  DateTime? lastSyncDate;
+
+  /// Lista numerów ewidencyjnych działek, z których zbudowano to pole
+  /// (wynik operacji union w Kreatorze Pola). Pusta gdy pole narysowane ręcznie
+  /// lub pobrane jako pojedyncza działka.
+  List<String> sourceParcelIds;
+
   /// Źródło danych granicy.
   FieldSource source;
 
@@ -51,10 +65,13 @@ class FieldModel {
     this.lineBLat,
     this.lineBLon,
     this.uLDKParcelId,
+    this.terytCode,
+    this.lastSyncDate,
+    List<String>? sourceParcelIds,
     this.source = FieldSource.manual,
     this.offsetLat = 0.0,
     this.offsetLon = 0.0,
-  });
+  }) : sourceParcelIds = sourceParcelIds ?? [];
 
   // ── Wygoda ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +101,16 @@ class FieldModel {
     return LatLng(lat, lon);
   }
 
+  /// Przesuwa offset całej granicy o [latOffset] stopni szerokości i
+  /// [lonOffset] stopni długości geograficznej.
+  ///
+  /// Modyfikuje [offsetLat] i [offsetLon] addytywnie.
+  /// Aby użyć metrów, przelicz najpierw przez [GeoportalService.nudgeField].
+  void applyOffset(double latOffset, double lonOffset) {
+    offsetLat += latOffset;
+    offsetLon += lonOffset;
+  }
+
   // ── Serializacja ─────────────────────────────────────────────────────────────
 
   Map<String, dynamic> toJson() => {
@@ -97,6 +124,10 @@ class FieldModel {
         if (lineBLat != null) 'lineBLat': lineBLat,
         if (lineBLon != null) 'lineBLon': lineBLon,
         if (uLDKParcelId != null) 'uLDKParcelId': uLDKParcelId,
+        if (terytCode != null) 'terytCode': terytCode,
+        if (lastSyncDate != null)
+          'lastSyncDate': lastSyncDate!.toIso8601String(),
+        if (sourceParcelIds.isNotEmpty) 'sourceParcelIds': sourceParcelIds,
         'source': source.name,
         'offsetLat': offsetLat,
         'offsetLon': offsetLon,
@@ -113,6 +144,11 @@ class FieldModel {
         lineBLat: (map['lineBLat'] as num?)?.toDouble(),
         lineBLon: (map['lineBLon'] as num?)?.toDouble(),
         uLDKParcelId: map['uLDKParcelId'] as String?,
+        terytCode: map['terytCode'] as String?,
+        lastSyncDate: map['lastSyncDate'] != null
+            ? DateTime.tryParse(map['lastSyncDate'] as String)
+            : null,
+        sourceParcelIds: (map['sourceParcelIds'] as List?)?.cast<String>(),
         source: FieldSource.values.firstWhere(
           (e) => e.name == (map['source'] as String?),
           orElse: () => FieldSource.manual,

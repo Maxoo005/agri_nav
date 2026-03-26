@@ -724,3 +724,172 @@ class SectionControlBridge {
 
   void dispose() => _destroy(_handle);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ParcelMergerBridge — scalanie działek katastralnych przez C++ Clipper2
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Typ pierścienia wynikowego — odpowiada FfiRingType w C.
+enum MergeRingType {
+  outerPrimary(0),
+  holePrimary(1),
+  outerSecondary(2),
+  holeSecondary(3);
+
+  const MergeRingType(this.value);
+  final int value;
+
+  static MergeRingType fromInt(int v) =>
+      MergeRingType.values.firstWhere((e) => e.value == v,
+          orElse: () => MergeRingType.outerPrimary);
+}
+
+/// Jeden pierścień w wyniku scalania.
+class MergeRing {
+  const MergeRing({required this.points, required this.type});
+  final List<LatLng> points;
+  final MergeRingType type;
+
+  bool get isOuter =>
+      type == MergeRingType.outerPrimary ||
+      type == MergeRingType.outerSecondary;
+}
+
+/// Wynik scalania działek.
+class MergeFieldResult {
+  const MergeFieldResult({required this.rings, required this.isMultipart});
+
+  final List<MergeRing> rings;
+
+  /// true gdy działki nie stykają się i wynik zawiera wiele zewnętrznych granic.
+  final bool isMultipart;
+
+  /// Główna granica zewnętrzna (największa).
+  List<LatLng> get primaryBoundary =>
+      rings
+          .where((r) => r.type == MergeRingType.outerPrimary)
+          .map((r) => r.points)
+          .firstOrNull ??
+      [];
+
+  /// Wszystkie otwory (dziury) w głównej granicy.
+  List<List<LatLng>> get holes => rings
+      .where((r) => r.type == MergeRingType.holePrimary)
+      .map((r) => r.points)
+      .toList();
+}
+
+// ── FFI struct dla FfiMergeResult ────────────────────────────────────────────
+
+final class _FfiMergeResult extends Struct {
+  external Pointer<Double> ringData;
+  external Pointer<Int32> ringVertexCounts;
+  external Pointer<Int32> ringTypes;
+  @Int32()
+  external int ringCount;
+  @Int32()
+  external int isMultipart;
+}
+
+// ── Sygnatury funkcji ────────────────────────────────────────────────────────
+
+typedef _MergeParcelsNative = Pointer<_FfiMergeResult> Function(
+    Pointer<Double>, Pointer<Int32>, Int32, Double);
+typedef _FreeMergeResultNative = Void Function(Pointer<_FfiMergeResult>);
+
+// ── Bridge ───────────────────────────────────────────────────────────────────
+
+/// Singleton do scalania geometrii działek przez C++ Clipper2.
+class ParcelMergerBridge {
+  ParcelMergerBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+    _merge = lib.lookupFunction<
+        _MergeParcelsNative,
+        Pointer<_FfiMergeResult> Function(
+            Pointer<Double>, Pointer<Int32>, int, double)>(
+      'agrinav_merge_parcels',
+    );
+    _free = lib.lookupFunction<_FreeMergeResultNative,
+        void Function(Pointer<_FfiMergeResult>)>(
+      'agrinav_free_merge_result',
+    );
+  }
+
+  static final instance = ParcelMergerBridge._();
+
+  late final Pointer<_FfiMergeResult> Function(
+      Pointer<Double>, Pointer<Int32>, int, double) _merge;
+  late final void Function(Pointer<_FfiMergeResult>) _free;
+
+  /// Scala listę wielokątów w jeden obrys pola.
+  ///
+  /// [polygons] — lista wielokątów WGS-84.
+  /// [bufferM]  — outward buffer [m] do zamknięcia szczelin (domyślnie 5 cm).
+  ///
+  /// Rzuca [StateError] gdy wynik jest pusty (np. wszystkie wejścia niepoprawne).
+  MergeFieldResult merge(
+    List<List<LatLng>> polygons, {
+    double bufferM = 0.05,
+  }) {
+    if (polygons.isEmpty) throw StateError('Brak wielokątów do scalenia');
+
+    // Zbuduj płaski bufor danych
+    final totalVerts = polygons.fold(0, (s, p) => s + p.length);
+    final polyData = calloc<Double>(totalVerts * 2);
+    final vertCounts = calloc<Int32>(polygons.length);
+
+    try {
+      int dataOffset = 0;
+      for (int i = 0; i < polygons.length; i++) {
+        final poly = polygons[i];
+        vertCounts[i] = poly.length;
+        for (final pt in poly) {
+          polyData[dataOffset++] = pt.latitude;
+          polyData[dataOffset++] = pt.longitude;
+        }
+      }
+
+      final result = _merge(polyData, vertCounts, polygons.length, bufferM);
+      if (result == nullptr)
+        throw StateError('agrinav_merge_parcels zwrócił NULL');
+
+      try {
+        return _parseResult(result);
+      } finally {
+        _free(result);
+      }
+    } finally {
+      calloc.free(polyData);
+      calloc.free(vertCounts);
+    }
+  }
+
+  MergeFieldResult _parseResult(Pointer<_FfiMergeResult> ptr) {
+    final r = ptr.ref;
+    if (r.ringCount == 0) {
+      return const MergeFieldResult(rings: [], isMultipart: false);
+    }
+
+    final rings = <MergeRing>[];
+    int dataOffset = 0;
+
+    for (int i = 0; i < r.ringCount; i++) {
+      final vc = r.ringVertexCounts[i];
+      final type = MergeRingType.fromInt(r.ringTypes[i]);
+      final points = <LatLng>[];
+      for (int j = 0; j < vc; j++) {
+        final lat = r.ringData[dataOffset++];
+        final lon = r.ringData[dataOffset++];
+        points.add(LatLng(lat, lon));
+      }
+      rings.add(MergeRing(points: points, type: type));
+    }
+
+    return MergeFieldResult(
+      rings: rings,
+      isMultipart: r.isMultipart != 0,
+    );
+  }
+}

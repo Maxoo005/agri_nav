@@ -33,8 +33,8 @@ class TerytSearchSheet extends StatefulWidget {
 }
 
 class _TerytSearchSheetState extends State<TerytSearchSheet> {
-  final _ctrl   = TextEditingController();
-  bool  _loading = false;
+  final _ctrl = TextEditingController();
+  bool _loading = false;
   String? _error;
 
   @override
@@ -47,7 +47,10 @@ class _TerytSearchSheetState extends State<TerytSearchSheet> {
     final id = _ctrl.text.trim();
     if (id.isEmpty) return;
 
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
 
     try {
       final field = await GeoportalService.instance.fetchAndCacheByTeryt(id);
@@ -80,7 +83,8 @@ class _TerytSearchSheetState extends State<TerytSearchSheet> {
             // ── Uchwyt ─────────────────────────────────────────────────────
             Center(
               child: Container(
-                width: 40, height: 4,
+                width: 40,
+                height: 4,
                 decoration: BoxDecoration(
                   color: Colors.white24,
                   borderRadius: BorderRadius.circular(2),
@@ -133,7 +137,8 @@ class _TerytSearchSheetState extends State<TerytSearchSheet> {
                     ? const Padding(
                         padding: EdgeInsets.all(12),
                         child: SizedBox(
-                          width: 20, height: 20,
+                          width: 20,
+                          height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
                             color: Colors.greenAccent,
@@ -216,7 +221,7 @@ class NudgePanel extends StatelessWidget {
     required this.onClose,
   });
 
-  final FieldModel  field;
+  final FieldModel field;
   final void Function(double dx, double dy) onNudge;
   final VoidCallback onReset;
   final VoidCallback onClose;
@@ -247,7 +252,8 @@ class NudgePanel extends StatelessWidget {
               const Text(
                 'Korekta granicy',
                 style: TextStyle(
-                  color: Colors.white, fontSize: 13,
+                  color: Colors.white,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -282,7 +288,8 @@ class NudgePanel extends StatelessWidget {
               GestureDetector(
                 onTap: onReset,
                 child: Container(
-                  width: 34, height: 34,
+                  width: 34,
+                  height: 34,
                   decoration: BoxDecoration(
                     color: Colors.white12,
                     borderRadius: BorderRadius.circular(8),
@@ -311,7 +318,7 @@ class NudgePanel extends StatelessWidget {
 class _NudgeButton extends StatelessWidget {
   const _NudgeButton({required this.icon, required this.onTap});
 
-  final IconData     icon;
+  final IconData icon;
   final VoidCallback onTap;
 
   @override
@@ -320,7 +327,8 @@ class _NudgeButton extends StatelessWidget {
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.all(2),
-        width: 38, height: 38,
+        width: 38,
+        height: 38,
         decoration: BoxDecoration(
           color: Colors.white10,
           borderRadius: BorderRadius.circular(8),

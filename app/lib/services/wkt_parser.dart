@@ -37,8 +37,10 @@ class WktParser {
     // Zbierz wszystkie pierścienie i zwróć ten z największą liczbą punktów
     // (zwykle zewnętrzna granica największej działki składowej).
     final ringPat = RegExp(r'\(([^()]+)\)');
-    final rings = ringPat.allMatches(wkt).map((m) => _parseRing(m.group(1)!)).toList();
-    if (rings.isEmpty) throw FormatException('MULTIPOLYGON bez pierścieni: $wkt');
+    final rings =
+        ringPat.allMatches(wkt).map((m) => _parseRing(m.group(1)!)).toList();
+    if (rings.isEmpty)
+      throw FormatException('MULTIPOLYGON bez pierścieni: $wkt');
     rings.sort((a, b) => b.length.compareTo(a.length));
     return rings.first;
   }

@@ -22,6 +22,10 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 | Snap-to-nearest-swath (SwathGuidance, thread-safe) | ✅ |
 | Section Control — detekcja zakrycia i nakładki | ✅ |
 | Ślad GPS trasy uprawowej (CoverageService, Hive) | ✅ |
+| Integracja z ULDK/GUGiK — pobieranie granic działek po nr TERYT | ✅ |
+| Parser WKT (POLYGON / MULTIPOLYGON, EPSG:4326) | ✅ |
+| Scalanie działek katastralnych (C++ Clipper2 Union + ENU buffer) | ✅ |
+| Kreator pola geodezyjnego (multi-step: ULDK → scalenie → Hive) | ✅ |
 
 ---
 
@@ -34,20 +38,24 @@ agri_nav/
 │   ├── include/
 │   │   ├── GnssProcessor.h     # Interfejs GNSS (abstract), struct GnssPosition
 │   │   ├── GnssSimulator.h     # Symulator toru kołowego (wątek C++, NMEA $GPGGA)
-│   │   ├── NavEngine.h         # Silnik prowadzenia po linii AB
+│   │   │   ├── NavEngine.h         # Silnik prowadzenia po linii AB
 │   │   ├── SwathPlanner.h      # Planowanie ścieżek z uwornicami (headland rings)
 │   │   ├── SwathGuidance.h     # Snap-to-nearest-swath (thread-safe, ENU pre-filter)
-│   │   └── SectionControl.h    # Grid pokrycia pola + detekcja nakładki
+│   │   ├── SectionControl.h    # Grid pokrycia pola + detekcja nakładki
+│   │   └── ParcelMerger.h      # Union działek (Clipper2): ENU buffer → boolean → WGS-84
 │   └── src/
 │       ├── GnssSimulator.cpp   # Tor kołowy, NMEA $GPGGA, callback + polling API
 │       ├── NavEngine.cpp       # Cross-track ENU (WGS-84 → metry, formuła 2D)
 │       ├── SwathPlanner.cpp    # Algorytm + uwornice, nakładka, pełne planowanie
 │       ├── SwathGuidance.cpp   # Cylinder spatial pre-filter, punkt-do-odcinka
-│       └── SectionControl.cpp  # Unordered_set<int64_t> jako haszowane komórki siatki
+│       ├── SectionControl.cpp  # Unordered_set<int64_t> jako haszowane komórki siatki
+│       └── ParcelMerger.cpp    # Clipper2 Union: centroida ENU, outward buffer, ring class.
 ├── bridge/
 │   ├── agri_nav_ffi.h          # Publiczne C API (brak wyjątków, POD-only)
 │   └── agri_nav_ffi.cpp        # NavContext, SimContext, SwathPlanner, SwathGuidance,
-│                               #   SectionControl — pełna implementacja FFI
+│                               #   SectionControl, ParcelMerger — pełna implementacja FFI
+├── third_party/
+│   └── clipper2/               # Clipper2 1.4.0 — vendored (bez FetchContent)
 └── app/                        # Flutter
     ├── pubspec.yaml
     └── lib/
@@ -55,7 +63,7 @@ agri_nav/
         ├── ffi/
         │   └── nav_bridge.dart # Dart: NavBridge, GnssSimulatorBridge,
         │                       #   SwathPlannerBridge, SwathGuidanceBridge,
-        │                       #   SectionControlBridge
+        │                       #   SectionControlBridge, ParcelMergerBridge
         ├── offline/
         │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
         │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
@@ -63,10 +71,14 @@ agri_nav/
         │   └── field_model.dart          # FieldModel: granica, linia AB, szerokość robocza
         ├── services/
         │   ├── field_service.dart        # Hive CRUD: save/get/delete pól uprawowych
-        │   └── coverage_service.dart     # Hive: zapis/odczyt śladu GPS, bufor + flush
+        │   ├── coverage_service.dart     # Hive: zapis/odczyt śladu GPS, bufor + flush
+        │   ├── geoportal_service.dart    # ULDK/GUGiK: fetch wg XY / TERYT, nudge
+        │   └── wkt_parser.dart          # WKT → List<LatLng> (POLYGON + MULTIPOLYGON)
         └── ui/
-            ├── map_view.dart   # Główny ekran: mapa, AB, swaths, ciągnik, snap-guidance
-            └── field_manager_screen.dart  # Ekran listy i zarządzania polami
+            ├── map_view.dart            # Główny ekran: mapa, AB, swaths, ciągnik, snap-guidance
+            ├── field_manager_screen.dart # Ekran listy i zarządzania polami
+            ├── field_builder_screen.dart # Kreator pola: ULDK → scalenie → zapis
+            └── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
 ```
 
 ---
@@ -75,9 +87,10 @@ agri_nav/
 
 | Warstwa | Technologia | Odpowiedzialność |
 |---|---|---|
-| `core` | C++17, CMake 3.21 | GNSS, ENU cross-track, swath + headland, snap-guidance, coverage grid |
+| `core` | C++17, CMake 3.21 | GNSS, ENU cross-track, swath + headland, snap-guidance, coverage grid, parcel union |
 | `bridge` | C ABI | Czyste C API eksponowane przez `dart:ffi` (malloc/free, brak C++) |
-| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, offline cache, zapis śladu GPS |
+| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, offline cache, zapis śladu GPS, kreator pola ULDK |
+| `third_party` | Clipper2 1.4.0 (vendored) | Operacje boolowskie na wielokątach 2D (Union, Buffer) |
 
 ---
 
@@ -112,6 +125,15 @@ Siatka kwadratowych komórek (domyślnie 1 m²) zakodowana jako `unordered_set<i
 `addStrip()` wyznacza rzut prostokąta narzędzia → klucze komórek → wstawia nowe.  
 `checkOverlap()` — identyczna geometria, bez modyfikacji zbioru.  
 `coveredAreaHa()` = liczba unikalnych komórek × $w^2$ / 10 000.
+
+### Parcel Merger (`ParcelMerger.cpp`)
+Scala wiele wielokątów działkowych (WGS-84) w jeden obrys pola:
+1. Centroida wszystkich wierzchołków → lokalna ramka ENU [m].
+2. Outward buffer `+bufferM` (domyślnie 5 cm) — eliminacja mikroszczelin między działkami.
+3. **Union Boolean** (Clipper2, `FillRule::NonZero`).
+4. Konwersja wyniku ENU → WGS-84.
+5. Klasyfikacja pierścieni: CCW = `OuterPrimary/OuterSecondary`, CW = `HolePrimary/HoleSecondary`.
+6. Wykrywanie pola wieloczęściowego (`isMultipart = true` gdy wiele outer rings).
 
 ---
 
@@ -167,6 +189,13 @@ float         agrinav_section_add_strip(SectionHandle, double lat, double lon,
                   float heading_deg, double tool_width_m);
 double        agrinav_section_covered_ha(SectionHandle);
 void          agrinav_section_clear(SectionHandle);
+
+// Scalanie działek katastralnych (Clipper2 Union)
+FfiMergeResult* agrinav_merge_parcels(
+    const double* polygons, const int32_t* sizes, int32_t parcel_count,
+    double buffer_m     // outward buffer [m], np. 0.05
+);
+void agrinav_free_merge(FfiMergeResult*);
 ```
 
 ---
@@ -180,7 +209,39 @@ latlong2: ^0.9.0
 ffi: ^2.1.0
 connectivity_plus: ^6.0.0
 hive_flutter: ^1.1.0               # Persystencja pól i śladu GPS
+http: ^1.2.0                       # Zapytania REST do ULDK/GUGiK
+uuid: ^4.4.0                       # Unikalne ID pól i działek
 ```
+
+---
+
+## GeoportalService (`app/lib/services/geoportal_service.dart`)
+
+Serwis integrujący API **ULDK (GUGiK)** z lokalnym magazynem Hive.
+
+| Metoda | Opis |
+|---|---|
+| `fetchAndCacheParcel(lat, lon)` | Pobiera działkę wg XY (WGS-84) i zapisuje w Hive |
+| `fetchAndCacheByTeryt(teryt)` | Pobiera działkę wg numeru ewidencyjnego (TERYT) |
+| `fetchParcelsMulti(ids)` | Pobiera wiele działek współbieżnie → `ParcelFetchResult` |
+| `nudgeField(id, dx, dy)` | Przesuwa granicę działki o dx/dy [m] (korekta offsetu) |
+| `resetNudge(id)` | Zeruje przesunięcie działki |
+
+Wyjątki: `NoNetworkException` (brak sieci), `ULDKException` (błąd serwera).
+
+---
+
+## FieldBuilderScreen (`app/lib/ui/field_builder_screen.dart`)
+
+Kreator pola geodezyjnego — przepływ wieloetapowy:
+
+| Krok | Opis |
+|---|---|
+| **1. Input** | Wpisz prefiks obrębu i numery działek (po jednym na linię) |
+| **2. Fetching** | Współbieżne pobieranie geometrii z ULDK (`fetchParcelsMulti`) |
+| **3. Preview** | Lista pobranych działek z możliwością usunięcia błędnych |
+| **4. Merging** | `ParcelMergerBridge.merge()` → C++ Clipper2 Union w izolate |
+| **5. Done** | Wpisz nazwę pola → zapis do Hive → powrót z `FieldModel` |
 
 ---
 
@@ -222,4 +283,5 @@ CMake jest uruchamiane automatycznie przez Gradle — nie trzeba własnoręcznie
 | Przycisk `grid` | Generuje ścieżki uprawowe (3 m) |
 | Przycisk `gps_fixed` | Włącza/wyłącza śledzenie ciągnika |
 | Przycisk satelita | Pobieranie map offline |
+| Przycisk `add_location` | Otwiera kreator pola geodezyjnego (ULDK) |
 | Snap-guidance HUD | Wyświetla odległość i kierunek do nearest swath |
