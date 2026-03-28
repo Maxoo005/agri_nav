@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'package:ffi/ffi.dart';
 import 'package:latlong2/latlong.dart';
@@ -293,7 +294,7 @@ class GnssSimulatorBridge {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SwathPlanner — bindingi do agrinav_plan_swaths / agrinav_free_swaths
+// SwathPlanner — bindingi do agrinav_plan_full / agrinav_free_plan
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Jeden przejazd uprawowy (odcinek start → end).
@@ -308,87 +309,6 @@ class Swath {
   final double startLon;
   final double endLat;
   final double endLon;
-}
-
-// Natywna struktura FfiSwathList:
-//   double* data          — wskaźnik na dane
-//   int32_t swath_count   — liczba swath'ów
-final class FfiSwathList extends Struct {
-  external Pointer<Double> data;
-  @Int32()
-  external int swathCount;
-}
-
-typedef _PlanSwathsNative = Pointer<FfiSwathList> Function(
-    Pointer<Double>, Int32, Double, Double, Double, Double, Double);
-typedef _FreeSwathsNative = Void Function(Pointer<FfiSwathList>);
-
-/// Singleton opakowujący C++ SwathPlanner przez FFI.
-class SwathPlannerBridge {
-  SwathPlannerBridge._() {
-    final lib = DynamicLibrary.open(
-      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
-    );
-
-    _planSwaths = lib.lookupFunction<
-        _PlanSwathsNative,
-        Pointer<FfiSwathList> Function(
-            Pointer<Double>, int, double, double, double, double, double)>(
-      'agrinav_plan_swaths',
-    );
-    _freeSwaths = lib.lookupFunction<_FreeSwathsNative,
-        void Function(Pointer<FfiSwathList>)>(
-      'agrinav_free_swaths',
-    );
-  }
-
-  static final instance = SwathPlannerBridge._();
-
-  late final Pointer<FfiSwathList> Function(
-      Pointer<Double>, int, double, double, double, double, double) _planSwaths;
-  late final void Function(Pointer<FfiSwathList>) _freeSwaths;
-
-  /// Generuje równoległe ścieżki uprawowe wypełniające wielokąt pola.
-  ///
-  /// [polygon]       — lista punktów granicy pola (lat/lon, ≥ 3 punkty).
-  /// [ax],[ay]       — punkt A linii AB (lat, lon).
-  /// [bx],[by]       — punkt B linii AB (lat, lon).
-  /// [workingWidthM] — szerokość robocza maszyny [m].
-  List<Swath> plan({
-    required List<(double lat, double lon)> polygon,
-    required double ax,
-    required double ay,
-    required double bx,
-    required double by,
-    required double workingWidthM,
-  }) {
-    if (polygon.length < 3) return const [];
-
-    // Zbuduj płaski bufor double [lat₀, lon₀, lat₁, lon₁, ...]
-    final buf = calloc<Double>(polygon.length * 2);
-    for (int i = 0; i < polygon.length; i++) {
-      buf[i * 2] = polygon[i].$1; // lat
-      buf[i * 2 + 1] = polygon[i].$2; // lon
-    }
-
-    final result =
-        _planSwaths(buf, polygon.length, ax, ay, bx, by, workingWidthM);
-    calloc.free(buf);
-
-    final count = result.ref.swathCount;
-    final List<Swath> swaths = List.generate(count, (i) {
-      final d = result.ref.data;
-      return Swath(
-        startLat: d[i * 4 + 0],
-        startLon: d[i * 4 + 1],
-        endLat: d[i * 4 + 2],
-        endLon: d[i * 4 + 3],
-      );
-    });
-
-    _freeSwaths(result);
-    return swaths;
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -891,5 +811,148 @@ class ParcelMergerBridge {
       rings: rings,
       isMultipart: r.isMultipart != 0,
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LpisProcessorBridge — union + simplify + buffer dla działek ARiMR (LPIS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Natywna struktura FfiLpisOptions (32 bajty, identyczna z C).
+/// Pola muszą być w tej samej kolejności i rozmiarze co w agri_nav_ffi.h.
+final class _FfiLpisOptions extends Struct {
+  @Double()
+  external double bufferM;
+  @Double()
+  external double simplifyEpsilonM;
+  @Int32()
+  external int minRingVertices;
+  @Int32()
+  external int pad; // wyrównanie
+}
+
+typedef _ProcessLpisNative = Pointer<_FfiMergeResult> Function(
+    Pointer<Double>, Pointer<Int32>, Int32, _FfiLpisOptions);
+
+/// Singleton opakowujący `agrinav_process_lpis` — skaluje geometrie LPIS
+/// przez C++ GeometryProcessor (union + simplify RDP + buffer Clipper2).
+///
+/// Wywołanie jest uruchamiane w `Isolate.run` — nie blokuje wątku UI.
+class LpisProcessorBridge {
+  LpisProcessorBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+    _processLpis = lib.lookupFunction<
+        _ProcessLpisNative,
+        Pointer<_FfiMergeResult> Function(
+            Pointer<Double>, Pointer<Int32>, int, _FfiLpisOptions)>(
+      'agrinav_process_lpis',
+    );
+    _free = lib.lookupFunction<_FreeMergeResultNative,
+        void Function(Pointer<_FfiMergeResult>)>(
+      'agrinav_free_merge_result',
+    );
+  }
+
+  static final instance = LpisProcessorBridge._();
+
+  late final Pointer<_FfiMergeResult> Function(
+      Pointer<Double>, Pointer<Int32>, int, _FfiLpisOptions) _processLpis;
+  late final void Function(Pointer<_FfiMergeResult>) _free;
+
+  /// Scala i upraszcza listę wielokątów LPIS.
+  ///
+  /// [polygons]         — działki rolne ARiMR (WGS-84).
+  /// [bufferM]          — outward buffer [m], domyślnie 2 cm.
+  /// [simplifyEpsilonM] — epsilon RDP [m], domyślnie 0.3 m.
+  ///
+  /// Uruchamia C++ w `Isolate.run` — bezpieczne do wywołania z UI async.
+  Future<MergeFieldResult> processAsync(
+    List<List<LatLng>> polygons, {
+    double bufferM = 0.02,
+    double simplifyEpsilonM = 0.3,
+  }) async {
+    if (polygons.isEmpty)
+      throw StateError('Brak działek LPIS do przetworzenia');
+
+    // Serializuj do prostych list — bezpieczne do przekazania między Isolate
+    final flatCoords = <double>[];
+    final counts = <int>[];
+    for (final poly in polygons) {
+      counts.add(poly.length);
+      for (final pt in poly) {
+        flatCoords.add(pt.latitude);
+        flatCoords.add(pt.longitude);
+      }
+    }
+
+    return Isolate.run(() {
+      return LpisProcessorBridge.instance._procesSync(
+        flatCoords,
+        counts,
+        bufferM: bufferM,
+        simplifyEpsilonM: simplifyEpsilonM,
+      );
+    });
+  }
+
+  MergeFieldResult _procesSync(
+    List<double> flatCoords,
+    List<int> counts, {
+    required double bufferM,
+    required double simplifyEpsilonM,
+  }) {
+    final polyData = calloc<Double>(flatCoords.length);
+    final vertCounts = calloc<Int32>(counts.length);
+
+    try {
+      for (int i = 0; i < flatCoords.length; i++) polyData[i] = flatCoords[i];
+      for (int i = 0; i < counts.length; i++) vertCounts[i] = counts[i];
+
+      final opts = calloc<_FfiLpisOptions>();
+      opts.ref.bufferM = bufferM;
+      opts.ref.simplifyEpsilonM = simplifyEpsilonM;
+      opts.ref.minRingVertices = 3;
+      opts.ref.pad = 0;
+      final optsVal = opts.ref;
+      calloc.free(opts);
+
+      final result = _processLpis(polyData, vertCounts, counts.length, optsVal);
+      if (result == nullptr) {
+        throw StateError('agrinav_process_lpis zwrócił NULL');
+      }
+
+      try {
+        return _parseMergeResult(result);
+      } finally {
+        _free(result);
+      }
+    } finally {
+      calloc.free(polyData);
+      calloc.free(vertCounts);
+    }
+  }
+
+  MergeFieldResult _parseMergeResult(Pointer<_FfiMergeResult> ptr) {
+    final r = ptr.ref;
+    if (r.ringCount == 0) {
+      return const MergeFieldResult(rings: [], isMultipart: false);
+    }
+
+    final rings = <MergeRing>[];
+    int dataOffset = 0;
+    for (int i = 0; i < r.ringCount; i++) {
+      final vc = r.ringVertexCounts[i];
+      final type = MergeRingType.fromInt(r.ringTypes[i]);
+      final points = <LatLng>[];
+      for (int j = 0; j < vc; j++) {
+        final lat = r.ringData[dataOffset++];
+        final lon = r.ringData[dataOffset++];
+        points.add(LatLng(lat, lon));
+      }
+      rings.add(MergeRing(points: points, type: type));
+    }
+    return MergeFieldResult(rings: rings, isMultipart: r.isMultipart != 0);
   }
 }

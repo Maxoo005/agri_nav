@@ -262,6 +262,37 @@ FfiMergeResult* agrinav_merge_parcels(
 /// Zwalnia pamięć przydzieloną przez agrinav_merge_parcels().
 void agrinav_free_merge_result(FfiMergeResult* result);
 
+// ── Przetwarzanie geometrii LPIS (ARiMR) — union + simplify + buffer ─────────
+
+/// Opcje przetwarzania geometrii LPIS.
+/// Przekazywane jako struct by value (packed: bez paddingu inter-field na 64-bit).
+typedef struct {
+    double  buffer_m;           ///< Outward buffer [m] (np. 0.02 = 2 cm)
+    double  simplify_epsilon_m; ///< Epsilon uproszczenia RDP [m] (0 = brak)
+    int32_t min_ring_vertices;  ///< Min. wierzchołków pierścienia (domyślnie 3)
+    int32_t _pad;               ///< Wyrównanie do 8 bajtów — zawsze 0
+} FfiLpisOptions;
+
+/// Scala, upraszcza i buforuje wielokąty LPIS pobranych z ARiMR.
+///
+/// Używa GeometryProcessor::processLpis() z Clipper2:
+///   1. Outward buffer +buffer_m.
+///   2. Union Boolean (NonZero).
+///   3. Simplify (Ramer–Douglas–Peucker, epsilon w metrach ENU).
+///
+/// @param polygon_data   Płaski bufor par (lat,lon) dla wszystkich wielokątów.
+/// @param vertex_counts  Liczba wierzchołków każdego wielokąta.
+/// @param polygon_count  Liczba wielokątów wejściowych.
+/// @param opts           Opcje przetwarzania (pass by value).
+/// @return               Wskaźnik na FfiMergeResult; zwolnij przez
+///                       agrinav_free_merge_result(). Nigdy NULL.
+FfiMergeResult* agrinav_process_lpis(
+    const double*      polygon_data,
+    const int32_t*     vertex_counts,
+    int32_t            polygon_count,
+    FfiLpisOptions     opts
+);
+
 #ifdef __cplusplus
 }
 #endif

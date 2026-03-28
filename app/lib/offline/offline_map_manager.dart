@@ -5,13 +5,35 @@ import 'package:latlong2/latlong.dart';
 /// Nazwa magazynu FMTC używana w całej aplikacji.
 const String kTileStore = 'osmTiles';
 
-/// URL satelitarny Esri World Imagery — wysoka rozdzielczość, brak klucza API.
-/// UWAGA: Esri używa kolejności {z}/{y}/{x} (nie {z}/{x}/{y} jak OSM).
-const String kSatUrl =
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+/// URL OpenStreetMap — globalny podkład wektorowy, poprawnie wyrównany z GUGiK.
+const String kSatUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const String kOsmUrl = kSatUrl;
 
-/// URL OSM — zachowany jako fallback / do pobierania przez FMTC.
-const String kOsmUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+/// URL bazowy serwisu WMS — Ortofotomapa HighResolution GUGiK (Polska).
+///
+/// GetCapabilities:
+///   $kGeoportalWmsUrl?SERVICE=WMS&REQUEST=GetCapabilities
+/// Pokrycie: obszar Polski (≈ lat 49–55, lon 14–24.5).
+/// Obsługiwane CRS: EPSG:4326, EPSG:3857, EPSG:2178–2183, EPSG:2180.
+const String kGeoportalWmsUrl =
+    'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution';
+
+/// Osobny magazyn FMTC dla kafelków Geoportal (nie miesza z OSM).
+const String kGeoportalTileStore = 'geoportalTiles';
+
+/// Tryby podkładu mapowego dostępne w MapView.
+enum MapLayerMode {
+  /// OpenStreetMap — globalny podkład wektorowy, offline-first (FMTC).
+  satellite,
+
+  /// Ortofotomapa Geoportal GUGiK — Polska, WMS EPSG:4326.
+  /// Najlepsza zgodność przestrzenna z granicami ARiMR (ten sam dostawca danych).
+  geoportal,
+
+  /// Tryb ciemny — brak podkładu, tylko geometrie pól i ścieżek.
+  /// Idealny do pracy nocą lub przy słabym akumulatorze.
+  dark,
+}
 
 /// Zarządza pobieraniem i usuwaniem kafelków offline dla FMTC.
 class OfflineMapManager {

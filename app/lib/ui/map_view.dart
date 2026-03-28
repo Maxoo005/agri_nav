@@ -13,9 +13,12 @@ import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
+import '../models/arimr_parcel.dart';
+import '../services/arimr_service.dart';
 import '../services/geoportal_service.dart';
+import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
-import 'field_builder_screen.dart';
+
 import 'field_manager_screen.dart';
 import 'work_mode_view.dart';
 
@@ -45,7 +48,6 @@ class _MapViewState extends State<MapView> {
 
   // ── Granice pola (PolygonLayer — gotowe do podpięcia) ───────────────────────
   final List<LatLng> _fieldBoundary = [];
-  bool _recordingBoundary = false;
 
   // ── Wygenerowane ścieżki uprawowe ────────────────────────────────────
   List<Swath> _swaths = [];
@@ -57,10 +59,7 @@ class _MapViewState extends State<MapView> {
   // ── Nagrywanie pokrycia ──────────────────────────────────────────────────────
   bool _trackingCoverage = false;
   double _coveredHa = 0.0;
-  double _speedKmh = 0.0;
-  double _overlapFraction = 0.0;
   List<LatLng> _savedTrack = [];
-  DateTime? _prevTime;
 
   // ── Parametry generowania ścieżek ───────────────────────────────────────────
   double _overlapM = 0.0; // zakładka [m]
@@ -73,11 +72,20 @@ class _MapViewState extends State<MapView> {
   /// Czy użytkownik aktywnie rysuje granicę palcem.
   bool _drawingMode = false;
 
-  // ── Warstwa katastralna WMS ──────────────────────────────────────────────────
-  bool _cadastralLayerVisible = false;
+  // ── Warstwa LPIS ARiMR ──────────────────────────────────────────────────────
+  bool _arimrLayerVisible = false;
+  List<ArimrParcel> _arimrParcels = [];
 
   // ── Korekta przesunięcia (Nudge) ─────────────────────────────────────────────
   bool _nudgePanelVisible = false;
+
+  // ── Manual Offset — kalibracja warstwy LPIS względem satelity (stopnie) ─────
+  double _parcelLatOffset = 0;
+  double _parcelLonOffset = 0;
+  bool _offsetPanelVisible = false;
+
+  // ── Tryb podkładu mapowego ────────────────────────────────────────────────────
+  MapLayerMode _mapMode = MapLayerMode.geoportal;
 
   // ── Zapisane pola (Hive) ────────────────────────────────────────────
   List<FieldModel> _savedFields = [];
@@ -112,27 +120,14 @@ class _MapViewState extends State<MapView> {
     if (!mounted) return;
 
     final newPos = LatLng(pos.latitude, pos.longitude);
-    final now = DateTime.now();
 
     // Kurs obliczany z kolejnych pozycji GPS
     double heading = _tractorHeading;
-    double speedKmh = _speedKmh;
     if (_prevPos != null) {
       final dlat = (newPos.latitude - _prevPos!.latitude).abs();
       final dlon = (newPos.longitude - _prevPos!.longitude).abs();
       if (dlat + dlon > 1e-7) {
         heading = _bearing(_prevPos!, newPos);
-      }
-      // Prędkość z delty pozycji i czasu
-      if (_prevTime != null) {
-        final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
-        if (dt > 0.01) {
-          final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
-          final de =
-              (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
-          final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
-          speedKmh = math.sqrt(de * de + dn * dn) / dt * 3.6;
-        }
       }
     }
 
@@ -152,12 +147,11 @@ class _MapViewState extends State<MapView> {
     }
 
     // Coverage tracking + section control
-    double overlapFraction = _overlapFraction;
     double coveredHa = _coveredHa;
     if (_trackingCoverage) {
       CoverageService.instance.addPoint(newPos);
       if (_activeField != null) {
-        overlapFraction = SectionControlBridge.instance.addStrip(
+        SectionControlBridge.instance.addStrip(
           pos.latitude,
           pos.longitude,
           heading,
@@ -173,13 +167,10 @@ class _MapViewState extends State<MapView> {
       _crossTrack = result.crossTrack;
       _guidanceValid = result.valid;
       _snapInfo = snapInfo;
-      _speedKmh = speedKmh;
-      _overlapFraction = overlapFraction;
       _coveredHa = coveredHa;
     });
 
     _prevPos = newPos;
-    _prevTime = now;
 
     // Przesuń mapę za ciągnikiem (jeśli tryb follow aktywny)
     if (_followTractor) {
@@ -239,9 +230,7 @@ class _MapViewState extends State<MapView> {
         _headlandRings = [];
         _snapInfo = SnapInfo.none;
         _activeField = null;
-        _recordingBoundary = true;
       } else {
-        _recordingBoundary = false;
         if (_fieldBoundary.length >= 3) {
           _swathAngleDeg = _minPassesAngle(_fieldBoundary);
           WidgetsBinding.instance
@@ -381,7 +370,6 @@ class _MapViewState extends State<MapView> {
       _swathAngleDeg = _minPassesAngle(field.boundary);
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
-      _overlapFraction = 0.0;
       if (field.lineA != null) _pointA = field.lineA;
       if (field.lineB != null) _pointB = field.lineB;
     });
@@ -393,7 +381,18 @@ class _MapViewState extends State<MapView> {
         _pointB!.longitude,
       );
     }
-    _mapController.move(field.center, 16);
+    // Dopasuj kamerę do granic pola z marginesem 40px
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (field.boundary.length >= 2) {
+        final bounds = LatLngBounds.fromPoints(field.boundary);
+        _mapController.fitCamera(
+          CameraFit.bounds(
+            bounds: bounds,
+            padding: const EdgeInsets.all(40),
+          ),
+        );
+      }
+    });
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -726,7 +725,6 @@ class _MapViewState extends State<MapView> {
     setState(() {
       _savedTrack = [];
       _coveredHa = 0.0;
-      _overlapFraction = 0.0;
     });
   }
 
@@ -740,6 +738,63 @@ class _MapViewState extends State<MapView> {
       return ((_activeField?.workingWidthM ?? 3.0) / mpp).clamp(2.0, 60.0);
     } catch (_) {
       return 10.0;
+    }
+  }
+
+  // ── Warstwa podkładowa ────────────────────────────────────────────────────────
+
+  /// Buduje warstwę podkładową na podstawie [_mapMode].
+  ///
+  /// Optymalizacje płynności:
+  ///   • [keepBuffer] = 4   — buforuje kafelki otaczające viewport;
+  ///                          eliminuje migotanie przy szybkim pan/zoom.
+  ///   • [maxNativeZoom]     — zatrzymuje fetch powyżej natywnej rozdzielczości;
+  ///                          przy wyższych zoomach kafelki są skalowane lokalnie.
+  ///   • WMS [Epsg4326]      — żądania w EPSG:4326 (lon/lat); flutter_map
+  ///                          przelicza bbox każdego kafelka z Mercatora na
+  ///                          WGS-84 i przekazuje do serwera WMS jako SRS.
+  Widget _buildBaseLayer() {
+    switch (_mapMode) {
+      case MapLayerMode.satellite:
+        return TileLayer(
+          urlTemplate: kSatUrl,
+          userAgentPackageName: 'com.example.agri_nav',
+          keepBuffer: 4,
+          maxNativeZoom: 19,
+          tileProvider: FMTCStore(kTileStore).getTileProvider(
+            settings: FMTCTileProviderSettings(
+              behavior: CacheBehavior.cacheFirst,
+            ),
+          ),
+        );
+
+      case MapLayerMode.geoportal:
+        // WMS Geoportal GUGiK — Ortofotomapa HighResolution.
+        // Warstwa 'Raster' = zdjęcia lotnicze w najwyższej dostępnej rozdzielczości.
+        // WMS 1.1.1 + SRS=EPSG:4326: bbox w kolejności lon_min,lat_min,lon_max,lat_max
+        // (oś X = Longitude, oś Y = Latitude — zgodne z OGC WMS 1.1.x).
+        return TileLayer(
+          wmsOptions: WMSTileLayerOptions(
+            baseUrl: kGeoportalWmsUrl,
+            layers: const ['Raster'],
+            format: 'image/png',
+            transparent: false, // ortofoto jest nieprzezroczyste
+            version: '1.1.1',
+            crs: const Epsg4326(), // wymusza SRS=EPSG:4326 w żądaniu WMS
+          ),
+          userAgentPackageName: 'com.example.agri_nav',
+          keepBuffer: 4,
+          maxNativeZoom: 18, // Geoportal ortofoto ~ 25 cm/piksel ≈ zoom 18-19
+          tileProvider: FMTCStore(kGeoportalTileStore).getTileProvider(
+            settings: FMTCTileProviderSettings(
+              behavior: CacheBehavior.cacheFirst,
+            ),
+          ),
+        );
+
+      case MapLayerMode.dark:
+        // Brak podkładu — geometrie widoczne na ciemnym tle Scaffold.
+        return const SizedBox.shrink();
     }
   }
 
@@ -797,42 +852,33 @@ class _MapViewState extends State<MapView> {
               onTap: (_, latLng) {
                 if (!_drawingMode) setState(() => _followTractor = false);
               },
-              onLongPress: (_, latLng) {
-                if (!_drawingMode && _recordingBoundary) {
-                  setState(() => _fieldBoundary.add(latLng));
-                }
-              },
             ),
             children: [
-              // ── Podkład satelitarny Esri (offline-first przez FMTC) ──────────
-              TileLayer(
-                urlTemplate: kSatUrl,
-                userAgentPackageName: 'com.example.agri_nav',
-                tileProvider: const FMTCStore(kTileStore).getTileProvider(
-                  settings: FMTCTileProviderSettings(
-                    behavior: CacheBehavior.cacheFirst,
-                  ),
-                ),
-              ),
+              // ── Warstwa podkładowa (tryb wybierany przez FAB) ──────────────
+              _buildBaseLayer(),
 
-              // ── Opcjonalna warstwa katastralna WMS (działki GUGiK) ──────────
-              if (_cadastralLayerVisible)
-                Opacity(
-                  opacity: 0.70,
-                  child: TileLayer(
-                    wmsOptions: WMSTileLayerOptions(
-                      baseUrl:
-                          'https://mapy.geoportal.gov.pl/wss/service/PZGIK/'
-                          'Parcel/WMS/ParcelOrder?',
-                      layers: const ['dzialki', 'numery_dzialek'],
-                      format: 'image/png',
-                      transparent: true,
-                      version: '1.3.0',
-                    ),
-                    userAgentPackageName: 'com.example.agri_nav',
-                    tileSize: 512,
-                    maxNativeZoom: 19,
-                  ),
+              // ── Warstwa LPIS ARiMR (zielone półprzezroczyste) ─────────────
+              // Wyświetlaj parcele które NIE są aktywnym polem (brak duplikatu warstw)
+              if (_arimrLayerVisible && _arimrParcels.isNotEmpty)
+                PolygonLayer(
+                  polygons: _arimrParcels
+                      .where((p) =>
+                          p.boundary.length >= 3 &&
+                          (_activeField == null ||
+                              !_activeField!.arimrParcelIds
+                                  .contains(p.objectId)))
+                      .map((p) => Polygon(
+                            points: p.boundary
+                                .map((ll) => LatLng(
+                                      ll.latitude + _parcelLatOffset,
+                                      ll.longitude + _parcelLonOffset,
+                                    ))
+                                .toList(),
+                            color: Colors.green.withValues(alpha: 0.18),
+                            borderColor: Colors.greenAccent,
+                            borderStrokeWidth: 1.5,
+                          ))
+                      .toList(),
                 ),
 
               // ── Wszystkie zapisane pola (szare) ─────────────────────────────
@@ -857,10 +903,9 @@ class _MapViewState extends State<MapView> {
                   polygons: [
                     Polygon(
                       points: _fieldBoundary,
-                      color: Colors.yellow.withOpacity(0.12),
-                      borderColor:
-                          _drawingMode ? Colors.orange : Colors.yellowAccent,
-                      borderStrokeWidth: 2.0,
+                      color: Colors.yellow.withValues(alpha: 0.22),
+                      borderColor: _drawingMode ? Colors.orange : Colors.yellow,
+                      borderStrokeWidth: 3.0,
                     ),
                   ],
                 ),
@@ -958,6 +1003,26 @@ class _MapViewState extends State<MapView> {
               ),
             ),
 
+          // ── Manual Offset — kalibracja warstwy LPIS względem satelity ────────
+          if (_offsetPanelVisible && _arimrLayerVisible)
+            Positioned(
+              left: 12,
+              bottom: 220,
+              child: _ManualOffsetPanel(
+                latOffset: _parcelLatOffset,
+                lonOffset: _parcelLonOffset,
+                onNudge: (dLat, dLon) => setState(() {
+                  _parcelLatOffset += dLat;
+                  _parcelLonOffset += dLon;
+                }),
+                onReset: () => setState(() {
+                  _parcelLatOffset = 0;
+                  _parcelLonOffset = 0;
+                }),
+                onClose: () => setState(() => _offsetPanelVisible = false),
+              ),
+            ),
+
           // ── DrawingMode overlay ──────────────────────────────────────────────
           if (_drawingMode)
             Positioned.fill(
@@ -1027,74 +1092,110 @@ class _MapViewState extends State<MapView> {
                       const SizedBox(height: 8),
                     ],
 
-                    // ── Warstwa katastralna WMS ────────────────────────────────
+                    // ── Warstwa LPIS ARiMR ───────────────────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'cadastral',
-                      tooltip: _cadastralLayerVisible
-                          ? 'Ukryj warstwę katastralną'
-                          : 'Pokaż działki GUGiK',
-                      backgroundColor: _cadastralLayerVisible
-                          ? Colors.blue[700]
+                      heroTag: 'arimrLayer',
+                      tooltip: _arimrLayerVisible
+                          ? 'Ukryj działki LPIS (ARiMR)'
+                          : 'Pokaż działki LPIS (ARiMR)',
+                      backgroundColor: _arimrLayerVisible
+                          ? Colors.green[700]
                           : const Color(0xAA000000),
-                      onPressed: () => setState(() =>
-                          _cadastralLayerVisible = !_cadastralLayerVisible),
-                      child: const Icon(
-                        Icons.map_outlined,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Kreator pola geodezyjnego ──────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'fieldBuilder',
-                      tooltip: 'Kreator Pola Geodezyjnego',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: () async {
-                        final field = await FieldBuilderScreen.open(context);
-                        if (field != null && mounted) {
-                          _loadField(field);
-                          setState(() =>
-                              _savedFields = FieldService.instance.getAll());
+                      onPressed: () {
+                        final show = !_arimrLayerVisible;
+                        if (show && _arimrParcels.isEmpty) {
+                          final cached =
+                              ArimrService.instance.getCachedParcels();
+                          if (cached.isNotEmpty) {
+                            setState(() {
+                              _arimrParcels = cached;
+                              _arimrLayerVisible = true;
+                            });
+                            return;
+                          }
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                  'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
+                              backgroundColor: Colors.orange,
+                              duration: Duration(seconds: 3),
+                            ),
+                          );
+                          return;
                         }
+                        setState(() => _arimrLayerVisible = show);
                       },
                       child: const Icon(
-                        Icons.dashboard_customize_rounded,
+                        Icons.grass,
                         color: Colors.white,
                         size: 20,
                       ),
                     ),
                     const SizedBox(height: 8),
 
-                    // ── Szukaj po TERYT ────────────────────────────────────────────
+                    // ── Import działek ARiMR ─────────────────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'terytSearch',
-                      tooltip: 'Szukaj działki po numerze TERYT',
+                      heroTag: 'arimrImport',
+                      tooltip: 'Importuj działki LPIS z ARiMR',
                       backgroundColor: const Color(0xAA000000),
-                      onPressed: () => TerytSearchSheet.show(
-                        context,
-                        onFieldFetched: (field) {
-                          // Załaduj jako aktywne + fitCamera
+                      onPressed: () async {
+                        final bounds = _mapController.camera.visibleBounds;
+                        final field = await ArimrImportSheet.show(
+                          context,
+                          mapBounds: bounds,
+                        );
+                        if (field != null && mounted) {
                           _loadField(field);
                           setState(() {
                             _savedFields = FieldService.instance.getAll();
+                            // Załaduj nowe działki do warstwy podglądu
+                            _arimrParcels =
+                                ArimrService.instance.getCachedParcels();
+                            _arimrLayerVisible = true;
                           });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Pobrano: ${field.name}'),
-                              backgroundColor: Colors.green[700],
-                            ),
-                          );
-                        },
-                      ),
+                        }
+                      },
                       child: const Icon(
-                        Icons.search_rounded,
+                        Icons.agriculture,
                         color: Colors.white,
                         size: 20,
                       ),
                     ),
                     const SizedBox(height: 8),
+
+                    // ── Manual Offset (kalibracja LPIS względem satelity) ─────
+                    if (_arimrLayerVisible) ...[
+                      FloatingActionButton.small(
+                        heroTag: 'manualOffset',
+                        tooltip: 'Manual Offset — kalibracja warstwy LPIS',
+                        backgroundColor: _offsetPanelVisible
+                            ? Colors.teal[700]
+                            : const Color(0xAA000000),
+                        onPressed: () => setState(
+                            () => _offsetPanelVisible = !_offsetPanelVisible),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            const Icon(Icons.tune,
+                                color: Colors.white, size: 20),
+                            if (_parcelLatOffset != 0 || _parcelLonOffset != 0)
+                              Positioned(
+                                top: 0,
+                                right: 0,
+                                child: Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: const BoxDecoration(
+                                    color: Colors.orangeAccent,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
 
                     // ── Nudge (korekta offsetu działki) ──────────────────────────────
                     if (_activeField != null) ...[
@@ -1131,6 +1232,40 @@ class _MapViewState extends State<MapView> {
                       ),
                     ),
                     const SizedBox(height: 8),
+
+                    // ── Przełącznik podkładu mapowego ─────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'mapMode',
+                      tooltip: switch (_mapMode) {
+                        MapLayerMode.satellite => 'OSM → Geoportal (Polska)',
+                        MapLayerMode.geoportal =>
+                          'Geoportal (Polska) → Tryb Ciemny',
+                        MapLayerMode.dark => 'Tryb Ciemny → OSM',
+                      },
+                      backgroundColor: switch (_mapMode) {
+                        MapLayerMode.satellite => const Color(0xAA000000),
+                        MapLayerMode.geoportal => Colors.teal[700],
+                        MapLayerMode.dark => Colors.indigo[700],
+                      },
+                      onPressed: () => setState(() {
+                        _mapMode = switch (_mapMode) {
+                          MapLayerMode.satellite => MapLayerMode.geoportal,
+                          MapLayerMode.geoportal => MapLayerMode.dark,
+                          MapLayerMode.dark => MapLayerMode.satellite,
+                        };
+                      }),
+                      child: Icon(
+                        switch (_mapMode) {
+                          MapLayerMode.satellite => Icons.map,
+                          MapLayerMode.geoportal => Icons.map_outlined,
+                          MapLayerMode.dark => Icons.brightness_3,
+                        },
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
                     FloatingActionButton.small(
                       heroTag: 'offline',
                       tooltip: 'Mapy offline',
@@ -1261,10 +1396,6 @@ class _MapViewState extends State<MapView> {
               onSetB: _setPointB,
               onReset: _resetAbLine,
               snapInfo: _snapInfo.swathIndex >= 0 ? _snapInfo : null,
-              coveredHa: _coveredHa,
-              speedKmh: _speedKmh,
-              overlapFraction: _overlapFraction,
-              onClearTrack: _clearTrackWithConfirm,
             ),
           ),
         ],
@@ -1337,10 +1468,6 @@ class _NavPanel extends StatelessWidget {
     required this.onSetA,
     required this.onSetB,
     required this.onReset,
-    required this.coveredHa,
-    required this.speedKmh,
-    required this.overlapFraction,
-    required this.onClearTrack,
     this.snapInfo,
   });
 
@@ -1351,10 +1478,6 @@ class _NavPanel extends StatelessWidget {
   final VoidCallback onSetA;
   final VoidCallback onSetB;
   final VoidCallback onReset;
-  final double coveredHa;
-  final double speedKmh;
-  final double overlapFraction;
-  final VoidCallback onClearTrack;
   final SnapInfo? snapInfo;
 
   Color get _ctColor {
@@ -1427,30 +1550,6 @@ class _NavPanel extends StatelessWidget {
               fontWeight: FontWeight.bold,
               letterSpacing: 0.5,
             ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ── Statystyki pokrycia ──────────────────────────────────────────────
-          Row(
-            children: [
-              const Icon(Icons.crop_square_rounded,
-                  color: Colors.greenAccent, size: 14),
-              const SizedBox(width: 4),
-              Text(
-                '${coveredHa.toStringAsFixed(2)} ha',
-                style: const TextStyle(color: Colors.greenAccent, fontSize: 13),
-              ),
-              const SizedBox(width: 16),
-              const Icon(Icons.speed, color: Colors.white54, size: 14),
-              const SizedBox(width: 4),
-              Text(
-                '${speedKmh.toStringAsFixed(1)} km/h',
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
-              ),
-              const Spacer(),
-              _OverlapAlertBanner(overlapFraction: overlapFraction),
-            ],
           ),
 
           const SizedBox(height: 10),
@@ -1552,64 +1651,179 @@ class _AbButton extends StatelessWidget {
   }
 }
 
-// ── Baner ostrzeżenia o nakładaniu (pulsujący czerwony) ──────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Manual Offset Panel — kalibracja warstwy LPIS względem zdjęcia satelitarnego
+//
+// Przesuwa WSZYSTKIE działki LPIS o stały delta w stopniach (0.00001° ≈ 1.1 m).
+// Offset jest czysto wizualny i nie jest zapisywany do bazy.
+// ═══════════════════════════════════════════════════════════════════════════════
 
-class _OverlapAlertBanner extends StatefulWidget {
-  const _OverlapAlertBanner({required this.overlapFraction});
+class _ManualOffsetPanel extends StatelessWidget {
+  const _ManualOffsetPanel({
+    required this.latOffset,
+    required this.lonOffset,
+    required this.onNudge,
+    required this.onReset,
+    required this.onClose,
+  });
 
-  final double overlapFraction;
+  final double latOffset;
+  final double lonOffset;
+  final void Function(double dLat, double dLon) onNudge;
+  final VoidCallback onReset;
+  final VoidCallback onClose;
 
-  @override
-  State<_OverlapAlertBanner> createState() => _OverlapAlertBannerState();
-}
+  static const _step = 0.00001; // ≈ 1.1 m w kierunku N/S, ≈ 0.7 m E/W @ 52°N
 
-class _OverlapAlertBannerState extends State<_OverlapAlertBanner>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _anim;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    )..repeat(reverse: true);
-    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
+  String _fmt(double v) {
+    final steps = (v / _step).round();
+    return steps >= 0 ? '+$steps' : '$steps';
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.overlapFraction < 0.10) return const SizedBox.shrink();
-    return AnimatedBuilder(
-      animation: _anim,
-      builder: (_, __) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-        decoration: BoxDecoration(
-          color: Colors.red.withOpacity(0.50 + _anim.value * 0.40),
-          borderRadius: BorderRadius.circular(6),
+    final hasOffset = latOffset != 0 || lonOffset != 0;
+    return Container(
+      width: 130,
+      decoration: BoxDecoration(
+        color: const Color(0xEE0D1B2A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: hasOffset
+              ? Colors.orangeAccent.withOpacity(0.8)
+              : Colors.tealAccent.withOpacity(0.5),
+          width: 1,
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.warning_amber_rounded,
-                color: Colors.white, size: 14),
-            const SizedBox(width: 4),
-            Text(
-              'Nakł. ${(widget.overlapFraction * 100).toStringAsFixed(0)}%',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 12,
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 8)],
+      ),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ── Nagłówek ──────────────────────────────────────────────────────
+          Row(
+            children: [
+              const Icon(Icons.tune, color: Colors.tealAccent, size: 13),
+              const SizedBox(width: 4),
+              const Expanded(
+                child: Text(
+                  'Manual Offset',
+                  style: TextStyle(
+                    color: Colors.tealAccent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.3,
+                  ),
+                ),
               ),
+              GestureDetector(
+                onTap: onClose,
+                child: const Icon(Icons.close, color: Colors.white38, size: 15),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+
+          // ── Wyświetlanie bieżącego offsetu ────────────────────────────────
+          Text(
+            'N/S: ${_fmt(latOffset)}  E/W: ${_fmt(lonOffset)}',
+            style: TextStyle(
+              color: hasOffset ? Colors.orangeAccent : Colors.white38,
+              fontSize: 9.5,
             ),
-          ],
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+
+          // ── Strzałka Góra ─────────────────────────────────────────────────
+          _ArrowButton(
+            icon: Icons.keyboard_arrow_up_rounded,
+            tooltip: 'Przesuń N (+lat)',
+            onTap: () => onNudge(_step, 0),
+          ),
+          const SizedBox(height: 2),
+
+          // ── Rząd: Lewo | Reset | Prawo ────────────────────────────────────
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _ArrowButton(
+                icon: Icons.keyboard_arrow_left_rounded,
+                tooltip: 'Przesuń W (−lon)',
+                onTap: () => onNudge(0, -_step),
+              ),
+              const SizedBox(width: 2),
+              _ArrowButton(
+                icon: Icons.gps_fixed,
+                tooltip: 'Resetuj offset',
+                onTap: onReset,
+                color: hasOffset ? Colors.orangeAccent : Colors.white24,
+              ),
+              const SizedBox(width: 2),
+              _ArrowButton(
+                icon: Icons.keyboard_arrow_right_rounded,
+                tooltip: 'Przesuń E (+lon)',
+                onTap: () => onNudge(0, _step),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+
+          // ── Strzałka Dół ──────────────────────────────────────────────────
+          _ArrowButton(
+            icon: Icons.keyboard_arrow_down_rounded,
+            tooltip: 'Przesuń S (−lat)',
+            onTap: () => onNudge(-_step, 0),
+          ),
+
+          const SizedBox(height: 4),
+          Text(
+            '1 krok ≈ 1.1 m',
+            style: TextStyle(color: Colors.white24, fontSize: 8.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Przycisk kierunkowy dla ManualOffsetPanel ─────────────────────────────────
+
+class _ArrowButton extends StatelessWidget {
+  const _ArrowButton({
+    required this.icon,
+    required this.onTap,
+    this.tooltip = '',
+    this.color,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String tooltip;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: onTap,
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              border: Border.all(color: color ?? Colors.white24),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(
+              icon,
+              color: color ?? Colors.white70,
+              size: 20,
+            ),
+          ),
         ),
       ),
     );

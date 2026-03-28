@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Zaufaj systemowym i użytkownika CA dla wszystkich połączeń (domyślne Android 7+) -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </base-config>
+
+    <!-- Jawne zaufanie dla geoportalu ARiMR -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">geoportal.arimr.gov.pl</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

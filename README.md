@@ -26,6 +26,11 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 | Parser WKT (POLYGON / MULTIPOLYGON, EPSG:4326) | ✅ |
 | Scalanie działek katastralnych (C++ Clipper2 Union + ENU buffer) | ✅ |
 | Kreator pola geodezyjnego (multi-step: ULDK → scalenie → Hive) | ✅ |
+| Integracja z ARiMR/LPIS — pobieranie upraw po obszarze lub nr gosp. | ✅ |
+| Przetwarzanie geometrii LPIS (C++ union + RDP simplify + buffer 2 cm) | ✅ |
+| Bulk import działek ARiMR — BottomSheet z kreatorem wielokrokowym | ✅ |
+| Warstwa LPIS na mapie — zielone p.-przezroczyste wielokąty | ✅ |
+| Cache offline ARiMR (Hive `arimr_lpis`) | ✅ |
 
 ---
 
@@ -42,14 +47,16 @@ agri_nav/
 │   │   ├── SwathPlanner.h      # Planowanie ścieżek z uwornicami (headland rings)
 │   │   ├── SwathGuidance.h     # Snap-to-nearest-swath (thread-safe, ENU pre-filter)
 │   │   ├── SectionControl.h    # Grid pokrycia pola + detekcja nakładki
-│   │   └── ParcelMerger.h      # Union działek (Clipper2): ENU buffer → boolean → WGS-84
+│   │   ├── ParcelMerger.h      # Union działek (Clipper2): ENU buffer → boolean → WGS-84
+│   │   └── GeometryProcessor.h # LPIS: union + RDP simplify (ε=0.3m) + buffer 2 cm
 │   └── src/
 │       ├── GnssSimulator.cpp   # Tor kołowy, NMEA $GPGGA, callback + polling API
 │       ├── NavEngine.cpp       # Cross-track ENU (WGS-84 → metry, formuła 2D)
 │       ├── SwathPlanner.cpp    # Algorytm + uwornice, nakładka, pełne planowanie
 │       ├── SwathGuidance.cpp   # Cylinder spatial pre-filter, punkt-do-odcinka
 │       ├── SectionControl.cpp  # Unordered_set<int64_t> jako haszowane komórki siatki
-│       └── ParcelMerger.cpp    # Clipper2 Union: centroida ENU, outward buffer, ring class.
+│       ├── ParcelMerger.cpp    # Clipper2 Union: centroida ENU, outward buffer, ring class.
+│       └── GeometryProcessor.cpp # LPIS: InflatePaths → Union → SimplifyPaths → WGS-84
 ├── bridge/
 │   ├── agri_nav_ffi.h          # Publiczne C API (brak wyjątków, POD-only)
 │   └── agri_nav_ffi.cpp        # NavContext, SimContext, SwathPlanner, SwathGuidance,
@@ -68,16 +75,19 @@ agri_nav/
         │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
         │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
         ├── models/
-        │   └── field_model.dart          # FieldModel: granica, linia AB, szerokość robocza
+        │   ├── field_model.dart          # FieldModel: granica, linia AB, szerokość robocza, arimrParcelIds
+        │   └── arimr_parcel.dart         # ArimrParcel: model działki LPIS z ARiMR (JSON/Hive)
         ├── services/
         │   ├── field_service.dart        # Hive CRUD: save/get/delete pól uprawowych
         │   ├── coverage_service.dart     # Hive: zapis/odczyt śladu GPS, bufor + flush
         │   ├── geoportal_service.dart    # ULDK/GUGiK: fetch wg XY / TERYT, nudge
+        │   ├── arimr_service.dart        # ARiMR ArcGIS REST: LPIS pagination, filtr, Hive cache
         │   └── wkt_parser.dart          # WKT → List<LatLng> (POLYGON + MULTIPOLYGON)
         └── ui/
             ├── map_view.dart            # Główny ekran: mapa, AB, swaths, ciągnik, snap-guidance
             ├── field_manager_screen.dart # Ekran listy i zarządzania polami
             ├── field_builder_screen.dart # Kreator pola: ULDK → scalenie → zapis
+            ├── arimr_import_sheet.dart  # Import LPIS: obszar → ARiMR → C++ → Hive
             └── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
 ```
 
@@ -87,10 +97,10 @@ agri_nav/
 
 | Warstwa | Technologia | Odpowiedzialność |
 |---|---|---|
-| `core` | C++17, CMake 3.21 | GNSS, ENU cross-track, swath + headland, snap-guidance, coverage grid, parcel union |
+| `core` | C++17, CMake 3.21 | GNSS, ENU cross-track, swath + headland, snap-guidance, coverage grid, parcel union, LPIS processing |
 | `bridge` | C ABI | Czyste C API eksponowane przez `dart:ffi` (malloc/free, brak C++) |
-| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, offline cache, zapis śladu GPS, kreator pola ULDK |
-| `third_party` | Clipper2 1.4.0 (vendored) | Operacje boolowskie na wielokątach 2D (Union, Buffer) |
+| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, offline cache, zapis śladu GPS, kreator pola ULDK, bulk import ARiMR |
+| `third_party` | Clipper2 1.4.0 (vendored) | Operacje boolowskie na wielokątach 2D (Union, Buffer, SimplifyPaths RDP) |
 
 ---
 
@@ -242,6 +252,28 @@ Kreator pola geodezyjnego — przepływ wieloetapowy:
 | **3. Preview** | Lista pobranych działek z możliwością usunięcia błędnych |
 | **4. Merging** | `ParcelMergerBridge.merge()` → C++ Clipper2 Union w izolate |
 | **5. Done** | Wpisz nazwę pola → zapis do Hive → powrót z `FieldModel` |
+
+---
+
+## ArimrService (`app/lib/services/arimr_service.dart`)
+
+Serwis integrujący **ULDK (GUGiK)** jako źródło danych LPIS (zamiast bezpośredniego ArcGIS REST ARiMR, który wymaga autoryzacji).
+
+| Metoda | Opis |
+|---|---|
+| `fetchAgriculturalParcels(bounds)` | Siatka 5×5 próbkowań XY → unikalne działki w obszarze mapy |
+| `fetchByFarmId(parcelId)` | Pobiera działkę po numerze ewidencyjnym TERYT |
+| `getCachedParcels([bounds])` | Zwraca działki z lokalnego cache Hive (bbox filter) |
+| `clearCache()` | Czyści skrzynkę Hive `arimr_lpis` |
+
+Wyjątki: `ArimrNoNetworkException` (brak sieci → fallback do cache), `ArimrServiceException` (błąd parsowania).
+
+### Android Network Security (`res/xml/network_security_config.xml`)
+
+Plik definiuje politykę TLS aplikacji:
+- ruch cleartext globalnie **wyłączony** (`usesCleartextTraffic="false"`),
+- jawne zaufanie dla `geoportal.arimr.gov.pl` (system CA + user CA),
+- odwołanie w `AndroidManifest.xml` przez `android:networkSecurityConfig`.
 
 ---
 

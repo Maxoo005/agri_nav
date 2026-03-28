@@ -23,6 +23,7 @@ add_library(agri_nav_core STATIC
     core/src/SwathGuidance.cpp
     core/src/SectionControl.cpp
     core/src/ParcelMerger.cpp
+    core/src/GeometryProcessor.cpp
 )
 target_include_directories(agri_nav_core PUBLIC core/include)
 target_link_libraries(agri_nav_core PUBLIC Clipper2::Clipper2)

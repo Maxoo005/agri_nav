@@ -1,4 +1,5 @@
 #include "agri_nav_ffi.h"
+#include "GeometryProcessor.h"
 #include "GnssSimulator.h"
 #include "NavEngine.h"
 #include "ParcelMerger.h"
@@ -411,6 +412,75 @@ void agrinav_free_merge_result(FfiMergeResult* result) {
     delete[] result->ring_vertex_counts;
     delete[] result->ring_types;
     delete result;
+}
+
+// ── Przetwarzanie geometrii LPIS (ARiMR) ─────────────────────────────────────
+
+/// Pomocnicza funkcja do budowania FfiMergeResult z MergeResult.
+static FfiMergeResult* buildFfiMergeResult(const agrinav::MergeResult& mr) {
+    auto* out = new FfiMergeResult{};
+    const int32_t rc = static_cast<int32_t>(mr.rings.size());
+    out->ring_count   = rc;
+    out->is_multipart = mr.isMultipart ? 1 : 0;
+
+    if (rc == 0) {
+        out->ring_data = nullptr; out->ring_vertex_counts = nullptr;
+        out->ring_types = nullptr;
+        return out;
+    }
+
+    size_t totalVerts = 0;
+    for (const auto& ring : mr.rings) totalVerts += ring.points.size();
+
+    out->ring_data          = new double[totalVerts * 2];
+    out->ring_vertex_counts = new int32_t[static_cast<size_t>(rc)];
+    out->ring_types         = new int32_t[static_cast<size_t>(rc)];
+
+    size_t dataOff = 0;
+    for (int32_t i = 0; i < rc; ++i) {
+        const auto& ring = mr.rings[static_cast<size_t>(i)];
+        out->ring_vertex_counts[i] = static_cast<int32_t>(ring.points.size());
+        out->ring_types[i]         = static_cast<int32_t>(ring.type);
+        for (const auto& pt : ring.points) {
+            out->ring_data[dataOff++] = pt.lat;
+            out->ring_data[dataOff++] = pt.lon;
+        }
+    }
+    return out;
+}
+
+FfiMergeResult* agrinav_process_lpis(
+    const double*      polygon_data,
+    const int32_t*     vertex_counts,
+    int32_t            polygon_count,
+    FfiLpisOptions     opts)
+{
+    std::vector<std::vector<agrinav::LatLon>> parcels;
+    parcels.reserve(static_cast<size_t>(polygon_count));
+
+    size_t offset = 0;
+    for (int32_t p = 0; p < polygon_count; ++p) {
+        const int32_t vc = vertex_counts[p];
+        std::vector<agrinav::LatLon> poly;
+        poly.reserve(static_cast<size_t>(vc));
+        for (int32_t i = 0; i < vc; ++i) {
+            poly.push_back({
+                polygon_data[offset + static_cast<size_t>(i) * 2],
+                polygon_data[offset + static_cast<size_t>(i) * 2 + 1]
+            });
+        }
+        offset += static_cast<size_t>(vc) * 2;
+        if (poly.size() >= 3) parcels.push_back(std::move(poly));
+    }
+
+    agrinav::LpisProcessOptions lpisOpts;
+    lpisOpts.bufferM          = opts.buffer_m;
+    lpisOpts.simplifyEpsilonM = opts.simplify_epsilon_m;
+    lpisOpts.minRingVertices  = opts.min_ring_vertices > 0 ? opts.min_ring_vertices : 3;
+
+    const agrinav::MergeResult mr =
+        agrinav::GeometryProcessor::processLpis(parcels, lpisOpts);
+    return buildFfiMergeResult(mr);
 }
 
 } // extern "C"

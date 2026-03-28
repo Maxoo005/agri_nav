@@ -7,6 +7,9 @@ enum FieldSource {
 
   /// Pobrane z ULDK/GUGiK.
   uldk,
+
+  /// Pobrane z rejestru LPIS (ARiMR).
+  arimr,
 }
 
 /// Model pola uprawowego przechowywany w Hive jako zwykła mapa JSON.
@@ -46,6 +49,10 @@ class FieldModel {
   /// lub pobrane jako pojedyncza działka.
   List<String> sourceParcelIds;
 
+  /// Identyfikatory działek LPIS (ARiMR OBJECTID) użytych do budowy tego pola.
+  /// Puste gdy pole pochodzi ze źródła innego niż [FieldSource.arimr].
+  List<String> arimrParcelIds;
+
   /// Źródło danych granicy.
   FieldSource source;
 
@@ -68,10 +75,12 @@ class FieldModel {
     this.terytCode,
     this.lastSyncDate,
     List<String>? sourceParcelIds,
+    List<String>? arimrParcelIds,
     this.source = FieldSource.manual,
     this.offsetLat = 0.0,
     this.offsetLon = 0.0,
-  }) : sourceParcelIds = sourceParcelIds ?? [];
+  })  : sourceParcelIds = sourceParcelIds ?? [],
+        arimrParcelIds = arimrParcelIds ?? [];
 
   // ── Wygoda ──────────────────────────────────────────────────────────────────
 
@@ -128,6 +137,7 @@ class FieldModel {
         if (lastSyncDate != null)
           'lastSyncDate': lastSyncDate!.toIso8601String(),
         if (sourceParcelIds.isNotEmpty) 'sourceParcelIds': sourceParcelIds,
+        if (arimrParcelIds.isNotEmpty) 'arimrParcelIds': arimrParcelIds,
         'source': source.name,
         'offsetLat': offsetLat,
         'offsetLon': offsetLon,
@@ -149,6 +159,7 @@ class FieldModel {
             ? DateTime.tryParse(map['lastSyncDate'] as String)
             : null,
         sourceParcelIds: (map['sourceParcelIds'] as List?)?.cast<String>(),
+        arimrParcelIds: (map['arimrParcelIds'] as List?)?.cast<String>(),
         source: FieldSource.values.firstWhere(
           (e) => e.name == (map['source'] as String?),
           orElse: () => FieldSource.manual,

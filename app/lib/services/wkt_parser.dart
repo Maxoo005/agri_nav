@@ -4,7 +4,13 @@ import 'package:latlong2/latlong.dart';
 ///   POLYGON((...))
 ///   MULTIPOLYGON(((...),(...),...))
 ///
-/// ULDK zwraca współrzędne w układzie EPSG:4326 (WGS-84, lon lat).
+/// Konwencja kolejności współrzędnych w WKT (ISO 19125 / OGC):
+///   pierwsza liczba = X = Longitude (easting)
+///   druga  liczba  = Y = Latitude  (northing)
+///
+/// Parser wymusza zakres WGS-84 (lon ∈ [−180, 180], lat ∈ [−90, 90]).
+/// Wartości spoza tego zakresu oznaczają, że serwer zwrócił dane w układzie
+/// projected (np. EPSG:2180) — należy dodać parametr `srid=4326` do żądania.
 class WktParser {
   WktParser._();
 
@@ -55,6 +61,14 @@ class WktParser {
       final lon = double.tryParse(nums[0]);
       final lat = double.tryParse(nums[1]);
       if (lon == null || lat == null) continue;
+      // Walidacja zakresu WGS-84: lon ∈ [−180, 180], lat ∈ [−90, 90].
+      // Przekroczenie oznacza, że serwer zwrócił dane w układzie projected
+      // (np. EPSG:2180, gdzie X≈500 000, Y≈5 600 000) zamiast EPSG:4326.
+      // Rozwiązanie: dodaj parametr srid=4326 / outSR=4326 do żądania.
+      if (lon.abs() > 180.0 || lat.abs() > 90.0) {
+        throw FormatException('Współrzędne ($lon, $lat) poza zakresem WGS-84 — '
+            'wymuś re-projekcję przez parametr srid=4326 w żądaniu do serwera');
+      }
       // Pomijamy punkt zamykający identyczny z pierwszym
       if (points.isNotEmpty &&
           points.last.latitude == lat &&
