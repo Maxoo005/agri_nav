@@ -23,16 +23,13 @@ const String kGeoportalTileStore = 'geoportalTiles';
 
 /// Tryby podkładu mapowego dostępne w MapView.
 enum MapLayerMode {
-  /// OpenStreetMap — globalny podkład wektorowy, offline-first (FMTC).
-  satellite,
-
-  /// Ortofotomapa Geoportal GUGiK — Polska, WMS EPSG:4326.
-  /// Najlepsza zgodność przestrzenna z granicami ARiMR (ten sam dostawca danych).
+  /// Tryb konfiguracji — Ortofotomapa Geoportal GUGiK (WMS EPSG:4326).
+  /// Umożliwia weryfikację granic ARiMR/ULDK względem rzeczywistości.
   geoportal,
 
-  /// Tryb ciemny — brak podkładu, tylko geometrie pól i ścieżek.
-  /// Idealny do pracy nocą lub przy słabym akumulatorze.
-  dark,
+  /// Tryb pracy — brak kafelków mapowych, ciemne tło #1A1A1A + siatka pomocnicza.
+  /// Oszczędza transfer danych i zasoby GPU podczas rzeczywistej pracy w polu.
+  work,
 }
 
 /// Zarządza pobieraniem i usuwaniem kafelków offline dla FMTC.

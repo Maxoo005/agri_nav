@@ -755,36 +755,22 @@ class _MapViewState extends State<MapView> {
   ///                          WGS-84 i przekazuje do serwera WMS jako SRS.
   Widget _buildBaseLayer() {
     switch (_mapMode) {
-      case MapLayerMode.satellite:
-        return TileLayer(
-          urlTemplate: kSatUrl,
-          userAgentPackageName: 'com.example.agri_nav',
-          keepBuffer: 4,
-          maxNativeZoom: 19,
-          tileProvider: FMTCStore(kTileStore).getTileProvider(
-            settings: FMTCTileProviderSettings(
-              behavior: CacheBehavior.cacheFirst,
-            ),
-          ),
-        );
-
       case MapLayerMode.geoportal:
-        // WMS Geoportal GUGiK — Ortofotomapa HighResolution.
-        // Warstwa 'Raster' = zdjęcia lotnicze w najwyższej dostępnej rozdzielczości.
+        // WMS Geoportal GUGiK — Ortofotomapa HighResolution (Tryb Konfiguracji).
+        // Warstwa 'Raster' = zdjęcia lotnicze do weryfikacji granic ARiMR.
         // WMS 1.1.1 + SRS=EPSG:4326: bbox w kolejności lon_min,lat_min,lon_max,lat_max
-        // (oś X = Longitude, oś Y = Latitude — zgodne z OGC WMS 1.1.x).
         return TileLayer(
           wmsOptions: WMSTileLayerOptions(
             baseUrl: kGeoportalWmsUrl,
             layers: const ['Raster'],
             format: 'image/png',
-            transparent: false, // ortofoto jest nieprzezroczyste
+            transparent: false,
             version: '1.1.1',
-            crs: const Epsg4326(), // wymusza SRS=EPSG:4326 w żądaniu WMS
+            crs: const Epsg4326(),
           ),
           userAgentPackageName: 'com.example.agri_nav',
           keepBuffer: 4,
-          maxNativeZoom: 18, // Geoportal ortofoto ~ 25 cm/piksel ≈ zoom 18-19
+          maxNativeZoom: 18,
           tileProvider: FMTCStore(kGeoportalTileStore).getTileProvider(
             settings: FMTCTileProviderSettings(
               behavior: CacheBehavior.cacheFirst,
@@ -792,9 +778,9 @@ class _MapViewState extends State<MapView> {
           ),
         );
 
-      case MapLayerMode.dark:
-        // Brak podkładu — geometrie widoczne na ciemnym tle Scaffold.
-        return const SizedBox.shrink();
+      case MapLayerMode.work:
+        // Tryb Pracy — brak kafelków, ciemne tło + subtelna siatka 10 m.
+        return const _WorkModeGridLayer();
     }
   }
 
@@ -840,7 +826,8 @@ class _MapViewState extends State<MapView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor:
+          _mapMode == MapLayerMode.work ? const Color(0xFF1A1A1A) : Colors.black,
       body: Stack(
         children: [
           // ── FlutterMap ──────────────────────────────────────────────────────
@@ -1233,33 +1220,24 @@ class _MapViewState extends State<MapView> {
                     ),
                     const SizedBox(height: 8),
 
-                    // ── Przełącznik podkładu mapowego ─────────────────────────
+                    // ── Przełącznik Tryb Konfiguracji / Tryb Pracy ───────────
                     FloatingActionButton.small(
                       heroTag: 'mapMode',
-                      tooltip: switch (_mapMode) {
-                        MapLayerMode.satellite => 'OSM → Geoportal (Polska)',
-                        MapLayerMode.geoportal =>
-                          'Geoportal (Polska) → Tryb Ciemny',
-                        MapLayerMode.dark => 'Tryb Ciemny → OSM',
-                      },
-                      backgroundColor: switch (_mapMode) {
-                        MapLayerMode.satellite => const Color(0xAA000000),
-                        MapLayerMode.geoportal => Colors.teal[700],
-                        MapLayerMode.dark => Colors.indigo[700],
-                      },
+                      tooltip: _mapMode == MapLayerMode.geoportal
+                          ? 'Przełącz na Tryb Pracy (brak kafelków)'
+                          : 'Przełącz na Tryb Konfiguracji (ortofoto)',
+                      backgroundColor: _mapMode == MapLayerMode.work
+                          ? const Color(0xFF1B5E20)
+                          : Colors.teal[700],
                       onPressed: () => setState(() {
-                        _mapMode = switch (_mapMode) {
-                          MapLayerMode.satellite => MapLayerMode.geoportal,
-                          MapLayerMode.geoportal => MapLayerMode.dark,
-                          MapLayerMode.dark => MapLayerMode.satellite,
-                        };
+                        _mapMode = _mapMode == MapLayerMode.geoportal
+                            ? MapLayerMode.work
+                            : MapLayerMode.geoportal;
                       }),
                       child: Icon(
-                        switch (_mapMode) {
-                          MapLayerMode.satellite => Icons.map,
-                          MapLayerMode.geoportal => Icons.map_outlined,
-                          MapLayerMode.dark => Icons.brightness_3,
-                        },
+                        _mapMode == MapLayerMode.work
+                            ? Icons.agriculture
+                            : Icons.satellite_alt,
                         color: Colors.white,
                         size: 20,
                       ),
@@ -1402,6 +1380,67 @@ class _MapViewState extends State<MapView> {
       ),
     );
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Siatka Trybu Pracy — CustomPainter renderowany zamiast warstwy kafelkowej
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Ciemne tło z delikatną ortogonalną siatką pomocniczą (co ~80 px w ekranie).
+/// Nie wymaga danych geograficznych — jest czysto "ekranowa" i niezmiennicza.
+class _WorkModeGridLayer extends StatelessWidget {
+  const _WorkModeGridLayer();
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          painter: _GridPainter(),
+        ),
+      ),
+    );
+  }
+}
+
+class _GridPainter extends CustomPainter {
+  const _GridPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Tło
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = const Color(0xFF1A1A1A),
+    );
+
+    // Siatka linii pomocniczych
+    final paint = Paint()
+      ..color = const Color(0x18FFFFFF)
+      ..strokeWidth = 0.5;
+
+    const step = 60.0; // pikseli na ekranie
+    for (double x = 0; x <= size.width; x += step) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    for (double y = 0; y <= size.height; y += step) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+
+    // Grubsze linie co 5 kroków (co ~300 px)
+    final boldPaint = Paint()
+      ..color = const Color(0x28FFFFFF)
+      ..strokeWidth = 1.0;
+    for (double x = 0; x <= size.width; x += step * 5) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), boldPaint);
+    }
+    for (double y = 0; y <= size.height; y += step * 5) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), boldPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_GridPainter old) => false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
