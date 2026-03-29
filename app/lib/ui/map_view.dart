@@ -9,10 +9,13 @@ import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
 import '../models/field_model.dart';
+import '../models/machine_model.dart';
+import '../models/work_task.dart';
 import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
+import '../services/work_task_service.dart';
 import '../models/arimr_parcel.dart';
 import '../services/arimr_service.dart';
 import '../services/geoportal_service.dart';
@@ -20,6 +23,8 @@ import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
 import 'field_manager_screen.dart';
+import 'machine_manager_screen.dart';
+import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -92,6 +97,17 @@ class _MapViewState extends State<MapView> {
 
   /// Aktywnie załadowane pole (granica + linia AB z pamięci).
   FieldModel? _activeField;
+
+  /// Aktywnie wybrana maszyna (null = brak).
+  MachineModel? _activeMachine;
+
+  /// Aktywne zadanie robocze (null = brak / tryb legacy).
+  WorkTask? _activeTask;
+
+  /// Efektywna szerokość robocza: maszyna → pole → domyślna 3 m.
+  double get _activeWorkingWidth =>
+      _activeMachine?.workingWidthM ?? _activeField?.workingWidthM ?? 3.0;
+
   LatLng? _prevPos;
 
   // ── Cykl życia ──────────────────────────────────────────────────────────────
@@ -155,7 +171,7 @@ class _MapViewState extends State<MapView> {
           pos.latitude,
           pos.longitude,
           heading,
-          _activeField!.workingWidthM,
+          _activeWorkingWidth,
         );
         coveredHa = SectionControlBridge.instance.coveredAreaHa();
       }
@@ -345,7 +361,9 @@ class _MapViewState extends State<MapView> {
   // ── Ładowanie pola z listy ─────────────────────────────────────────────────
 
   void _loadField(FieldModel field) {
-    final savedTrack = CoverageService.instance.loadForField(field.id);
+    final savedTrack = _activeTask != null
+        ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
+        : CoverageService.instance.loadForField(field.id);
 
     // Reset SectionControl to new field origin and replay saved track
     SectionControlBridge.instance
@@ -353,9 +371,9 @@ class _MapViewState extends State<MapView> {
       ..setOrigin(field.center.latitude, field.center.longitude);
 
     var coveredHa = 0.0;
+    final replayWidth = _activeTask?.effectiveWidthM ?? field.workingWidthM;
     if (savedTrack.isNotEmpty) {
-      SectionControlBridge.instance
-          .replayTrack(savedTrack, field.workingWidthM);
+      SectionControlBridge.instance.replayTrack(savedTrack, replayWidth);
       coveredHa = SectionControlBridge.instance.coveredAreaHa();
     }
 
@@ -409,7 +427,7 @@ class _MapViewState extends State<MapView> {
       return;
     }
 
-    double width = _activeField?.workingWidthM ?? 3.0;
+    double width = _activeWorkingWidth;
     double overlap = _overlapM;
     int laps = _headlandLaps;
     double angle = _swathAngleDeg;
@@ -427,13 +445,37 @@ class _MapViewState extends State<MapView> {
             children: [
               Text('Szerokość robocza: ${width.toStringAsFixed(1)} m',
                   style: const TextStyle(color: Colors.white70, fontSize: 13)),
-              Slider(
-                min: 1.0,
-                max: 36.0,
-                divisions: 70,
-                value: width,
-                activeColor: Colors.greenAccent,
-                onChanged: (v) => setDlg(() => width = v),
+              Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.remove_circle_outline,
+                        color: Colors.white70),
+                    onPressed: () => setDlg(() {
+                      width = double.parse(
+                          ((width - 0.1).clamp(1.0, 36.0)).toStringAsFixed(1));
+                    }),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      min: 1.0,
+                      max: 36.0,
+                      divisions: 350,
+                      value: width,
+                      activeColor: Colors.greenAccent,
+                      onChanged: (v) => setDlg(() {
+                        width = double.parse(v.toStringAsFixed(1));
+                      }),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_outline,
+                        color: Colors.white70),
+                    onPressed: () => setDlg(() {
+                      width = double.parse(
+                          ((width + 0.1).clamp(1.0, 36.0)).toStringAsFixed(1));
+                    }),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Text('Zakładka (overlap): ${overlap.toStringAsFixed(2)} m',
@@ -603,7 +645,8 @@ class _MapViewState extends State<MapView> {
   Future<void> _launchWorkMode() async {
     // Upewnij się, że coverage jest aktywne przed wejściem w tryb pracy
     if (!_trackingCoverage && _activeField != null) {
-      CoverageService.instance.startTracking(_activeField!.id);
+      CoverageService.instance
+          .startTracking(_activeField!.id, taskId: _activeTask?.id);
       SectionControlBridge.instance
         ..setOrigin(
             _activeField!.center.latitude, _activeField!.center.longitude)
@@ -622,8 +665,9 @@ class _MapViewState extends State<MapView> {
           initialCoveredHa: _coveredHa,
           initialPos: _tractorPos,
           initialHeading: _tractorHeading,
-          workingWidthM: _activeField?.workingWidthM ?? 3.0,
+          workingWidthM: _activeWorkingWidth,
           fieldId: _activeField?.id,
+          activeTask: _activeTask,
         ),
         transitionsBuilder: (_, anim, __, child) => SlideTransition(
           position: Tween<Offset>(
@@ -641,7 +685,10 @@ class _MapViewState extends State<MapView> {
     GnssSimulatorBridge.instance.onPosition = _onSimPosition;
 
     // Odśwież statystyki pokrycia po powrocie z trybu pracy
-    final saved = CoverageService.instance.loadForField(_activeField?.id ?? '');
+    final saved = _activeTask != null
+        ? CoverageService.instance
+            .loadForTask(_activeField?.id ?? '', _activeTask!.id)
+        : CoverageService.instance.loadForField(_activeField?.id ?? '');
     setState(() {
       _savedTrack = saved;
       _coveredHa = SectionControlBridge.instance.coveredAreaHa();
@@ -677,15 +724,18 @@ class _MapViewState extends State<MapView> {
   void _toggleCoverage() {
     if (_trackingCoverage) {
       CoverageService.instance.stopTracking();
-      final saved =
-          CoverageService.instance.loadForField(_activeField?.id ?? '');
+      final saved = _activeTask != null
+          ? CoverageService.instance
+              .loadForTask(_activeField?.id ?? '', _activeTask!.id)
+          : CoverageService.instance.loadForField(_activeField?.id ?? '');
       setState(() {
         _trackingCoverage = false;
         _savedTrack = saved;
       });
     } else {
       if (_activeField != null) {
-        CoverageService.instance.startTracking(_activeField!.id);
+        CoverageService.instance
+            .startTracking(_activeField!.id, taskId: _activeTask?.id);
         SectionControlBridge.instance.setOrigin(
           _activeField!.center.latitude,
           _activeField!.center.longitude,
@@ -720,7 +770,12 @@ class _MapViewState extends State<MapView> {
       ),
     );
     if (ok != true || !mounted) return;
-    await CoverageService.instance.clearForField(_activeField?.id ?? '');
+    if (_activeTask != null) {
+      await CoverageService.instance
+          .clearForTask(_activeField?.id ?? '', _activeTask!.id);
+    } else {
+      await CoverageService.instance.clearForField(_activeField?.id ?? '');
+    }
     SectionControlBridge.instance.clear();
     setState(() {
       _savedTrack = [];
@@ -728,14 +783,191 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  // ── Nowe Zadanie ────────────────────────────────────────────────────────────
+
+  /// Multi-step workflow: Field → Machine → TaskType → generate swaths in RAM.
+  Future<void> _showNewTaskDialog() async {
+    // Step 1: ensure a field is active
+    if (_activeField == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Najpierw wybierz pole z listy zapisanych pól'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    final field = _activeField!;
+
+    // Step 2: pick a machine
+    if (!mounted) return;
+    final result = await MachineSelectorScreen.open(context, field: field);
+    if (result == null || !mounted) return;
+    final machine = result.machine;
+
+    // Step 3: pick task type + optional material params
+    TaskType? selectedType;
+    double? targetRate;
+    double? tankVolume;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) {
+          final unit = selectedType?.defaultUnit;
+          final usesMaterial = selectedType?.usesMaterial ?? false;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2A2A2A),
+            title: const Text('Rodzaj zadania',
+                style: TextStyle(color: Colors.white)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: TaskType.values
+                        .map(
+                          (tt) => ChoiceChip(
+                            label: Text(tt.label),
+                            selected: selectedType == tt,
+                            onSelected: (_) => setDlg(() => selectedType = tt),
+                            selectedColor: Colors.green[700],
+                            labelStyle: TextStyle(
+                              color: selectedType == tt
+                                  ? Colors.white
+                                  : Colors.white70,
+                            ),
+                            backgroundColor: const Color(0xFF3A3A3A),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                  if (usesMaterial) ...[
+                    const SizedBox(height: 18),
+                    Text(
+                      'Parametry materiału ($unit)',
+                      style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                          letterSpacing: 0.5),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'Dawka ($unit)',
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white30)),
+                        focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.greenAccent)),
+                      ),
+                      onChanged: (v) {
+                        final d = double.tryParse(v.replaceAll(',', '.'));
+                        setDlg(() => targetRate = d);
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText:
+                            'Napełnienie zbiornika (${unit?.split('/').first ?? 'l'})',
+                        labelStyle: const TextStyle(color: Colors.white54),
+                        enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white30)),
+                        focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.greenAccent)),
+                      ),
+                      onChanged: (v) {
+                        final d = double.tryParse(v.replaceAll(',', '.'));
+                        setDlg(() => tankVolume = d);
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Anuluj'),
+              ),
+              FilledButton(
+                style:
+                    FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+                onPressed: selectedType == null
+                    ? null
+                    : () => Navigator.pop(ctx, true),
+                child: const Text('Rozpocznij'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (confirmed != true || selectedType == null || !mounted) return;
+
+    // Step 4: create and persist the task
+    final task = WorkTask(
+      id: const Uuid().v4(),
+      fieldId: field.id,
+      machineId: machine.id,
+      taskType: selectedType!,
+      effectiveWidthM: machine.workingWidthM,
+      targetRate: targetRate,
+      initialTankVolume: tankVolume,
+      unit: selectedType!.defaultUnit,
+      createdAt: DateTime.now(),
+    );
+    await WorkTaskService.instance.save(task);
+
+    // Step 5: activate machine + task and generate swaths in RAM
+    setState(() {
+      _activeMachine = machine;
+      _activeTask = task;
+    });
+
+    _planSwaths(workingWidthM: _activeWorkingWidth);
+
+    // Step 6: start coverage tracking keyed by this task
+    CoverageService.instance.startTracking(field.id, taskId: task.id);
+    SectionControlBridge.instance
+      ..setOrigin(field.center.latitude, field.center.longitude)
+      ..clear();
+    setState(() => _trackingCoverage = true);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Zadanie: ${selectedType!.label} — ${machine.name} '
+            '(${machine.workingWidthM?.toStringAsFixed(1) ?? '?'} m)',
+          ),
+          backgroundColor: Colors.green[700],
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
   /// Coverage strip width in screen pixels, proportional to implement width.
   double _coverageStrokeWidth() {
     try {
       final zoom = _mapController.camera.zoom;
       final lat = _tractorPos.latitude;
+      // mpp: real-world metres per logical pixel at current zoom and latitude.
       final mpp =
           156543.03392 * math.cos(lat * math.pi / 180) / math.pow(2, zoom);
-      return ((_activeField?.workingWidthM ?? 3.0) / mpp).clamp(2.0, 60.0);
+      return (_activeWorkingWidth / mpp).clamp(2.0, 120.0);
     } catch (_) {
       return 10.0;
     }
@@ -1282,6 +1514,36 @@ class _MapViewState extends State<MapView> {
                         textColor: Colors.black,
                         child: const Icon(Icons.agriculture,
                             color: Colors.white, size: 20),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // ── Zarządzanie maszynami ────────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'machines',
+                      tooltip: 'Zarządzanie maszynami',
+                      backgroundColor: const Color(0xAA000000),
+                      onPressed: () => MachineManagerScreen.open(context),
+                      child: const Icon(
+                        Icons.agriculture_outlined,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // ── Nowe Zadanie ──────────────────────────────────────────
+                    FloatingActionButton.small(
+                      heroTag: 'newTask',
+                      tooltip: _activeTask != null
+                          ? 'Zadanie aktywne — zmień'
+                          : 'Nowe zadanie',
+                      backgroundColor: _activeTask != null
+                          ? Colors.amber[800]
+                          : const Color(0xAA000000),
+                      onPressed: _showNewTaskDialog,
+                      child: const Icon(
+                        Icons.assignment_add,
+                        color: Colors.white,
+                        size: 20,
                       ),
                     ),
                     const SizedBox(height: 8),

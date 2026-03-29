@@ -335,6 +335,11 @@ double agrinav_section_covered_ha(SectionHandle h) {
     return static_cast<agrinav::SectionControl*>(h)->coveredAreaHa();
 }
 
+double agrinav_section_new_area_ha(SectionHandle h) {
+    if (!h) return 0.0;
+    return static_cast<agrinav::SectionControl*>(h)->newAreaHaLastStrip();
+}
+
 void agrinav_section_clear(SectionHandle h) {
     if (h) static_cast<agrinav::SectionControl*>(h)->clear();
 }

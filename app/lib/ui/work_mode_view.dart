@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -5,7 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../ffi/nav_bridge.dart';
+import '../models/work_task.dart';
 import '../services/coverage_service.dart';
+import '../services/material_monitor_service.dart';
 
 // ── Paleta kolorów Work Mode ──────────────────────────────────────────────────
 const _kBg = Color(0xFF0A0A0A);
@@ -36,6 +39,7 @@ class WorkModeView extends StatefulWidget {
     required this.initialHeading,
     required this.workingWidthM,
     this.fieldId,
+    this.activeTask,
   });
 
   /// Równoległe ścieżki uprawowe z C++ SwathPlanner.
@@ -58,6 +62,10 @@ class WorkModeView extends StatefulWidget {
   /// Identyfikator pola w Hive (null = brak aktywnego pola).
   final String? fieldId;
 
+  /// Aktywne zadanie robocze — używane do monitorowania zużycia materiału.
+  /// Null = monitorowanie wyłączone.
+  final WorkTask? activeTask;
+
   @override
   State<WorkModeView> createState() => _WorkModeViewState();
 }
@@ -72,6 +80,14 @@ class _WorkModeViewState extends State<WorkModeView> {
   late double _coveredHa;
   double _speedKmh = 0.0;
   double _overlapFraction = 0.0;
+  double _newAreaHaLastStrip = 0.0;
+
+  // ── Material monitor ─────────────────────────────────────────────────────────
+  MaterialMonitorState _monitorState = MaterialMonitorState.empty;
+  StreamSubscription<MaterialMonitorState>? _monitorSub;
+
+  /// Prevent repeated low-level alerts within the same work session.
+  bool _lowAlertShown = false;
 
   LatLng? _prevPos;
   DateTime? _prevTime;
@@ -90,6 +106,36 @@ class _WorkModeViewState extends State<WorkModeView> {
     _snapInfo = widget.initialSnapInfo;
     _coveredHa = widget.initialCoveredHa;
 
+    // Start material monitor if task has rate/tank data
+    if (widget.activeTask != null) {
+      MaterialMonitorService.instance
+          .start(widget.activeTask!, currentAreaHa: widget.initialCoveredHa);
+      _monitorState = MaterialMonitorService.instance.state;
+      _monitorSub = MaterialMonitorService.instance.stream.listen((s) {
+        if (!mounted) return;
+        setState(() => _monitorState = s);
+        // Low-level alert: below 10%
+        if (!_lowAlertShown && s.fillFraction < 0.10 && s.fillFraction > 0) {
+          _lowAlertShown = true;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Text('Uwaga: Niski poziom w zbiorniku!'),
+                ],
+              ),
+              backgroundColor: Colors.red[800],
+              duration: const Duration(seconds: 5),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      });
+    }
+
     // Przejęcie callbacku GPS od MapView
     _prevSimCallback = GnssSimulatorBridge.instance.onPosition;
     GnssSimulatorBridge.instance.onPosition = _onSimPosition;
@@ -97,6 +143,8 @@ class _WorkModeViewState extends State<WorkModeView> {
 
   @override
   void dispose() {
+    _monitorSub?.cancel();
+    MaterialMonitorService.instance.stop();
     // Zwróć callback GPS do poprzedniego właściciela (MapView)
     GnssSimulatorBridge.instance.onPosition = _prevSimCallback;
     super.dispose();
@@ -143,6 +191,7 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     double overlapFraction = _overlapFraction;
     double coveredHa = _coveredHa;
+    double newAreaHaLastStrip = _newAreaHaLastStrip;
     CoverageService.instance.addPoint(newPos);
     if (widget.fieldId != null) {
       overlapFraction = SectionControlBridge.instance.addStrip(
@@ -152,7 +201,11 @@ class _WorkModeViewState extends State<WorkModeView> {
         widget.workingWidthM,
       );
       coveredHa = SectionControlBridge.instance.coveredAreaHa();
+      newAreaHaLastStrip = SectionControlBridge.instance.newAreaHaLastStrip();
     }
+
+    // Update material consumption
+    MaterialMonitorService.instance.updateArea(coveredHa);
 
     setState(() {
       _tractorPos = newPos;
@@ -163,6 +216,7 @@ class _WorkModeViewState extends State<WorkModeView> {
       _speedKmh = speedKmh;
       _overlapFraction = overlapFraction;
       _coveredHa = coveredHa;
+      _newAreaHaLastStrip = newAreaHaLastStrip;
     });
 
     _prevPos = newPos;
@@ -182,6 +236,94 @@ class _WorkModeViewState extends State<WorkModeView> {
   void _exitWorkMode() {
     CoverageService.instance.stopTracking();
     Navigator.of(context).pop();
+  }
+
+  Future<void> _showRefillDialog() async {
+    final task = widget.activeTask;
+    if (task == null) return;
+    final maxVol = task.initialTankVolume ?? 0.0;
+    final unit = MaterialMonitorService.instance.state.unit;
+
+    // Option A: full refill (one tap)
+    // Option B: partial — user enters amount
+    double? partialAmount;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: Row(
+            children: [
+              const Icon(Icons.local_gas_station_rounded,
+                  color: Colors.greenAccent),
+              const SizedBox(width: 10),
+              const Text('Tankowanie', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Zbiornik: ${_monitorState.remainingVolume.toStringAsFixed(1)} / '
+                '${maxVol.toStringAsFixed(0)} $unit',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'Uzupełnienie ($unit) — zostaw puste = pełny',
+                  labelStyle: const TextStyle(color: Colors.white54),
+                  enabledBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white30)),
+                  focusedBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.greenAccent)),
+                ),
+                onChanged: (v) {
+                  final d = double.tryParse(v.replaceAll(',', '.'));
+                  setDlg(() => partialAmount = d);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Anuluj')),
+            FilledButton.icon(
+              icon: const Icon(Icons.water_drop_rounded, size: 18),
+              label: const Text('Pełny zbiornik'),
+              style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+              onPressed: () => Navigator.pop(ctx, 'full'),
+            ),
+            if (partialAmount != null && partialAmount! > 0)
+              FilledButton.icon(
+                icon: const Icon(Icons.add_rounded, size: 18),
+                label: Text('+${partialAmount!.toStringAsFixed(1)} $unit'),
+                style:
+                    FilledButton.styleFrom(backgroundColor: Colors.teal[700]),
+                onPressed: () => Navigator.pop(ctx, 'partial'),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (choice == null || !mounted) return;
+    if (choice == 'full') {
+      MaterialMonitorService.instance.fullRefill(currentAreaHa: _coveredHa);
+    } else if (choice == 'partial' && partialAmount != null) {
+      MaterialMonitorService.instance
+          .refill(addedVolume: partialAmount!, currentAreaHa: _coveredHa);
+    }
+    // Allow low alert to fire again after refill
+    setState(() {
+      _monitorState = MaterialMonitorService.instance.state;
+      _lowAlertShown = false;
+    });
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────────
@@ -242,6 +384,7 @@ class _WorkModeViewState extends State<WorkModeView> {
                 coveredHa: _coveredHa,
                 snapInfo: _snapInfo,
                 overlapFraction: _overlapFraction,
+                newAreaHaLastStrip: _newAreaHaLastStrip,
               ),
             ),
 
@@ -267,6 +410,16 @@ class _WorkModeViewState extends State<WorkModeView> {
                 ),
               ),
             ),
+            // ── 6. Wskaźnik zbiornika (lewy dół, widoczny tylko gdy monitorowanie aktywne)
+            if (MaterialMonitorService.instance.isActive)
+              Positioned(
+                left: 12,
+                bottom: padding.bottom + 86,
+                child: _TankIndicator(
+                  state: _monitorState,
+                  onRefill: _showRefillDialog,
+                ),
+              ),
           ],
         ),
       ),
@@ -427,7 +580,10 @@ class _FieldCanvasPainter extends CustomPainter {
   }
 
   void _drawTractorCursor(Canvas canvas) {
-    const r = 22.0;
+    // Scale the cursor so its widest points (±r*0.6) exactly match the
+    // coverage-strip half-width (workingWidthM * pixelsPerMeter / 2).
+    // This satisfies the UX requirement: cursor always fills the strip.
+    final r = (workingWidthM * pixelsPerMeter / 1.2).clamp(14.0, 80.0);
     // Strzałka z wcięciem: czubek na górze = kierunek jazdy
     final path = ui.Path()
       ..moveTo(0, -r)
@@ -602,12 +758,14 @@ class _StatsPanel extends StatelessWidget {
     required this.coveredHa,
     required this.snapInfo,
     required this.overlapFraction,
+    required this.newAreaHaLastStrip,
   });
 
   final double speedKmh;
   final double coveredHa;
   final SnapInfo snapInfo;
   final double overlapFraction;
+  final double newAreaHaLastStrip;
 
   @override
   Widget build(BuildContext context) {
@@ -649,6 +807,15 @@ class _StatsPanel extends StatelessWidget {
               color: Colors.yellowAccent,
               label: 'Pas',
               value: '${snapInfo.swathIndex + 1}',
+            ),
+          ],
+          if (newAreaHaLastStrip == 0.0 && overlapFraction > 0) ...[
+            const _TileDivider(),
+            const _StatTile(
+              icon: Icons.block_rounded,
+              color: Colors.orangeAccent,
+              label: 'Nowe',
+              value: '0.00 ha',
             ),
           ],
           if (overlapFraction >= 0.10) ...[
@@ -803,6 +970,121 @@ class _SwathIndicator extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wskaźnik zbiornika
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _TankIndicator extends StatelessWidget {
+  const _TankIndicator({required this.state, required this.onRefill});
+
+  final MaterialMonitorState state;
+  final VoidCallback onRefill;
+
+  static Color _fillColor(double fraction) {
+    if (fraction > 0.25) return Colors.greenAccent;
+    if (fraction > 0.10) return Colors.orangeAccent;
+    return Colors.redAccent;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _fillColor(state.fillFraction);
+    final pct = (state.fillFraction * 100).round();
+
+    return Container(
+      width: 140,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xCC0D0D0D),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Title row
+          Row(
+            children: [
+              Icon(Icons.water_drop_rounded, color: color, size: 14),
+              const SizedBox(width: 5),
+              const Text(
+                'ZBIORNIK',
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 9,
+                  letterSpacing: 0.8,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '$pct%',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+
+          // Progress bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: state.fillFraction.clamp(0.0, 1.0),
+              backgroundColor: Colors.white12,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+              minHeight: 8,
+            ),
+          ),
+          const SizedBox(height: 7),
+
+          // Remaining volume
+          Text(
+            'Pozostało: ${state.remainingVolume.toStringAsFixed(1)} ${state.unit}',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 2),
+
+          // Range
+          Text(
+            'Zasięg: ${state.rangeHa.toStringAsFixed(2)} ha',
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+
+          // Refill button
+          SizedBox(
+            width: double.infinity,
+            height: 30,
+            child: FilledButton.icon(
+              icon: const Icon(Icons.local_gas_station_rounded, size: 14),
+              label: const Text('Tankowanie', style: TextStyle(fontSize: 11)),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF1A3A1A),
+                foregroundColor: Colors.greenAccent,
+                padding: EdgeInsets.zero,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(7),
+                  side: const BorderSide(color: Colors.greenAccent, width: 0.5),
+                ),
+              ),
+              onPressed: onRefill,
+            ),
           ),
         ],
       ),

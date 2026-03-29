@@ -190,8 +190,7 @@ class _FieldTile extends StatelessWidget {
           style: const TextStyle(
               color: Colors.white, fontWeight: FontWeight.w600)),
       subtitle: Text(
-        '$pts wierzchołków  •  '
-        'szerokość: ${field.workingWidthM.toStringAsFixed(1)} m'
+        '$pts wierzchołków'
         '${hasAb ? '  •  linia AB ✓' : ''}',
         style: const TextStyle(color: Colors.white54, fontSize: 12),
       ),

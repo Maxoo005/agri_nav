@@ -31,6 +31,14 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 | Bulk import działek ARiMR — BottomSheet z kreatorem wielokrokowym | ✅ |
 | Warstwa LPIS na mapie — zielone p.-przezroczyste wielokąty | ✅ |
 | Cache offline ARiMR (Hive `arimr_lpis`) | ✅ |
+| Zarządzanie maszynami rolniczymi (CRUD, typ, marka, szerokość robocza) | ✅ |
+| Selektor aktywnej maszyny z poziomu mapy | ✅ |
+| Zadania robocze WorkTask (dawka docelowa, objętość zbiornika, jednostka) | ✅ |
+| Monitor materiału (real-time zużycie ze strumienia, wskaźnik tankowania) | ✅ |
+| Naprawiony licznik powierzchni — usunięcie zawyżenia Section Control (~33–67%) | ✅ |
+| Wskaźnik pokrycia zerowego (HUD alert: Nowe = 0.00 ha → nakładka 100%) | ✅ |
+| Kursor ciągnika skalowany do szerokości roboczej przy każdym zoomie | ✅ |
+| Selektor progu dokładności GPS (accuracy threshold w filtrze pozycji) | ✅ |
 
 ---
 
@@ -75,20 +83,28 @@ agri_nav/
         │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
         │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
         ├── models/
-        │   ├── field_model.dart          # FieldModel: granica, linia AB, szerokość robocza, arimrParcelIds
-        │   └── arimr_parcel.dart         # ArimrParcel: model działki LPIS z ARiMR (JSON/Hive)
+        │   ├── field_model.dart          # FieldModel: granica, linia AB, swaths (bez szerokości roboczej)
+        │   ├── arimr_parcel.dart         # ArimrParcel: model działki LPIS z ARiMR (JSON/Hive)
+        │   ├── machine_model.dart        # MachineModel: typ, marka, szerokość robocza (Hive)
+        │   └── work_task.dart            # WorkTask: dawka targetRate, objętość zbiornika, jednostka
         ├── services/
         │   ├── field_service.dart        # Hive CRUD: save/get/delete pól uprawowych
-        │   ├── coverage_service.dart     # Hive: zapis/odczyt śladu GPS, bufor + flush
+        │   ├── coverage_service.dart     # Hive: zapis/odczyt śladu GPS per zadanie (fieldId_taskId)
         │   ├── geoportal_service.dart    # ULDK/GUGiK: fetch wg XY / TERYT, nudge
         │   ├── arimr_service.dart        # ARiMR ArcGIS REST: LPIS pagination, filtr, Hive cache
-        │   └── wkt_parser.dart          # WKT → List<LatLng> (POLYGON + MULTIPOLYGON)
+        │   ├── wkt_parser.dart           # WKT → List<LatLng> (POLYGON + MULTIPOLYGON)
+        │   ├── machine_service.dart      # Hive CRUD: maszyny rolnicze
+        │   ├── work_task_service.dart    # Aktywne zadanie robocze (singleton)
+        │   └── material_monitor_service.dart # Stream: real-time zużycie materiału, refill dialog
         └── ui/
             ├── map_view.dart            # Główny ekran: mapa, AB, swaths, ciągnik, snap-guidance
             ├── field_manager_screen.dart # Ekran listy i zarządzania polami
             ├── field_builder_screen.dart # Kreator pola: ULDK → scalenie → zapis
             ├── arimr_import_sheet.dart  # Import LPIS: obszar → ARiMR → C++ → Hive
-            └── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
+            ├── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
+            ├── machine_manager_screen.dart  # CRUD: lista i edycja maszyn
+            ├── machine_selector_screen.dart # BottomSheet: wybór aktywnej maszyny
+            └── work_mode_view.dart      # HUD nawigacji: cross-track, coverage painter, tank indicator
 ```
 
 ---
@@ -135,6 +151,21 @@ Siatka kwadratowych komórek (domyślnie 1 m²) zakodowana jako `unordered_set<i
 `addStrip()` wyznacza rzut prostokąta narzędzia → klucze komórek → wstawia nowe.  
 `checkOverlap()` — identyczna geometria, bez modyfikacji zbioru.  
 `coveredAreaHa()` = liczba unikalnych komórek × $w^2$ / 10 000.
+
+**Naprawiony błąd off-by-one w `_footprintKeys`** (wersja przed poprawką zawyżała powierzchnię o 33–67%):
+```cpp
+// PRZED (błąd: pętla przekraczała halfW o jeden krok):
+const int nSteps = static_cast<int>(std::ceil(toolWidthM / step)) + 1;
+for (int i = 0; i <= nSteps; ++i) {
+    const double t = -halfW + i * step;   // wychodzi poza footprint!
+
+// PO (poprawka: clamp do halfW):
+const int nSteps = static_cast<int>(std::ceil(toolWidthM / step));
+for (int i = 0; i <= nSteps; ++i) {
+    const double t = std::min(-halfW + static_cast<double>(i) * step, halfW);
+```
+`addStrip()` zlicza teraz nowe komórki osobno (`_newCellsLastStrip`) → `newAreaHaLastStrip()` zwraca
+faktycznie nową powierzchnię z ostatniego pasa. Wartość 0.0 oznacza 100% nakładkę.
 
 ### Parcel Merger (`ParcelMerger.cpp`)
 Scala wiele wielokątów działkowych (WGS-84) w jeden obrys pola:
@@ -198,6 +229,7 @@ float         agrinav_section_check_overlap(SectionHandle, double lat, double lo
 float         agrinav_section_add_strip(SectionHandle, double lat, double lon,
                   float heading_deg, double tool_width_m);
 double        agrinav_section_covered_ha(SectionHandle);
+double        agrinav_section_new_area_ha(SectionHandle); // net nowa pow. z ostatniego addStrip [ha]
 void          agrinav_section_clear(SectionHandle);
 
 // Scalanie działek katastralnych (Clipper2 Union)
@@ -288,6 +320,62 @@ Singleton przechowujący ślad GPS bieżącej operacji polowej:
 | `stopTracking()` | Wymusza flush; czyści bufor |
 | `loadForField(fieldId)` | Zwraca zapisany ślad do wyświetlenia/odtworzenia |
 | `clearForField(fieldId)` | Kasuje ślad z Hive i pamięci |
+
+---
+
+## MachineService + MachineModel (`app/lib/services/machine_service.dart`)
+
+Zarządzanie flotą maszyn rolniczych z persystencją Hive:
+
+| Metoda | Opis |
+|---|---|
+| `saveMachine(machine)` | Zapis/aktualizacja maszyny w Hive |
+| `getAllMachines()` | Lista wszystkich maszyn sortowana po nazwie |
+| `deleteMachine(id)` | Usuwa maszynę; zeruje `activeMachineId` jeśli była aktywna |
+| `setActive(id)` | Ustawia aktywną maszynę (szerokość robocza → `_activeWorkingWidth` w mapie) |
+| `getActive()` | Zwraca current `MachineModel?` |
+
+`MachineModel` przechowuje: `id`, `name`, `brand`, `type` (ciągnik/opryskiwacz/…), `workingWidthM`.
+
+---
+
+## WorkTask + WorkTaskService (`app/lib/models/work_task.dart`)
+
+Model zadania roboczego przekazywanego do `WorkModeView`:
+
+| Pole | Typ | Opis |
+|---|---|---|
+| `id` | `String` | UUID zadania |
+| `fieldId` | `String` | Powiązane pole |
+| `machineId` | `String` | Powiązana maszyna |
+| `targetRate` | `double` | Dawka docelowa [j./ha] |
+| `initialTankVolume` | `double` | Napełnienie zbiornika na start [j.] |
+| `unit` | `String` | Jednostka (`L`, `kg`, …) |
+
+`WorkTaskService` (singleton) utrzymuje aktywne zadanie i klucz CoverageService `fieldId_taskId`.
+
+---
+
+## MaterialMonitorService (`app/lib/services/material_monitor_service.dart`)
+
+Stream-owy monitor zużycia materiału w czasie rzeczywistym:
+
+| Metoda | Opis |
+|---|---|
+| `start(task, {currentAreaHa})` | Inicjalizacja; wczytuje zadanie i punkt startowy |
+| `updateArea(coveredHa)` | Przelicza zużycie: `used = (coveredHa − startHa) × targetRate` |
+| `fullRefill()` / `refill(volume)` | Rejestruje tankowanie pełne lub częściowe |
+| `stop()` | Zatrzymuje strumień |
+
+`_TankIndicator` w `WorkModeView` wyświetla poziom zbiornika w procentach i otwiera dialog tankowania gdy poziom < 10 %.
+
+---
+
+## CoverageService — schemat kluczy zadań
+
+Przed zmianą ślad GPS był przechowywany pod kluczem `fieldId`.  
+Teraz schemat to `fieldId_taskId` — każde zadanie robocze ma osobny ślad GPS,
+co umożliwia odtworzenie pokrycia po powrocie do przerwanej pracy bez mieszania śladów.
 
 ---
 

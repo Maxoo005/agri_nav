@@ -217,6 +217,11 @@ float agrinav_section_add_strip(SectionHandle h,
 /// Total covered area [ha].
 double agrinav_section_covered_ha(SectionHandle h);
 
+/// Net new (unique) area [ha] added by the most recent agrinav_section_add_strip()
+/// call.  Returns 0.0 when the strip was fully inside already-covered area
+/// (overlap → 100 %).  Use this to detect "no-progress" passes.
+double agrinav_section_new_area_ha(SectionHandle h);
+
 /// Erase all coverage data (retains origin + cell size).
 void agrinav_section_clear(SectionHandle h);
 

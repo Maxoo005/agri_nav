@@ -16,4 +16,13 @@
             <certificates src="user"/>
         </trust-anchors>
     </domain-config>
+
+    <!-- ULDK GUGiK — działki katastralne (TERYT) -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">uldk.gugik.gov.pl</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </domain-config>
 </network-security-config>

@@ -41,16 +41,23 @@ std::vector<int64_t> SectionControl::_footprintKeys(
     const double perpE =  std::cos(rad);   // 90° CCW of (sinθ, cosθ)
     const double perpN = -std::sin(rad);
 
-    const double halfW  = toolWidthM * 0.5;
+    const double halfW = toolWidthM * 0.5;
     // Sample at half-cell resolution so no cell is ever skipped.
-    const double step   = _cellSizeM * 0.5;
-    const int    nSteps = static_cast<int>(std::ceil(toolWidthM / step)) + 1;
+    const double step  = _cellSizeM * 0.5;
+    // Number of steps to span [-halfW, +halfW] inclusive.
+    // NOTE: do NOT add +1 here — doing so pushes the last sample beyond +halfW,
+    //       causing one extra column of cells to be marked and inflating the
+    //       covered-area estimate by up to ~33 % for typical working widths.
+    const int nSteps = static_cast<int>(std::ceil(toolWidthM / step));
 
     std::vector<int64_t> keys;
     keys.reserve(static_cast<size_t>(nSteps + 2));
 
     for (int i = 0; i <= nSteps; ++i) {
-        const double t  = -halfW + i * step;
+        // Clamp to ±halfW: the last step may overshoot slightly due to
+        // floating-point rounding — snapping it to +halfW is harmless and
+        // guarantees we never mark cells outside the implement's footprint.
+        const double t  = std::min(-halfW + static_cast<double>(i) * step, halfW);
         const double pE = eE + t * perpE;
         const double pN = eN + t * perpN;
 
@@ -91,12 +98,18 @@ float SectionControl::addStrip(double lat, double lon,
     if (keys.empty()) return 0.f;
 
     // Count overlap BEFORE inserting (caller receives "old" overlap).
-    int covered = 0;
+    int covered  = 0;
+    int newCells = 0;
     for (const auto k : keys) {
-        if (_cells.count(k)) ++covered;
-        _cells.insert(k);
+        if (_cells.count(k)) {
+            ++covered;
+        } else {
+            _cells.insert(k);
+            ++newCells;
+        }
     }
 
+    _newCellsLastStrip = newCells;
     return static_cast<float>(covered) / static_cast<float>(keys.size());
 }
 
@@ -106,6 +119,7 @@ double SectionControl::coveredAreaHa() const {
 
 void SectionControl::clear() {
     _cells.clear();
+    _newCellsLastStrip = 0;
 }
 
 } // namespace agrinav

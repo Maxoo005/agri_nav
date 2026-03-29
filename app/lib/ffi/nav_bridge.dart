@@ -553,6 +553,7 @@ typedef _SectionCheckOverlapNative = Float Function(
 typedef _SectionAddStripNative = Float Function(
     Pointer<Void>, Double, Double, Float, Double);
 typedef _SectionCoveredHaNative = Double Function(Pointer<Void>);
+typedef _SectionNewAreaHaNative = Double Function(Pointer<Void>);
 typedef _SectionClearNative = Void Function(Pointer<Void>);
 
 /// Singleton wrapping the C++ SectionControl engine via dart:ffi.
@@ -583,6 +584,8 @@ class SectionControlBridge {
     );
     _coveredHaFn = lib.lookupFunction<_SectionCoveredHaNative,
         double Function(Pointer<Void>)>('agrinav_section_covered_ha');
+    _newAreaHaFn = lib.lookupFunction<_SectionNewAreaHaNative,
+        double Function(Pointer<Void>)>('agrinav_section_new_area_ha');
     _clearFn =
         lib.lookupFunction<_SectionClearNative, void Function(Pointer<Void>)>(
             'agrinav_section_clear');
@@ -600,6 +603,7 @@ class SectionControlBridge {
   late final double Function(Pointer<Void>, double, double, double, double)
       _addStripFn;
   late final double Function(Pointer<Void>) _coveredHaFn;
+  late final double Function(Pointer<Void>) _newAreaHaFn;
   late final void Function(Pointer<Void>) _clearFn;
 
   /// Set ENU origin to the field centre.  Must be called before [addStrip].
@@ -617,6 +621,10 @@ class SectionControlBridge {
 
   /// Total covered area [ha].
   double coveredAreaHa() => _coveredHaFn(_handle);
+
+  /// Net new area [ha] added by the most recent [addStrip] call.
+  /// Returns 0.0 when the strip was fully inside already-covered area.
+  double newAreaHaLastStrip() => _newAreaHaFn(_handle);
 
   /// Erase all coverage (retains origin + cell size).
   void clear() => _clearFn(_handle);

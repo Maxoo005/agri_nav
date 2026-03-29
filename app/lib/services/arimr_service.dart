@@ -64,7 +64,7 @@ class ArimrService {
   static final instance = ArimrService._();
 
   static const _uldkBase = 'https://uldk.gugik.gov.pl/';
-  static const _timeout = Duration(seconds: 20);
+  static const _timeout = Duration(seconds: 45);
   static const _headers = <String, String>{
     'User-Agent': 'AgriNav/1.0',
     'Accept': 'text/plain,*/*',
@@ -339,7 +339,7 @@ class ArimrService {
     return result.any((r) => r != ConnectivityResult.none);
   }
 
-  Future<http.Response> _get(Uri uri) async {
+  Future<http.Response> _get(Uri uri, {int attempt = 1}) async {
     try {
       final resp = await _http.get(uri, headers: _headers).timeout(_timeout);
       dev.log('ULDK → ${resp.statusCode}', name: 'ArimrService');
@@ -349,8 +349,13 @@ class ArimrService {
     } on http.ClientException catch (e) {
       throw ArimrServiceException('Błąd HTTP: ${e.message}');
     } on TimeoutException {
+      if (attempt < 2) {
+        dev.log('ULDK timeout, retry $attempt/2…', name: 'ArimrService');
+        await Future<void>.delayed(const Duration(seconds: 3));
+        return _get(uri, attempt: attempt + 1);
+      }
       throw const ArimrServiceException(
-          'Serwer ULDK nie odpowiedział. Spróbuj ponownie.');
+          'Serwer ULDK nie odpowiedział (45 s × 2 próby). Sprawdź sieć lub spróbuj ponownie później.');
     } catch (e) {
       throw ArimrServiceException('$e');
     }

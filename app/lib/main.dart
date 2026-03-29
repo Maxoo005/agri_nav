@@ -5,6 +5,8 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'services/arimr_service.dart';
 import 'services/coverage_service.dart';
 import 'services/field_service.dart';
+import 'services/machine_service.dart';
+import 'services/work_task_service.dart';
 import 'ui/map_view.dart';
 
 void main() async {
@@ -20,6 +22,8 @@ void main() async {
   await FieldService.init();
   await CoverageService.init();
   await ArimrService.init();
+  await MachineService.init();
+  await WorkTaskService.init();
 
   runApp(const AgriNavApp());
 }

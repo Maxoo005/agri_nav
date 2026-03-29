@@ -74,7 +74,7 @@ class ArimrImportSheet extends StatefulWidget {
 
 class _ArimrImportSheetState extends State<ArimrImportSheet> {
   // ── Kontrolery ────────────────────────────────────────────────────────────────
-  final _farmIdCtrl = TextEditingController();
+  final List<TextEditingController> _terytCtrls = [TextEditingController()];
   final _nameCtrl = TextEditingController();
 
   // ── Stan ─────────────────────────────────────────────────────────────────────
@@ -88,6 +88,9 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
   MergeFieldResult? _mergeResult;
   bool _fromCache = false;
 
+  /// Epsilon RDP [m]: 0.0 = pełna dokładność (brak uproszczenia), większe = mniej wierzchołków.
+  double _simplifyEpsilonM = 0.0;
+
   @override
   void initState() {
     super.initState();
@@ -96,7 +99,9 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   @override
   void dispose() {
-    _farmIdCtrl.dispose();
+    for (final c in _terytCtrls) {
+      c.dispose();
+    }
     _nameCtrl.dispose();
     super.dispose();
   }
@@ -118,6 +123,17 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
   // ── Pobieranie działek ───────────────────────────────────────────────────────
 
   Future<void> _fetchParcels() async {
+    final ids = _terytCtrls
+        .map((c) => c.text.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    if (ids.isEmpty) {
+      setState(() => _error =
+          'Podaj co najmniej jeden numer ewidencyjny działki (TERYT).');
+      return;
+    }
+
     setState(() {
       _step = _ImportStep.fetching;
       _error = null;
@@ -125,45 +141,47 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       _selected.clear();
     });
 
-    try {
-      LpisFetchResult result;
-      final farmId = _farmIdCtrl.text.trim();
+    final allParcels = <ArimrParcel>[];
+    final errors = <String>[];
 
-      if (farmId.isNotEmpty) {
-        result = await ArimrService.instance.fetchByFarmId(farmId);
-      } else {
-        result = await ArimrService.instance.fetchAgriculturalParcels(
-          widget.mapBounds,
-          cropGroupCode: _cropGroupFilter,
-        );
+    for (final id in ids) {
+      try {
+        final result = await ArimrService.instance.fetchByFarmId(id);
+        allParcels.addAll(result.parcels);
+      } on ArimrNoNetworkException {
+        if (!mounted) return;
+        setState(() {
+          _error = 'Brak połączenia. Sprawdź Wi-Fi lub użyj danych z cache.';
+          _step = _ImportStep.configure;
+        });
+        return;
+      } on ArimrServiceException catch (e) {
+        errors.add('[$id]: ${e.message}');
+      } catch (e) {
+        errors.add('[$id]: $e');
       }
-
-      if (!mounted) return;
-      setState(() {
-        _parcels = result.parcels;
-        _selected.addAll(result.parcels.map((p) => p.objectId));
-        _fromCache = result.fromCache;
-        _step = _ImportStep.preview;
-      });
-    } on ArimrNoNetworkException {
-      if (!mounted) return;
-      setState(() {
-        _error = 'Brak połączenia. Sprawdź Wi-Fi lub użyj danych z cache.';
-        _step = _ImportStep.configure;
-      });
-    } on ArimrServiceException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.message;
-        _step = _ImportStep.configure;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'Nieoczekiwany błąd: $e';
-        _step = _ImportStep.configure;
-      });
     }
+
+    if (!mounted) return;
+
+    if (allParcels.isEmpty) {
+      setState(() {
+        _error = 'Nie znaleziono żadnych działek.'
+            '${errors.isNotEmpty ? '\n${errors.join('\n')}' : ''}';
+        _step = _ImportStep.configure;
+      });
+      return;
+    }
+
+    setState(() {
+      _parcels = allParcels;
+      _selected.addAll(allParcels.map((p) => p.objectId));
+      _fromCache = false;
+      _step = _ImportStep.preview;
+      if (errors.isNotEmpty) {
+        _error = 'Części działek nie znaleziono:\n${errors.join('\n')}';
+      }
+    });
   }
 
   // ── Przetwarzanie geometrii ───────────────────────────────────────────────────
@@ -189,7 +207,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       final result = await LpisProcessorBridge.instance.processAsync(
         polygons,
         bufferM: 0.02,
-        simplifyEpsilonM: 0.3,
+        simplifyEpsilonM: _simplifyEpsilonM,
       );
 
       if (!mounted) return;
@@ -370,28 +388,16 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
         ),
         const SizedBox(height: 16),
 
-        // Filtr: numer ewidencyjny działki (TERYT / ULDK)
-        TextField(
-          controller: _farmIdCtrl,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            labelText: 'Nr ewidencyjny działki (TERYT) — opcjonalnie',
-            labelStyle: TextStyle(color: Colors.white54),
-            hintText: 'np. 141201_1.0001.AR_1.1',
-            hintStyle: TextStyle(color: Colors.white24),
-            enabledBorder: OutlineInputBorder(
-              borderSide: BorderSide(color: Colors.white24),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderSide: BorderSide(color: Colors.greenAccent),
-            ),
-            prefixIcon: Icon(Icons.pin_drop, color: Colors.white38),
-          ),
-        ),
+        // Numery ewidencyjne działek (TERYT) — wiele pól
+        _buildTerytRows(),
         const SizedBox(height: 12),
 
         // Filtr: kod grupy upraw
         _buildCropGroupDropdown(),
+        const SizedBox(height: 12),
+
+        // Dokładność granicy
+        _buildAccuracySelector(),
         const SizedBox(height: 8),
 
         // Błąd
@@ -463,6 +469,123 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
             },
           ),
         ),
+      ],
+    );
+  }
+
+  // ── Wiele pól TERYT ─────────────────────────────────────────────────────────
+
+  Widget _buildTerytRows() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ...List.generate(_terytCtrls.length, (i) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _terytCtrls[i],
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      labelText: i == 0
+                          ? 'Nr ewidencyjny działki (TERYT)'
+                          : 'Działka ${i + 1}',
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      hintText: 'np. 141201_1.0001.AR_1.1',
+                      hintStyle: const TextStyle(color: Colors.white24),
+                      enabledBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24),
+                      ),
+                      focusedBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.greenAccent),
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.pin_drop,
+                        color: Colors.white38,
+                      ),
+                    ),
+                  ),
+                ),
+                if (i > 0) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white38),
+                    tooltip: 'Usuń',
+                    onPressed: () => setState(() {
+                      _terytCtrls[i].dispose();
+                      _terytCtrls.removeAt(i);
+                    }),
+                  ),
+                ],
+              ],
+            ),
+          );
+        }),
+        TextButton.icon(
+          icon: const Icon(Icons.add, size: 18, color: Colors.greenAccent),
+          label: const Text(
+            'Dodaj +',
+            style: TextStyle(color: Colors.greenAccent),
+          ),
+          onPressed: () =>
+              setState(() => _terytCtrls.add(TextEditingController())),
+        ),
+      ],
+    );
+  }
+
+  // ── Selektor dokładności granicy ─────────────────────────────────────────────
+
+  static const _accuracyPresets = <(String, double)>[
+    ('Pełna (kataster)', 0.0),
+    ('Wysoka  5 cm', 0.05),
+    ('Standardowa  30 cm', 0.30),
+    ('Uproszczona  1 m', 1.0),
+  ];
+
+  Widget _buildAccuracySelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(bottom: 6),
+          child: Text(
+            'Dokładność granicy',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ),
+        Wrap(
+          spacing: 8,
+          children: _accuracyPresets.map((preset) {
+            final (label, eps) = preset;
+            final selected = (_simplifyEpsilonM - eps).abs() < 1e-9;
+            return ChoiceChip(
+              label: Text(label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: selected ? Colors.black : Colors.white70,
+                  )),
+              selected: selected,
+              selectedColor: Colors.greenAccent,
+              backgroundColor: const Color(0xFF2A2A2A),
+              side: BorderSide(
+                color: selected ? Colors.greenAccent : Colors.white24,
+              ),
+              onSelected: (_) => setState(() => _simplifyEpsilonM = eps),
+            );
+          }).toList(),
+        ),
+        if (_simplifyEpsilonM == 0.0)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Wszystkie wierzchołki z katastru (zalecane)',
+              style: TextStyle(color: Colors.greenAccent, fontSize: 11),
+            ),
+          ),
       ],
     );
   }

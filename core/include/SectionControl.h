@@ -38,6 +38,16 @@ public:
     float addStrip(double lat, double lon,
                    double headingDeg, double toolWidthM);
 
+    /// Number of NEW (previously uncovered) cells added by the last addStrip()
+    /// call.  Returns 0 when the strip was fully inside already-covered area.
+    int newCellsLastStrip() const { return _newCellsLastStrip; }
+
+    /// Net new area [ha] from the last addStrip() call.
+    double newAreaHaLastStrip() const {
+        return static_cast<double>(_newCellsLastStrip) *
+               _cellSizeM * _cellSizeM / 10000.0;
+    }
+
     /// Total covered area [ha] = unique cells × cellArea.
     double coveredAreaHa() const;
 
@@ -52,6 +62,9 @@ private:
     bool   _hasOrigin{false};
 
     std::unordered_set<int64_t> _cells;
+
+    // New unique cells added by the most recent addStrip() call.
+    int _newCellsLastStrip{0};
 
     // Convert WGS-84 → local ENU [m] relative to origin.
     std::pair<double, double> _toEnu(double lat, double lon) const;
