@@ -826,8 +826,9 @@ class _MapViewState extends State<MapView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor:
-          _mapMode == MapLayerMode.work ? const Color(0xFF1A1A1A) : Colors.black,
+      backgroundColor: _mapMode == MapLayerMode.work
+          ? const Color(0xFF1A1A1A)
+          : Colors.black,
       body: Stack(
         children: [
           // ── FlutterMap ──────────────────────────────────────────────────────
