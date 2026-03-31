@@ -9,6 +9,7 @@ import '../ffi/nav_bridge.dart';
 import '../models/work_task.dart';
 import '../services/coverage_service.dart';
 import '../services/material_monitor_service.dart';
+import '../utils/geo_utils.dart';
 
 // ── Paleta kolorów Work Mode ──────────────────────────────────────────────────
 const _kBg = Color(0xFF0A0A0A);
@@ -75,9 +76,12 @@ class WorkModeView extends StatefulWidget {
 }
 
 class _WorkModeViewState extends State<WorkModeView> {
-  // ── Stan dynamiczny ──────────────────────────────────────────────────────────
+  // ── Dynamic state ────────────────────────────────────────────────────────────
   late LatLng _tractorPos;
   late double _tractorHeading;
+  // Not part of setState — updated directly in _onSimPosition.
+  // Used only as the one-time `initial` value for Lightbar; live updates
+  // are delivered via _deviationCtrl stream, so no rebuild is needed here.
   double _crossTrack = 0.0;
   bool _guidanceValid = false;
   late StreamController<_DeviationSnapshot> _deviationCtrl;
@@ -213,9 +217,10 @@ class _WorkModeViewState extends State<WorkModeView> {
           .query(pos.latitude, pos.longitude, heading);
     }
 
-    // ── 2. Wybór źródła odchylenia do Lightbara ──────────────────────────────
-    // Swath mode: podpisana odległość od najbliższego pasa ("odl. od pasa").
-    // Headland mode: crosstrack z najbliższego segmentu uwrocia.
+    // ── 2. Pick deviation source for Lightbar ────────────────────────────────
+    // Swath mode: signed distance from the nearest pass.
+    // Headland mode: cross-track from the nearest headland ring segment.
+    int newHeadlandRingIndex = _activeHeadlandRingIndex;
     if (_guidanceMode == _GuidanceMode.swath || widget.headlandRings.isEmpty) {
       if (snapInfo.swathIndex >= 0) {
         _deviationCtrl.add(_DeviationSnapshot(
@@ -235,7 +240,7 @@ class _WorkModeViewState extends State<WorkModeView> {
         crossTrack: hs.crossTrackM,
         valid: hs.ringIndex >= 0,
       ));
-      _activeHeadlandRingIndex = hs.ringIndex;
+      newHeadlandRingIndex = hs.ringIndex;
     }
 
     double overlapFraction = _overlapFraction;
@@ -258,32 +263,28 @@ class _WorkModeViewState extends State<WorkModeView> {
       MaterialMonitorService.instance.updateArea(coveredHa);
     }
 
+    // Update guidance fields directly (no setState) — used only as the
+    // one-time Lightbar initial value on the next rebuild; live updates
+    // flow through _deviationCtrl stream, so no full rebuild needed.
+    _crossTrack = guidance.crossTrack;
+    _guidanceValid = guidance.valid;
+
     setState(() {
       _tractorPos = newPos;
       _tractorHeading = heading;
-      _crossTrack = guidance.crossTrack;
-      _guidanceValid = guidance.valid;
       _snapInfo = snapInfo;
       _speedKmh = speedKmh;
       _overlapFraction = overlapFraction;
       _coveredHa = coveredHa;
       _newAreaHaLastStrip = newAreaHaLastStrip;
-      // _activeHeadlandRingIndex already set above (no copy needed here)
+      _activeHeadlandRingIndex = newHeadlandRingIndex;
     });
 
     _prevPos = newPos;
     _prevTime = now;
   }
 
-  static double _bearing(LatLng from, LatLng to) {
-    final dLon = (to.longitude - from.longitude) * math.pi / 180.0;
-    final lat1 = from.latitude * math.pi / 180.0;
-    final lat2 = to.latitude * math.pi / 180.0;
-    final y = math.sin(dLon) * math.cos(lat2);
-    final x = math.cos(lat1) * math.sin(lat2) -
-        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-    return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
-  }
+  static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
 
   /// Przełącza stan wstrzymania pracy.
   /// Przy wstrzymaniu: zatrzymuje rejestrację pokrycia i zapisuje pozycję GPS
@@ -292,7 +293,10 @@ class _WorkModeViewState extends State<WorkModeView> {
     setState(() {
       _isPaused = !_isPaused;
       if (_isPaused) {
-        _pauseMarkers.add(_tractorPos);
+        // Cap pause-marker list at 50 to prevent unbounded memory growth
+        if (_pauseMarkers.length < 50) {
+          _pauseMarkers.add(_tractorPos);
+        }
       }
     });
   }

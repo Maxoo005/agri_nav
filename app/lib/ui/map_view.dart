@@ -1,3 +1,4 @@
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -26,6 +27,7 @@ import 'field_manager_screen.dart';
 import 'machine_manager_screen.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
+import '../utils/geo_utils.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapView — główny ekran nawigacji rolniczej
@@ -360,7 +362,7 @@ class _MapViewState extends State<MapView> {
 
   // ── Ładowanie pola z listy ─────────────────────────────────────────────────
 
-  void _loadField(FieldModel field) {
+  void _loadField(FieldModel field) async {
     final savedTrack = _activeTask != null
         ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
         : CoverageService.instance.loadForField(field.id);
@@ -373,8 +375,8 @@ class _MapViewState extends State<MapView> {
     var coveredHa = 0.0;
     final replayWidth = _activeTask?.effectiveWidthM ?? field.workingWidthM;
     if (savedTrack.isNotEmpty) {
-      SectionControlBridge.instance.replayTrack(savedTrack, replayWidth);
-      coveredHa = SectionControlBridge.instance.coveredAreaHa();
+      coveredHa = await SectionControlBridge.instance
+          .replayTrack(savedTrack, replayWidth);
     }
 
     setState(() {
@@ -535,28 +537,35 @@ class _MapViewState extends State<MapView> {
       _headlandLaps = laps;
       _swathAngleDeg = angle;
     });
-    _planSwaths(workingWidthM: width);
+    await _planSwaths(workingWidthM: width);
   }
 
-  /// Wywołuje C++ SwathPlanner z aktualnymi parametrami i aktualizuje stan.
-  /// Kierunek ścieżek pochodzi z [_swathAngleDeg] — wyznaczanego automatycznie
-  /// z najdłuższego boku granicy lub ręcznie przez suwak w dialogu.
-  void _planSwaths({double workingWidthM = 3.0}) {
+  /// Calls SwathPlannerFullBridge.planFull() in a background Isolate to avoid
+  /// blocking the UI thread during polygon processing (≈20–200 ms per call).
+  Future<void> _planSwaths({double workingWidthM = 3.0}) async {
     final polygon =
         _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
 
     final (a, b) = _abFromAngle(_swathAngleDeg);
+    final ax = a.latitude, ay = a.longitude;
+    final bx = b.latitude, by = b.longitude;
+    final overlapM = _overlapM;
+    final headlandLaps = _headlandLaps;
 
-    final result = SwathPlannerFullBridge.instance.planFull(
-      polygon: polygon,
-      ax: a.latitude,
-      ay: a.longitude,
-      bx: b.latitude,
-      by: b.longitude,
-      workingWidthM: workingWidthM,
-      overlapM: _overlapM,
-      headlandLaps: _headlandLaps,
-    );
+    final result = await Isolate.run(() {
+      return SwathPlannerFullBridge.instance.planFull(
+        polygon: polygon,
+        ax: ax,
+        ay: ay,
+        bx: bx,
+        by: by,
+        workingWidthM: workingWidthM,
+        overlapM: overlapM,
+        headlandLaps: headlandLaps,
+      );
+    });
+
+    if (!mounted) return;
 
     setState(() {
       _swaths = result.swaths;
@@ -569,13 +578,13 @@ class _MapViewState extends State<MapView> {
     // Feed new swaths into the guidance engine
     if (result.swaths.isNotEmpty) {
       SwathGuidanceBridge.instance
-          .setSwaths(result.swaths, a.latitude, a.longitude);
+          .setSwaths(result.swaths, ax, ay);
     }
 
     // Feed headland rings into the headland guidance engine
     if (_headlandRings.isNotEmpty) {
       HeadlandGuidanceBridge.instance
-          .setRings(_headlandRings, a.latitude, a.longitude);
+          .setRings(_headlandRings, ax, ay);
     }
   }
 
@@ -942,7 +951,7 @@ class _MapViewState extends State<MapView> {
       _activeTask = task;
     });
 
-    _planSwaths(workingWidthM: _activeWorkingWidth);
+    _planSwaths(workingWidthM: _activeWorkingWidth);  // fire-and-forget; swaths appear when ready
 
     // Step 6: start coverage tracking keyed by this task
     CoverageService.instance.startTracking(field.id, taskId: task.id);
@@ -1024,16 +1033,8 @@ class _MapViewState extends State<MapView> {
 
   // ── Azymuty ──────────────────────────────────────────────────────────────────
 
-  /// Kurs (stopnie od północy, 0–360) z [from] do [to].
-  static double _bearing(LatLng from, LatLng to) {
-    final dLon = (to.longitude - from.longitude) * math.pi / 180.0;
-    final lat1 = from.latitude * math.pi / 180.0;
-    final lat2 = to.latitude * math.pi / 180.0;
-    final y = math.sin(dLon) * math.cos(lat2);
-    final x = math.cos(lat1) * math.sin(lat2) -
-        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-    return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
-  }
+  /// Delegates to [GeoUtils.bearing].
+  static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
 
   // ── Budowniczy znacznika A/B ─────────────────────────────────────────────────
 

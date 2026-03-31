@@ -21,7 +21,7 @@ void HeadlandGuidance::setRings(
     const std::vector<std::vector<LatLon>>& rings,
     LatLon origin
 ) {
-    std::unique_lock<std::mutex> lk(_mtx);
+    std::unique_lock<std::shared_mutex> lk(_mtx);
 
     _origin = origin;
     _cosLat = std::cos(degToRadHL(origin.lat));
@@ -62,7 +62,7 @@ void HeadlandGuidance::setRings(
 // ── hasRings ─────────────────────────────────────────────────────────────────
 
 bool HeadlandGuidance::hasRings() const {
-    std::unique_lock<std::mutex> lk(_mtx);
+    std::shared_lock<std::shared_mutex> lk(_mtx);
     return !_cache.empty();
 }
 
@@ -71,7 +71,7 @@ bool HeadlandGuidance::hasRings() const {
 HeadlandSnapResult HeadlandGuidance::query(
     double lat, double lon, double headingDeg
 ) const {
-    std::unique_lock<std::mutex> lk(_mtx);
+    std::shared_lock<std::shared_mutex> lk(_mtx);
 
     if (_cache.empty()) return {0.f, 0.f, -1, -1};
 

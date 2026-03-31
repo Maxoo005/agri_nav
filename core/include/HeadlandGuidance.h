@@ -1,6 +1,7 @@
 #pragma once
 #include "SwathPlanner.h"
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 namespace agrinav {
@@ -63,7 +64,7 @@ private:
         int32_t segIndex;  ///< segment index within the ring
     };
 
-    mutable std::mutex   _mtx;
+    mutable std::shared_mutex _mtx;
     std::vector<EchoSeg> _cache;
     LatLon               _origin{};
     double               _cosLat{1.0};
