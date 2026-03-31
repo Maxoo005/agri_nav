@@ -1,7 +1,10 @@
 #include "SwathPlanner.h"
+#include "clipper2/clipper.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
+using namespace Clipper2Lib;
 
 #ifndef M_PI
 static constexpr double M_PI = 3.14159265358979323846;
@@ -53,73 +56,65 @@ static void ensureCCW(std::vector<Vec2>& p) {
         std::reverse(p.begin(), p.end());
 }
 
-/// Inward polygon offset by `offset` metres (Minkowski erosion for convex,
-/// miter-join for general simple polygons).
+/// Inward polygon offset by `offset` metres using Clipper2 InflatePaths.
 ///
-/// Contract: input must be CCW.
+/// JoinType::Round eliminates the spikes that the previous miter/bevel
+/// vertex-walk produced at sharp field corners.  arc_tolerance = 0.25 m
+/// keeps the vertex count low for typical field polygons.
 ///
-/// Per-vertex algorithm:
-///   For each vertex the new position is the intersection of the two adjacent
-///   inward-offset edge lines (Cramer's rule).  When the miter would exceed
-///   kMiterScale × offset (near-reflex or very sharp corners) the vertex is
-///   bevelled to the midpoint of the two offset-edge endpoints instead,
-///   preventing geometric spikes.
-///
+/// Contract: input must be CCW (enforced by ensureCCW before every call).
 /// Returns an empty vector when the polygon fully collapses (area ≤ 0 after
 /// shrinking — field is too narrow for this offset value).
 static std::vector<Vec2> offsetPolygon(const std::vector<Vec2>& poly,
                                        double                    offset) {
-    const int n = static_cast<int>(poly.size());
-    if (n < 3 || offset <= 0.0) return {};
+    if (static_cast<int>(poly.size()) < 3 || offset <= 0.0) return {};
 
-    // Maximum miter reach before switching to bevel (dimensionless ratio).
-    constexpr double kMiterScale = 5.0;
+    // Build a Clipper2 PathD from ENU metres (x = east, y = north).
+    PathD path;
+    path.reserve(poly.size());
+    for (const auto& v : poly)
+        path.emplace_back(v.e, v.n);
+
+    // Negative delta shrinks a CCW polygon inward.
+    // miter_limit=2, precision=2 (1 cm), arc_tolerance=0.25 m.
+    const PathsD result = InflatePaths(
+        PathsD{path},
+        -offset,
+        JoinType::Round,
+        EndType::Polygon,
+        /*miter_limit=*/2.0,
+        /*precision=*/2,
+        /*arc_tolerance=*/0.25
+    );
+
+    if (result.empty()) return {};
+
+    // Use the largest output ring (InflatePaths may return multiple rings for
+    // self-intersecting inputs; we want the outermost valid contraction).
+    const PathD* best = &result[0];
+    double bestArea = 0.0;
+    for (const auto& r : result) {
+        double area = 0.0;
+        const int n  = static_cast<int>(r.size());
+        for (int i = 0; i < n; ++i) {
+            const auto& a = r[static_cast<size_t>(i)];
+            const auto& b = r[static_cast<size_t>((i + 1) % n)];
+            area += a.x * b.y - b.x * a.y;
+        }
+        area = std::abs(area) * 0.5;
+        if (area > bestArea) { bestArea = area; best = &r; }
+    }
+    if (bestArea < 1e-4) return {};    // polygon collapsed
 
     std::vector<Vec2> out;
-    out.reserve(n);
+    out.reserve(best->size());
+    for (const auto& pt : *best)
+        out.push_back({pt.x, pt.y});
 
-    for (int i = 0; i < n; ++i) {
-        const Vec2& prev = poly[(i - 1 + n) % n];
-        const Vec2& curr = poly[i];
-        const Vec2& next = poly[(i + 1) % n];
+    // Ensure the ring is still CCW after the offset (Clipper2 preserves winding
+    // but we guard defensively).
+    if (signedArea(out) < 0.0) std::reverse(out.begin(), out.end());
 
-        // Unit vectors along incoming edge (prev→curr) and outgoing (curr→next).
-        const Vec2 e1 = normalize({curr.e - prev.e, curr.n - prev.n});
-        const Vec2 e2 = normalize({next.e - curr.e, next.n - curr.n});
-
-        // Inward (left-side) normals for a CCW polygon:
-        //   rotate edge direction 90° CCW → (-dn, de).
-        const Vec2 n1 = {-e1.n,  e1.e};
-        const Vec2 n2 = {-e2.n,  e2.e};
-
-        // Reference points on the two inward-offset edge lines at this vertex.
-        const Vec2 P1 = {curr.e + offset * n1.e, curr.n + offset * n1.n};
-        const Vec2 P2 = {curr.e + offset * n2.e, curr.n + offset * n2.n};
-
-        // Solve  t·e1 − s·e2 = P2 − P1  for t  (Cramer's rule).
-        //   det = cross(e1, e2)
-        //   t   = cross(rhs, e2) / det
-        const Vec2   rhs = {P2.e - P1.e, P2.n - P1.n};
-        const double det = cross2d(e1, e2);
-
-        Vec2 vx;
-        if (std::abs(det) < 1e-8) {
-            // Parallel edges (straight section) — plain translation along n1.
-            vx = P1;
-        } else {
-            const double t = cross2d(rhs, e2) / det;
-            if (std::abs(t) > kMiterScale * offset) {
-                // Sharp / near-reflex corner: bevel at midpoint of P1 and P2.
-                vx = {(P1.e + P2.e) * 0.5, (P1.n + P2.n) * 0.5};
-            } else {
-                vx = {P1.e + t * e1.e, P1.n + t * e1.n};
-            }
-        }
-        out.push_back(vx);
-    }
-
-    // Reject collapsed / inverted result (polygon vanished at this offset).
-    if (signedArea(out) < 1e-4) return {};
     return out;
 }
 
@@ -197,25 +192,47 @@ SwathPlan SwathPlanner::plan(
         std::max(workingWidthM - std::max(overlapM, 0.0), 0.1);
 
     // 4. Headland rings ────────────────────────────────────────────────────────
-    // Ring k is offset inward by  k × effectiveWidth  from the outer boundary.
-    // Each ring is computed independently from outerPoly to avoid compounding error.
-    std::vector<Vec2> innerPoly = outerPoly;  // inner field boundary, updated below
+    //
+    // The antenna (machine centre) of pass k must sit at the offset that makes
+    // the machine's outer edge touch the previous boundary:
+    //
+    //   pass 1 : offset = W/2          (outer edge = field boundary)
+    //   pass 2 : offset = W/2 + W
+    //   pass k : offset = W/2 + (k-1)×W  =  (k - 0.5) × effectiveWidth
+    //
+    // Each ring is computed independently from outerPoly to prevent
+    // compounding numerical error across laps.
+    //
+    // The inner clipping boundary for swath planning is the full-width
+    // offset (headlandLaps × effectiveWidth), i.e. just inside the inner
+    // edge of the last headland pass — NOT the antenna path of that pass.
+
+    std::vector<Vec2> innerPoly;  // swath-clipping boundary, set after the loop
 
     for (int k = 1; k <= headlandLaps; ++k) {
-        const double d_offset = static_cast<double>(k) * effectiveWidth;
-        const std::vector<Vec2> ring = offsetPolygon(outerPoly, d_offset);
+        // Antenna-path offset: outer machine edge aligns with previous boundary
+        const double antennaOffset =
+            (static_cast<double>(k) - 0.5) * effectiveWidth;
+        const std::vector<Vec2> ring = offsetPolygon(outerPoly, antennaOffset);
         if (ring.empty()) break;  // field too narrow — stop generating more laps
 
-        // Store ring as LatLon (closed: first point repeated as last is NOT
-        // stored; the caller closes if needed for rendering).
+        // Store ring as LatLon for rendering / guidance.
         std::vector<LatLon> ringLL;
         ringLL.reserve(ring.size());
         for (const auto& v : ring)
             ringLL.push_back(fromENU(oLat, oLon, v));
         result.headlandRings.push_back(std::move(ringLL));
-
-        innerPoly = ring;  // deepest valid ring becomes the inner field boundary
     }
+
+    // Inner clipping boundary = full-width inset after all headland laps.
+    // Swaths must not cross this line (they would overlap the headland area).
+    if (headlandLaps > 0) {
+        const double clipOffset =
+            static_cast<double>(headlandLaps) * effectiveWidth;
+        innerPoly = offsetPolygon(outerPoly, clipOffset);
+    }
+    // Fallback: no headland or field too narrow to clip — use outer boundary.
+    if (innerPoly.empty()) innerPoly = outerPoly;
 
     // 5. Parallel swaths inside innerPoly ─────────────────────────────────────
     if (innerPoly.size() < 3) return result;

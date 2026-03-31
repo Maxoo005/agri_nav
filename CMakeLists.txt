@@ -21,6 +21,7 @@ add_library(agri_nav_core STATIC
     core/src/GnssSimulator.cpp
     core/src/SwathPlanner.cpp
     core/src/SwathGuidance.cpp
+    core/src/HeadlandGuidance.cpp
     core/src/SectionControl.cpp
     core/src/ParcelMerger.cpp
     core/src/GeometryProcessor.cpp

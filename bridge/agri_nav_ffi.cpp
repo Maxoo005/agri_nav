@@ -1,6 +1,7 @@
 #include "agri_nav_ffi.h"
 #include "GeometryProcessor.h"
 #include "GnssSimulator.h"
+#include "HeadlandGuidance.h"
 #include "NavEngine.h"
 #include "ParcelMerger.h"
 #include "SectionControl.h"
@@ -486,6 +487,64 @@ FfiMergeResult* agrinav_process_lpis(
     const agrinav::MergeResult mr =
         agrinav::GeometryProcessor::processLpis(parcels, lpisOpts);
     return buildFfiMergeResult(mr);
+}
+
+} // extern "C"
+
+// ── Headland ring guidance ─────────────────────────────────────────────────────
+
+extern "C" {
+
+HeadlandHandle agrinav_headland_create() {
+    return new agrinav::HeadlandGuidance();
+}
+
+void agrinav_headland_destroy(HeadlandHandle h) {
+    delete static_cast<agrinav::HeadlandGuidance*>(h);
+}
+
+void agrinav_headland_set_rings(
+    HeadlandHandle  h,
+    const double*   ringPointData,
+    const int32_t*  ringPointCounts,
+    int32_t         ringCount,
+    double          originLat,
+    double          originLon)
+{
+    if (!h || !ringPointData || !ringPointCounts || ringCount <= 0) return;
+
+    std::vector<std::vector<agrinav::LatLon>> rings;
+    rings.reserve(static_cast<size_t>(ringCount));
+
+    size_t offset = 0;
+    for (int32_t ri = 0; ri < ringCount; ++ri) {
+        const int32_t pts = ringPointCounts[ri];
+        std::vector<agrinav::LatLon> ring;
+        ring.reserve(static_cast<size_t>(pts));
+        for (int32_t pi = 0; pi < pts; ++pi) {
+            ring.push_back({
+                ringPointData[offset + static_cast<size_t>(pi) * 2],
+                ringPointData[offset + static_cast<size_t>(pi) * 2 + 1]
+            });
+        }
+        offset += static_cast<size_t>(pts) * 2;
+        if (ring.size() >= 2) rings.push_back(std::move(ring));
+    }
+
+    static_cast<agrinav::HeadlandGuidance*>(h)->setRings(
+        rings, {originLat, originLon});
+}
+
+FfiHeadlandResult agrinav_headland_query(
+    HeadlandHandle h,
+    double         lat,
+    double         lon,
+    float          headingDeg)
+{
+    if (!h) return {0.f, 0.f, -1, -1};
+    const auto r = static_cast<agrinav::HeadlandGuidance*>(h)
+                       ->query(lat, lon, static_cast<double>(headingDeg));
+    return {r.crossTrackM, r.headingErrorDeg, r.ringIndex, r.segmentIndex};
 }
 
 } // extern "C"

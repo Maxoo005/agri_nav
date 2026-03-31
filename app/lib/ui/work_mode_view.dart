@@ -15,9 +15,13 @@ const _kBg = Color(0xFF0A0A0A);
 const _kGrid = Color(0x0CFFFFFF);
 const _kBoundary = Color(0x55FFFFFF);
 const _kHeadland = Color(0x55FF9800);
+const _kActiveHeadland = Color(0xFFFF9800); // pomarańcz bez transparentności
 const _kSwath = Color(0x55E0E0E0);
 const _kActiveSwath = Color(0xFFFFD600);
 const _kCoverage = Color(0x5500BCD4);
+
+/// Tryb prowadzenia maszyny.
+enum _GuidanceMode { swath, headland }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WorkModeView — minimalistyczny widok prowadzenia geometrycznego
@@ -76,7 +80,23 @@ class _WorkModeViewState extends State<WorkModeView> {
   late double _tractorHeading;
   double _crossTrack = 0.0;
   bool _guidanceValid = false;
+  late StreamController<_DeviationSnapshot> _deviationCtrl;
   late SnapInfo _snapInfo;
+
+  // ── Tryb prowadzenia ─────────────────────────────────────────────────────────
+  _GuidanceMode _guidanceMode = _GuidanceMode.swath;
+
+  /// Indeks aktywnego pierścienia uwrocia (−1 = brak). Używany do podświetlenia
+  /// na kanwie i jest ustawiany w trybie headland po każdym query().
+  int _activeHeadlandRingIndex = -1;
+
+  // ── Wstrzymanie pracy ────────────────────────────────────────────────────────
+  bool _isPaused = false;
+
+  /// Pozycje GPS zapisane w momencie wstrzymania — wyświetlane jako znaczniki
+  /// uzupełnienia materiału na kanwie pola.
+  final List<LatLng> _pauseMarkers = [];
+
   late double _coveredHa;
   double _speedKmh = 0.0;
   double _overlapFraction = 0.0;
@@ -105,6 +125,7 @@ class _WorkModeViewState extends State<WorkModeView> {
     _tractorHeading = widget.initialHeading;
     _snapInfo = widget.initialSnapInfo;
     _coveredHa = widget.initialCoveredHa;
+    _deviationCtrl = StreamController<_DeviationSnapshot>.broadcast();
 
     // Start material monitor if task has rate/tank data
     if (widget.activeTask != null) {
@@ -147,6 +168,7 @@ class _WorkModeViewState extends State<WorkModeView> {
     MaterialMonitorService.instance.stop();
     // Zwróć callback GPS do poprzedniego właściciela (MapView)
     GnssSimulatorBridge.instance.onPosition = _prevSimCallback;
+    _deviationCtrl.close();
     super.dispose();
   }
 
@@ -183,29 +205,58 @@ class _WorkModeViewState extends State<WorkModeView> {
       accuracy: pos.accuracy,
     );
 
+    // ── 1. Snap do najbliższego pasa (zawsze aktualny — używany przez Lightbar
+    //    w trybie swath i przez panel statystyk)
     SnapInfo snapInfo = _snapInfo;
     if (widget.swaths.isNotEmpty) {
       snapInfo = SwathGuidanceBridge.instance
           .query(pos.latitude, pos.longitude, heading);
     }
 
+    // ── 2. Wybór źródła odchylenia do Lightbara ──────────────────────────────
+    // Swath mode: podpisana odległość od najbliższego pasa ("odl. od pasa").
+    // Headland mode: crosstrack z najbliższego segmentu uwrocia.
+    if (_guidanceMode == _GuidanceMode.swath || widget.headlandRings.isEmpty) {
+      if (snapInfo.swathIndex >= 0) {
+        _deviationCtrl.add(_DeviationSnapshot(
+          crossTrack: snapInfo.distanceM * snapInfo.side.toDouble(),
+          valid: true,
+        ));
+      } else {
+        _deviationCtrl.add(_DeviationSnapshot(
+          crossTrack: guidance.crossTrack,
+          valid: guidance.valid,
+        ));
+      }
+    } else {
+      final hs = HeadlandGuidanceBridge.instance
+          .query(pos.latitude, pos.longitude, heading);
+      _deviationCtrl.add(_DeviationSnapshot(
+        crossTrack: hs.crossTrackM,
+        valid: hs.ringIndex >= 0,
+      ));
+      _activeHeadlandRingIndex = hs.ringIndex;
+    }
+
     double overlapFraction = _overlapFraction;
     double coveredHa = _coveredHa;
     double newAreaHaLastStrip = _newAreaHaLastStrip;
-    CoverageService.instance.addPoint(newPos);
-    if (widget.fieldId != null) {
-      overlapFraction = SectionControlBridge.instance.addStrip(
-        pos.latitude,
-        pos.longitude,
-        heading,
-        widget.workingWidthM,
-      );
-      coveredHa = SectionControlBridge.instance.coveredAreaHa();
-      newAreaHaLastStrip = SectionControlBridge.instance.newAreaHaLastStrip();
-    }
 
-    // Update material consumption
-    MaterialMonitorService.instance.updateArea(coveredHa);
+    // ── 3. Ślad pokrycia: rejestruj tylko gdy praca AKTYWNA (nie wstrzymana) ─
+    if (!_isPaused) {
+      CoverageService.instance.addPoint(newPos);
+      if (widget.fieldId != null) {
+        overlapFraction = SectionControlBridge.instance.addStrip(
+          pos.latitude,
+          pos.longitude,
+          heading,
+          widget.workingWidthM,
+        );
+        coveredHa = SectionControlBridge.instance.coveredAreaHa();
+        newAreaHaLastStrip = SectionControlBridge.instance.newAreaHaLastStrip();
+      }
+      MaterialMonitorService.instance.updateArea(coveredHa);
+    }
 
     setState(() {
       _tractorPos = newPos;
@@ -217,6 +268,7 @@ class _WorkModeViewState extends State<WorkModeView> {
       _overlapFraction = overlapFraction;
       _coveredHa = coveredHa;
       _newAreaHaLastStrip = newAreaHaLastStrip;
+      // _activeHeadlandRingIndex already set above (no copy needed here)
     });
 
     _prevPos = newPos;
@@ -231,6 +283,18 @@ class _WorkModeViewState extends State<WorkModeView> {
     final x = math.cos(lat1) * math.sin(lat2) -
         math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
     return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
+  }
+
+  /// Przełącza stan wstrzymania pracy.
+  /// Przy wstrzymaniu: zatrzymuje rejestrację pokrycia i zapisuje pozycję GPS
+  /// jako znacznik miejsca uzupełnienia materiału.
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (_isPaused) {
+        _pauseMarkers.add(_tractorPos);
+      }
+    });
   }
 
   void _exitWorkMode() {
@@ -357,6 +421,8 @@ class _WorkModeViewState extends State<WorkModeView> {
                     fieldBoundary: widget.fieldBoundary,
                     coverageTrack: coverageTrack,
                     activeSwathIndex: _snapInfo.swathIndex,
+                    activeHeadlandRingIndex: _activeHeadlandRingIndex,
+                    pauseMarkers: _pauseMarkers,
                     pixelsPerMeter: _pixelsPerMeter,
                     workingWidthM: widget.workingWidthM,
                   ),
@@ -370,8 +436,11 @@ class _WorkModeViewState extends State<WorkModeView> {
               left: 12,
               right: 12,
               child: _Lightbar(
-                crossTrack: _crossTrack,
-                valid: _guidanceValid,
+                deviationStream: _deviationCtrl.stream,
+                initial: _DeviationSnapshot(
+                  crossTrack: _crossTrack,
+                  valid: _guidanceValid,
+                ),
               ),
             ),
 
@@ -388,26 +457,47 @@ class _WorkModeViewState extends State<WorkModeView> {
               ),
             ),
 
-            // ── 4. Wskaźnik snap-to-swath (lewy bok, pod lightbarem) ──────────
-            if (_snapInfo.swathIndex >= 0)
+            // ── 4b. Przełącznik trybu prowadzenia (lewy bok, pod lightbarem)
+            if (widget.headlandRings.isNotEmpty)
               Positioned(
                 left: 12,
                 top: padding.top + 8 + 82,
-                child: _SwathIndicator(snapInfo: _snapInfo),
+                child: _GuidanceModeButton(
+                  mode: _guidanceMode,
+                  onToggle: () => setState(() {
+                    _guidanceMode = _guidanceMode == _GuidanceMode.swath
+                        ? _GuidanceMode.headland
+                        : _GuidanceMode.swath;
+                    // Reset active ring highlight when switching modes
+                    if (_guidanceMode == _GuidanceMode.swath) {
+                      _activeHeadlandRingIndex = -1;
+                    }
+                  }),
+                ),
               ),
 
-            // ── 5. Przycisk "Zakończ pracę" (dół ekranu) ──────────────────────
+            // ── 5. Przyciski dołu: Wstrzymaj / Zakończ pracę ─────────────────
             Positioned(
               bottom: padding.bottom + 20,
               left: 20,
               right: 20,
-              child: Hero(
-                tag: 'workModeHero',
-                // Material zapobiega błędom renderowania Hero nad różnymi tłami
-                child: Material(
-                  color: Colors.transparent,
-                  child: _ExitButton(onPressed: _exitWorkMode),
-                ),
+              child: Row(
+                children: [
+                  _PauseButton(
+                    isPaused: _isPaused,
+                    onPressed: _togglePause,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Hero(
+                      tag: 'workModeHero',
+                      child: Material(
+                        color: Colors.transparent,
+                        child: _ExitButton(onPressed: _exitWorkMode),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             // ── 6. Wskaźnik zbiornika (lewy dół, widoczny tylko gdy monitorowanie aktywne)
@@ -442,6 +532,8 @@ class _FieldCanvasPainter extends CustomPainter {
     required this.fieldBoundary,
     required this.coverageTrack,
     required this.activeSwathIndex,
+    required this.activeHeadlandRingIndex,
+    required this.pauseMarkers,
     required this.pixelsPerMeter,
     required this.workingWidthM,
   });
@@ -453,6 +545,8 @@ class _FieldCanvasPainter extends CustomPainter {
   final List<LatLng> fieldBoundary;
   final List<LatLng> coverageTrack;
   final int activeSwathIndex;
+  final int activeHeadlandRingIndex;
+  final List<LatLng> pauseMarkers;
   final double pixelsPerMeter;
   final double workingWidthM;
 
@@ -516,19 +610,21 @@ class _FieldCanvasPainter extends CustomPainter {
     }
 
     // ── Pierścienie uwrociowe ─────────────────────────────────────────────────
-    final headlandPaint = Paint()
-      ..color = _kHeadland
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.2;
-    for (final ring in headlandRings) {
+    for (int ri = 0; ri < headlandRings.length; ri++) {
+      final ring = headlandRings[ri];
       if (ring.length < 2) continue;
+      final isActive = ri == activeHeadlandRingIndex;
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        ..color = isActive ? _kActiveHeadland : _kHeadland
+        ..strokeWidth = isActive ? 3.0 : 1.2;
       final path = ui.Path();
       for (int i = 0; i < ring.length; i++) {
         final o = _toLocal(ring[i]);
         i == 0 ? path.moveTo(o.dx, o.dy) : path.lineTo(o.dx, o.dy);
       }
       path.close();
-      canvas.drawPath(path, headlandPaint);
+      canvas.drawPath(path, paint);
     }
 
     // ── Ślad pokrycia ─────────────────────────────────────────────────────────
@@ -568,6 +664,37 @@ class _FieldCanvasPainter extends CustomPainter {
       final s1 = _toLocal(LatLng(s.endLat, s.endLon));
       canvas.drawLine(
           s0, s1, i == activeSwathIndex ? activeSwathPaint : swathPaint);
+    }
+
+    // ── Znaczniki wstrzymania (miejsca uzupełnienia materiału) ───────────────
+    for (final marker in pauseMarkers) {
+      final o = _toLocal(marker);
+      // Poświata zewnętrzna
+      canvas.drawCircle(
+        o,
+        20,
+        Paint()
+          ..color = const Color(0x44FFD600)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+      // Żółte wypełnione kółko
+      canvas.drawCircle(o, 11, Paint()..color = const Color(0xFFFFD600));
+      canvas.drawCircle(
+        o,
+        11,
+        Paint()
+          ..color = Colors.black45
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+      // Kształt kropli (ikona uzupełnienia) wewnątrz kółka
+      final dropPath = ui.Path()
+        ..moveTo(o.dx, o.dy - 6)
+        ..lineTo(o.dx + 4, o.dy + 3)
+        ..arcToPoint(Offset(o.dx - 4, o.dy + 3),
+            radius: const Radius.circular(4), clockwise: false)
+        ..close();
+      canvas.drawPath(dropPath, Paint()..color = Colors.black87);
     }
 
     canvas.restore();
@@ -619,133 +746,240 @@ class _FieldCanvasPainter extends CustomPainter {
       old.tractorPos != tractorPos ||
       old.tractorHeading != tractorHeading ||
       old.activeSwathIndex != activeSwathIndex ||
+      old.activeHeadlandRingIndex != activeHeadlandRingIndex ||
       old.pixelsPerMeter != pixelsPerMeter ||
-      old.coverageTrack != coverageTrack;
+      old.coverageTrack != coverageTrack ||
+      old.pauseMarkers.length != pauseMarkers.length;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lightbar — pasek świetlny prowadzenia
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _Lightbar extends StatelessWidget {
-  const _Lightbar({required this.crossTrack, required this.valid});
-
+/// Migawka danych odchylenia emitowana przez [StreamController] w stanie
+/// [_WorkModeViewState]. Lightbar subskrybuje własny strumień i przebudowuje
+/// się niezależnie od cyklu setState widoku mapy.
+class _DeviationSnapshot {
+  const _DeviationSnapshot({required this.crossTrack, required this.valid});
   final double crossTrack;
   final bool valid;
+}
 
-  static Color _ctColor(double ct, bool valid) {
-    if (!valid) return const Color(0x88FFFFFF);
-    final a = ct.abs();
-    if (a < 0.15) return const Color(0xFF00E676);
-    if (a < 0.50) return Colors.orange;
-    return Colors.redAccent;
+/// Stany semantyczne lightbara.
+enum _LbState { invalid, neutral, warnLeft, warnRight, errLeft, errRight }
+
+/// Dynamiczny pasek świetlny z trójfazową logiką kolorów i animowanymi
+/// strzałkami kierunkowymi. Subskrybuje [deviationStream] bez powodowania
+/// przebudowy całego widoku mapy.
+class _Lightbar extends StatefulWidget {
+  const _Lightbar({
+    required this.deviationStream,
+    required this.initial,
+  });
+
+  final Stream<_DeviationSnapshot> deviationStream;
+  final _DeviationSnapshot initial;
+
+  @override
+  State<_Lightbar> createState() => _LightbarWidgetState();
+}
+
+class _LightbarWidgetState extends State<_Lightbar>
+    with TickerProviderStateMixin {
+  // Wolne pulsowanie — faza ostrzeżenia (żółty, ~1 500 ms)
+  late AnimationController _slowCtrl;
+  // Szybkie pulsowanie — faza błędu (czerwony, ~500 ms)
+  late AnimationController _fastCtrl;
+  late Animation<double> _slowAnim;
+  late Animation<double> _fastAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _slowCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+    _fastCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
+    )..repeat(reverse: true);
+    _slowAnim = Tween<double>(begin: 0.35, end: 1.0).animate(
+      CurvedAnimation(parent: _slowCtrl, curve: Curves.easeInOut),
+    );
+    _fastAnim = Tween<double>(begin: 0.20, end: 1.0).animate(
+      CurvedAnimation(parent: _fastCtrl, curve: Curves.easeInOut),
+    );
   }
+
+  @override
+  void dispose() {
+    _slowCtrl.dispose();
+    _fastCtrl.dispose();
+    super.dispose();
+  }
+
+  // ── Klasyfikacja odchylenia ───────────────────────────────────────────────
+  //  ct < 0  →  lewa strzałka (maszyna za daleko w lewo, koryguj w lewo)
+  //  ct > 0  →  prawa strzałka (maszyna za daleko w prawo, koryguj w prawo)
+  static _LbState _classify(double ct, bool valid) {
+    if (!valid) return _LbState.invalid;
+    final a = ct.abs();
+    if (a < 0.10) return _LbState.neutral;
+    if (a <= 0.30) return ct < 0 ? _LbState.warnLeft : _LbState.warnRight;
+    return ct < 0 ? _LbState.errLeft : _LbState.errRight;
+  }
+
+  static Color _stateColor(_LbState s) => switch (s) {
+        _LbState.neutral => const Color(0xFF00E676),
+        _LbState.warnLeft || _LbState.warnRight => const Color(0xFFFFD600),
+        _LbState.errLeft || _LbState.errRight => const Color(0xFFFF1744),
+        _LbState.invalid => const Color(0x88FFFFFF),
+      };
 
   @override
   Widget build(BuildContext context) {
-    final color = _ctColor(crossTrack, valid);
-    final absStr = valid ? '${crossTrack.abs().toStringAsFixed(2)} m' : '---';
-    final sideStr = valid
-        ? (crossTrack > 0.05
-            ? '  ▶'
-            : crossTrack < -0.05
-                ? '◀  '
-                : ' ✓ ')
-        : '';
+    return StreamBuilder<_DeviationSnapshot>(
+      stream: widget.deviationStream,
+      initialData: widget.initial,
+      builder: (context, snap) {
+        final data = snap.data!;
+        final state = _classify(data.crossTrack, data.valid);
+        final color = _stateColor(state);
 
-    return Container(
-      height: 66,
-      decoration: BoxDecoration(
-        color: const Color(0xFF111111),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white12),
-        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Komórki LED
-            SizedBox.expand(
-              child: CustomPaint(
-                painter: _LightbarPainter(
-                  crossTrack: crossTrack,
-                  valid: valid,
-                ),
+        final isError = state == _LbState.errLeft || state == _LbState.errRight;
+        final isWarn =
+            state == _LbState.warnLeft || state == _LbState.warnRight;
+        final isLeftActive =
+            state == _LbState.warnLeft || state == _LbState.errLeft;
+        final isRightActive =
+            state == _LbState.warnRight || state == _LbState.errRight;
+        final isNeutral = state == _LbState.neutral;
+
+        // Subskrybuj wyłącznie potrzebną animację — neutralne tło nie pulsuje.
+        final Animation<double> tickAnim = isError
+            ? _fastAnim
+            : isWarn
+                ? _slowAnim
+                : const AlwaysStoppedAnimation<double>(1.0);
+
+        final absStr = data.valid
+            ? '${data.crossTrack.abs().toStringAsFixed(2)} m'
+            : '---';
+
+        return AnimatedBuilder(
+          animation: tickAnim,
+          builder: (context, _) {
+            final pulse = tickAnim.value;
+
+            // Tło: w fazie ERROR subtelnie pulsuje ku ciemnej czerwieni
+            final bgRed = isError ? (pulse * 30).round() : 0;
+            final bgColor = Color.fromARGB(
+              255,
+              (0x11 + bgRed).clamp(0, 255),
+              0x11,
+              0x11,
+            );
+
+            // Obramowanie: subtelna poświata w aktywnym kolorze
+            final borderColor = state == _LbState.invalid
+                ? Colors.white12
+                : color.withOpacity(isNeutral ? 0.28 : 0.45);
+
+            // Cień zewnętrzny: w fazie ERROR rozszerza się rytmicznie
+            final List<BoxShadow> shadows = isError
+                ? [
+                    BoxShadow(
+                      color: color.withOpacity(pulse * 0.40),
+                      blurRadius: 14,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : const [BoxShadow(color: Colors.black54, blurRadius: 10)];
+
+            // Krycie strzałek
+            final double leftOpacity;
+            final double rightOpacity;
+            if (isNeutral) {
+              // Obie strzałki widoczne statycznie, w kolorze zielonym
+              leftOpacity = 0.40;
+              rightOpacity = 0.40;
+            } else if (isLeftActive) {
+              leftOpacity = pulse; // pulsuje
+              rightOpacity = 0.07; // prawie niewidoczna
+            } else if (isRightActive) {
+              leftOpacity = 0.07;
+              rightOpacity = pulse;
+            } else {
+              // invalid
+              leftOpacity = 0.07;
+              rightOpacity = 0.07;
+            }
+
+            final leftColor =
+                (isNeutral || isLeftActive) ? color : Colors.white;
+            final rightColor =
+                (isNeutral || isRightActive) ? color : Colors.white;
+
+            return Container(
+              height: 66,
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: borderColor),
+                boxShadow: shadows,
               ),
-            ),
-            // Wartość liczbowa na środku
-            Text(
-              '$absStr$sideStr',
-              style: TextStyle(
-                color: color,
-                fontSize: 26,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.8,
-                shadows: const [Shadow(color: Colors.black, blurRadius: 8)],
+              child: Row(
+                children: [
+                  // ← Strzałka
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14.0),
+                    child: Opacity(
+                      opacity: leftOpacity,
+                      child: Icon(
+                        Icons.arrow_back_ios_rounded,
+                        color: leftColor,
+                        size: 30,
+                      ),
+                    ),
+                  ),
+                  // Tekst odchylenia — centrum paska
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                        absStr,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.8,
+                          shadows: const [
+                            Shadow(color: Colors.black87, blurRadius: 8),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  // → Strzałka
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14.0),
+                    child: Opacity(
+                      opacity: rightOpacity,
+                      child: Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        color: rightColor,
+                        size: 30,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
-}
-
-class _LightbarPainter extends CustomPainter {
-  const _LightbarPainter({required this.crossTrack, required this.valid});
-
-  final double crossTrack;
-  final bool valid;
-
-  // 31 komórek; środek = indeks 15 (0-based); zakres ±1.5 m → 0.1 m/komórkę
-  static const int _n = 31;
-  static const int _center = 15;
-  static const double _range = 1.5;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cellW = size.width / _n;
-    const vPad = 7.0;
-
-    // Przesunięcie od środka w komórkach (clamp do ±_center)
-    final deviation = valid
-        ? ((crossTrack / _range) * _center).round().clamp(-_center, _center)
-        : 0;
-    final lo = math.min(_center, _center + deviation);
-    final hi = math.max(_center, _center + deviation);
-
-    for (int i = 0; i < _n; i++) {
-      final lit = valid && i >= lo && i <= hi;
-      final dist = (i - _center).abs();
-      final color = _cellColor(dist, lit);
-
-      canvas.drawRRect(
-        RRect.fromLTRBR(
-          i * cellW + 2.0,
-          vPad,
-          (i + 1) * cellW - 2.0,
-          size.height - vPad,
-          Radius.circular(cellW * 0.3),
-        ),
-        Paint()..color = color,
-      );
-    }
-  }
-
-  Color _cellColor(int dist, bool lit) {
-    if (!lit) return const Color(0xFF181818);
-    if (dist == 0) return const Color(0xFF00E676); // środek: jasna zieleń
-    if (dist <= 1) return const Color(0xFF69F0AE); // ±0.1 m: zieleń
-    if (dist <= 3) return Colors.yellow; // ±0.2–0.3 m: żółty
-    if (dist <= 7) return Colors.orange; // ±0.4–0.7 m: pomarańcz
-    return Colors.redAccent; // > 0.8 m: czerwony
-  }
-
-  @override
-  bool shouldRepaint(_LightbarPainter old) =>
-      old.crossTrack != crossTrack || old.valid != valid;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -911,73 +1145,6 @@ class _TileDivider extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Wskaźnik snap-to-swath (lewy bok)
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _SwathIndicator extends StatelessWidget {
-  const _SwathIndicator({required this.snapInfo});
-
-  final SnapInfo snapInfo;
-
-  @override
-  Widget build(BuildContext context) {
-    final dist = snapInfo.distanceM;
-    final Color indicatorColor;
-    if (dist < 0.15) {
-      indicatorColor = Colors.greenAccent;
-    } else if (dist < 0.5) {
-      indicatorColor = Colors.orange;
-    } else {
-      indicatorColor = Colors.redAccent;
-    }
-
-    final IconData sideIcon = snapInfo.side > 0
-        ? Icons.arrow_forward_rounded
-        : snapInfo.side < 0
-            ? Icons.arrow_back_rounded
-            : Icons.check_circle_rounded;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-      decoration: BoxDecoration(
-        color: const Color(0xCC0D0D0D),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(sideIcon, color: indicatorColor, size: 22),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'odl. od pasa',
-                style: TextStyle(
-                  color: Colors.white38,
-                  fontSize: 9,
-                  letterSpacing: 0.6,
-                ),
-              ),
-              Text(
-                '${dist.toStringAsFixed(2)} m',
-                style: TextStyle(
-                  color: indicatorColor,
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Wskaźnik zbiornika
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1121,6 +1288,100 @@ class _ExitButton extends StatelessWidget {
       onPressed: onPressed,
       icon: const Icon(Icons.stop_circle_outlined),
       label: const Text('Zakończ pracę'),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Przycisk Wstrzymaj / Wznów
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _PauseButton extends StatelessWidget {
+  const _PauseButton({required this.isPaused, required this.onPressed});
+
+  final bool isPaused;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color bg = isPaused
+        ? const Color(0xAA004D26) // ciemnozielony gdy "Wznów"
+        : const Color(0xAA4A2800); // ciemnopomarańczowy gdy "Wstrzymaj"
+    final Color fg = isPaused ? Colors.greenAccent : const Color(0xFFFFB74D);
+
+    return FilledButton.icon(
+      style: FilledButton.styleFrom(
+        backgroundColor: bg,
+        foregroundColor: fg,
+        minimumSize: const Size(88, 54),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: fg.withOpacity(0.45)),
+        ),
+        textStyle: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.4,
+        ),
+      ),
+      onPressed: onPressed,
+      icon: Icon(
+        isPaused
+            ? Icons.play_arrow_rounded
+            : Icons.pause_circle_outline_rounded,
+      ),
+      label: Text(isPaused ? 'Wznów' : 'Wstrzymaj'),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Przełącznik trybu prowadzenia: linie AB ↔ uwrocie
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _GuidanceModeButton extends StatelessWidget {
+  const _GuidanceModeButton({
+    required this.mode,
+    required this.onToggle,
+  });
+
+  final _GuidanceMode mode;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final isHeadland = mode == _GuidanceMode.headland;
+    final label = isHeadland ? 'Uwrocie' : 'Linie AB';
+    final icon = isHeadland ? Icons.loop_rounded : Icons.linear_scale_rounded;
+    final borderColor = isHeadland ? _kActiveHeadland : Colors.white24;
+    final fgColor = isHeadland ? _kActiveHeadland : Colors.white70;
+
+    return GestureDetector(
+      onTap: onToggle,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xCC0D0D0D),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: borderColor, width: isHeadland ? 1.5 : 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: fgColor, size: 15),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: fgColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

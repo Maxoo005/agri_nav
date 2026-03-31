@@ -298,6 +298,57 @@ FfiMergeResult* agrinav_process_lpis(
     FfiLpisOptions     opts
 );
 
+// ── Headland ring guidance ────────────────────────────────────────────────────
+
+/// Opaque handle to a HeadlandGuidance instance.
+typedef void* HeadlandHandle;
+
+/// Signed snap-to-nearest-headland-ring result.
+///   crossTrackM > 0  → machine is to the RIGHT of the local ring tangent
+///   crossTrackM < 0  → machine is to the LEFT
+typedef struct {
+    float   crossTrackM;       ///< signed cross-track distance [m]
+    float   headingErrorDeg;   ///< signed heading error [deg]: machine − ring tangent
+    int32_t ringIndex;         ///< index of the nearest ring; −1 when no rings loaded
+    int32_t segmentIndex;      ///< index of the nearest segment within the ring
+} FfiHeadlandResult;
+
+/// Create a HeadlandGuidance instance.  Must be destroyed via agrinav_headland_destroy().
+HeadlandHandle    agrinav_headland_create();
+
+/// Destroy a HeadlandHandle and free its memory.
+void              agrinav_headland_destroy(HeadlandHandle h);
+
+/// Load / replace the headland ring geometry used for snap queries.
+///
+/// @param h               HeadlandGuidance handle.
+/// @param ringPointData   Flat buffer of consecutive (lat, lon) pairs for all rings.
+///                        Layout: ring0_pt0_lat, ring0_pt0_lon, ring0_pt1_lat, ...,
+///                                ring1_pt0_lat, ...
+/// @param ringPointCounts Array of vertex counts per ring (length = ringCount).
+/// @param ringCount       Number of rings.
+/// @param originLat       WGS-84 latitude  of the ENU origin (use AB-line point A).
+/// @param originLon       WGS-84 longitude of the ENU origin.
+void              agrinav_headland_set_rings(
+                      HeadlandHandle    h,
+                      const double*     ringPointData,
+                      const int32_t*    ringPointCounts,
+                      int32_t           ringCount,
+                      double            originLat,
+                      double            originLon);
+
+/// Query the nearest headland ring segment for a given position / heading.
+///
+/// @param lat        Current latitude  [deg WGS-84].
+/// @param lon        Current longitude [deg WGS-84].
+/// @param headingDeg Machine heading, degrees from North (0 = N, 90 = E).
+/// @return           FfiHeadlandResult by value; ringIndex == −1 when empty.
+FfiHeadlandResult agrinav_headland_query(
+                      HeadlandHandle h,
+                      double         lat,
+                      double         lon,
+                      float          headingDeg);
+
 #ifdef __cplusplus
 }
 #endif

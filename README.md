@@ -39,6 +39,12 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 | Wskaźnik pokrycia zerowego (HUD alert: Nowe = 0.00 ha → nakładka 100%) | ✅ |
 | Kursor ciągnika skalowany do szerokości roboczej przy każdym zoomie | ✅ |
 | Selektor progu dokładności GPS (accuracy threshold w filtrze pozycji) | ✅ |
+| HeadlandGuidance — snap do najbliższego segmentu uwrocia (ENU XTE, C++) | ✅ |
+| Przełącznik trybu prowadzenia: linie AB ↔ uwrocie | ✅ |
+| Wstrzymanie/wznowienie pracy + znaczniki GPS uzupełnienia materiału na kanwie | ✅ |
+| Lightbar z animowanymi strzałkami i pulsowaniem (StreamController, TickerProvider) | ✅ |
+| Inward polygon offset via Clipper2 InflatePaths (JoinType::Round — brak skoków w narożnikach) | ✅ |
+| Naprawione offsety uwroci — formuła antenna-path: $(k-0.5) \times W$ | ✅ |
 
 ---
 
@@ -51,24 +57,26 @@ agri_nav/
 │   ├── include/
 │   │   ├── GnssProcessor.h     # Interfejs GNSS (abstract), struct GnssPosition
 │   │   ├── GnssSimulator.h     # Symulator toru kołowego (wątek C++, NMEA $GPGGA)
-│   │   │   ├── NavEngine.h         # Silnik prowadzenia po linii AB
+│   │   ├── NavEngine.h         # Silnik prowadzenia po linii AB
 │   │   ├── SwathPlanner.h      # Planowanie ścieżek z uwornicami (headland rings)
 │   │   ├── SwathGuidance.h     # Snap-to-nearest-swath (thread-safe, ENU pre-filter)
+│   │   ├── HeadlandGuidance.h  # Snap-to-nearest-headland-ring (ENU XTE + heading error)
 │   │   ├── SectionControl.h    # Grid pokrycia pola + detekcja nakładki
 │   │   ├── ParcelMerger.h      # Union działek (Clipper2): ENU buffer → boolean → WGS-84
 │   │   └── GeometryProcessor.h # LPIS: union + RDP simplify (ε=0.3m) + buffer 2 cm
 │   └── src/
 │       ├── GnssSimulator.cpp   # Tor kołowy, NMEA $GPGGA, callback + polling API
 │       ├── NavEngine.cpp       # Cross-track ENU (WGS-84 → metry, formuła 2D)
-│       ├── SwathPlanner.cpp    # Algorytm + uwornice, nakładka, pełne planowanie
+│       ├── SwathPlanner.cpp    # Algorytm + uwornice (Clipper2 InflatePaths Round join)
 │       ├── SwathGuidance.cpp   # Cylinder spatial pre-filter, punkt-do-odcinka
+│       ├── HeadlandGuidance.cpp # Snap-to-ring: ENU pre-index, punkt-do-odcinka, XTE + hdg
 │       ├── SectionControl.cpp  # Unordered_set<int64_t> jako haszowane komórki siatki
 │       ├── ParcelMerger.cpp    # Clipper2 Union: centroida ENU, outward buffer, ring class.
 │       └── GeometryProcessor.cpp # LPIS: InflatePaths → Union → SimplifyPaths → WGS-84
 ├── bridge/
 │   ├── agri_nav_ffi.h          # Publiczne C API (brak wyjątków, POD-only)
 │   └── agri_nav_ffi.cpp        # NavContext, SimContext, SwathPlanner, SwathGuidance,
-│                               #   SectionControl, ParcelMerger — pełna implementacja FFI
+│                               #   SectionControl, ParcelMerger, HeadlandGuidance — FFI
 ├── third_party/
 │   └── clipper2/               # Clipper2 1.4.0 — vendored (bez FetchContent)
 └── app/                        # Flutter
@@ -78,7 +86,8 @@ agri_nav/
         ├── ffi/
         │   └── nav_bridge.dart # Dart: NavBridge, GnssSimulatorBridge,
         │                       #   SwathPlannerBridge, SwathGuidanceBridge,
-        │                       #   SectionControlBridge, ParcelMergerBridge
+        │                       #   SectionControlBridge, ParcelMergerBridge,
+        │                       #   HeadlandGuidanceBridge
         ├── offline/
         │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
         │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
@@ -104,7 +113,9 @@ agri_nav/
             ├── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
             ├── machine_manager_screen.dart  # CRUD: lista i edycja maszyn
             ├── machine_selector_screen.dart # BottomSheet: wybór aktywnej maszyny
-            └── work_mode_view.dart      # HUD nawigacji: cross-track, coverage painter, tank indicator
+            └── work_mode_view.dart      # HUD nawigacji: lightbar (streaming/pulsowanie),
+            #                            #   tryb swath/uwrocie, pause+znaczniki GPS,
+            #                            #   coverage painter, tank HUD
 ```
 
 ---
@@ -137,9 +148,18 @@ ct = (b.n · p.e − b.e · p.n) / |AB|   [m, + prawo / − lewo]
 
 ### Headland planning (`SwathPlanner.cpp` — `agrinav_plan_full`)
 Przed wyznaczeniem ścieżek wewnętrznych generowane są uwornicowe pierścienie:
-- wielokąt jest sukcesywnie „erodowany" o $w/2$ (Sutherland-Hodgman offset),
-- każdy pierścień staje się jedną pętlą jazdy cołem/uwornicy,
-- liczba pierścieni sterowana przez `headlandLaps` (0 = brak uwornicy).
+- Antena (środek maszyny) pasa $k$ leży w odległości $(k - 0.5) \times W$ od granicy pola,
+  co sprawia, że zewnętrzna krawędź narzędzia dotyka poprzedniej granicy.
+- Każdy pierścień wyznaczany jest niezależnie od `outerPoly` — błędy numeryczne nie kumulują się.
+- Wewnętrzna granica do przycinania ścieżek = $\text{headlandLaps} \times W$ (pełna szerokość).
+- Inward offset wykonywany przez **Clipper2 `InflatePaths`** z `JoinType::Round` (arc_tolerance = 0.25 m),
+  co eliminuje skoki geometryczne w ostrych narożnikach pola.
+- Liczba pierścieni sterowana przez `headlandLaps` (0 = brak uwornicy).
+
+### Snap-to-nearest-headland-ring (`HeadlandGuidance.cpp`)
+`setRings()` przelicza wszystkie pierścienie uwrocia do ENU przy załadowaniu.
+`query()` stosuje filtr cylindryczny, a następnie minimalizuje odległość punkt–odcinek po wszystkich
+pierścieniach. Wynik: `crossTrackM` (±, prawo/lewo wzdłuż tangenty), `headingErrorDeg`, `ringIndex`, `segmentIndex`.
 
 ### Snap-to-nearest-swath (`SwathGuidance.cpp`)
 `setSwaths()` przelicza wszystkie swaths do ENU przy inicjalizacji.  
@@ -238,6 +258,18 @@ FfiMergeResult* agrinav_merge_parcels(
     double buffer_m     // outward buffer [m], np. 0.05
 );
 void agrinav_free_merge(FfiMergeResult*);
+
+// Snap-to-nearest-headland-ring
+HeadlandHandle    agrinav_headland_create();
+void              agrinav_headland_destroy(HeadlandHandle);
+void              agrinav_headland_set_rings(
+                      HeadlandHandle, const double* ringPointData,
+                      const int32_t* ringPointCounts, int32_t ringCount,
+                      double originLat, double originLon);
+FfiHeadlandResult agrinav_headland_query(
+                      HeadlandHandle, double lat, double lon, float headingDeg);
+// FfiHeadlandResult: { float crossTrackM, float headingErrorDeg,
+//                      int32_t ringIndex, int32_t segmentIndex }
 ```
 
 ---

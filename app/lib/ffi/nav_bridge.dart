@@ -1,11 +1,11 @@
-import 'dart:ffi';
+﻿import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
 import 'package:ffi/ffi.dart';
 import 'package:latlong2/latlong.dart';
 
-// ── Typy C ────────────────────────────────────────────────────────────────────
+// â”€â”€ Typy C â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 final class FfiPosition extends Struct {
   @Double()
@@ -27,7 +27,7 @@ final class FfiGuidance extends Struct {
   external int isValid;
 }
 
-// ── Podpisy funkcji ───────────────────────────────────────────────────────────
+// â”€â”€ Podpisy funkcji â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 typedef _CreateNative = Pointer<Void> Function();
 typedef _DestroyNative = Void Function(Pointer<Void>);
@@ -38,7 +38,7 @@ typedef _ResetAbNative = Void Function(Pointer<Void>);
 typedef _UpdateNative = FfiGuidance Function(Pointer<Void>, FfiPosition);
 typedef _GetPositionNative = FfiPosition Function(Pointer<Void>);
 
-// ── Singleton ładujący .so / .dll ──────────────────────────────────────────────
+// â”€â”€ Singleton Ĺ‚adujÄ…cy .so / .dll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class NavBridge {
   NavBridge._() {
@@ -87,7 +87,7 @@ class NavBridge {
   void setAbLine(double ax, double ay, double bx, double by) =>
       _setAb(_handle, ax, ay, bx, by);
 
-  /// Kasuje linię AB — engine.isValid równa się false do kolejnego [setAbLine].
+  /// Kasuje liniÄ™ AB â€” engine.isValid rĂłwna siÄ™ false do kolejnego [setAbLine].
   void resetAbLine() => _resetAb(_handle);
 
   ({double crossTrack, double heading, bool valid}) update({
@@ -112,7 +112,7 @@ class NavBridge {
 
   void dispose() => _destroy(_handle);
 
-  /// Odczytuje ostatnią pozycję zapisaną w silniku (po ostatnim [update]).
+  /// Odczytuje ostatniÄ… pozycjÄ™ zapisanÄ… w silniku (po ostatnim [update]).
   SimPosition getPosition() {
     final p = _getPosition(_handle);
     return SimPosition(
@@ -124,9 +124,9 @@ class NavBridge {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// GPS Simulator – bindingi do GnssSimulator przez FFI
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// GPS Simulator â€“ bindingi do GnssSimulator przez FFI
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 // Typ callbacku po stronie C: void(double, double, double, float)
 typedef _SimCallbackNative = Void Function(Double, Double, Double, Float);
@@ -160,9 +160,9 @@ class SimPosition {
       'SimPosition(lat=$latitude, lon=$longitude, alt=$altitude, acc=$accuracy)';
 }
 
-/// Symulator GPS – opakowuje natywny [GnssSimulator] z C++.
+/// Symulator GPS â€“ opakowuje natywny [GnssSimulator] z C++.
 ///
-/// Użycie:
+/// UĹĽycie:
 /// ```dart
 /// final sim = GnssSimulatorBridge.instance;
 /// sim.onPosition = (pos) { /* aktualizuj UI */ };
@@ -218,23 +218,23 @@ class GnssSimulatorBridge {
   Pointer<Void>? _handle;
   NativeCallable<_SimCallbackNative>? _nativeCallable;
 
-  /// Callback wywoływany na wątku Dart przy każdej nowej pozycji (~100 ms).
+  /// Callback wywoĹ‚ywany na wÄ…tku Dart przy kaĹĽdej nowej pozycji (~100 ms).
   void Function(SimPosition)? onPosition;
 
-  /// Tworzy symulator w punkcie startowym i uruchamia wątek C++.
+  /// Tworzy symulator w punkcie startowym i uruchamia wÄ…tek C++.
   ///
-  /// [startLat] / [startLon] – WGS-84 stopnie dziesiętne.
-  /// [startAlt]              – wysokość [m n.p.m.], domyślnie 100.
+  /// [startLat] / [startLon] â€“ WGS-84 stopnie dziesiÄ™tne.
+  /// [startAlt]              â€“ wysokoĹ›Ä‡ [m n.p.m.], domyĹ›lnie 100.
   void start({
     double startLat = 52.2297,
     double startLon = 21.0122,
     double startAlt = 100.0,
   }) {
-    if (_handle != null) return; // już uruchomiony
+    if (_handle != null) return; // juĹĽ uruchomiony
 
     _handle = _simCreate(startLat, startLon, startAlt);
 
-    // NativeCallable.listener() – bezpieczny do wywołania z obcego wątku C++.
+    // NativeCallable.listener() â€“ bezpieczny do wywoĹ‚ania z obcego wÄ…tku C++.
     _nativeCallable = NativeCallable<_SimCallbackNative>.listener(
       _onNativePosition,
     );
@@ -242,7 +242,7 @@ class GnssSimulatorBridge {
     _simStart(_handle!, _nativeCallable!.nativeFunction);
   }
 
-  /// Zatrzymuje wątek symulatora (blokuje do zakończenia po stronie C++).
+  /// Zatrzymuje wÄ…tek symulatora (blokuje do zakoĹ„czenia po stronie C++).
   void stop() {
     if (_handle == null) return;
     _simStop(_handle!);
@@ -253,17 +253,17 @@ class GnssSimulatorBridge {
   }
 
   /// Ostatnie zdanie \$GPGGA wygenerowane przez symulator.
-  /// Zwraca null jeśli symulator nie jest uruchomiony.
+  /// Zwraca null jeĹ›li symulator nie jest uruchomiony.
   String? get lastNmea {
     if (_handle == null) return null;
     return _simLastNmea(_handle!).toDartString();
   }
 
-  /// Natywne sprawdzenie stanu wątku symulatora.
+  /// Natywne sprawdzenie stanu wÄ…tku symulatora.
   bool get isRunningNative => _handle != null && _simIsRunning(_handle!) != 0;
 
   /// Polling: ostatnia pozycja symulatora bez oczekiwania na callback.
-  /// Zwraca null jeśli symulator nie został uruchomiony.
+  /// Zwraca null jeĹ›li symulator nie zostaĹ‚ uruchomiony.
   SimPosition? getPosition() {
     if (_handle == null) return null;
     final p = _simGetPosition(_handle!);
@@ -277,7 +277,7 @@ class GnssSimulatorBridge {
 
   bool get isRunning => _handle != null;
 
-  // Wywoływany przez NativeCallable z wątku Dart (bezpieczne)
+  // WywoĹ‚ywany przez NativeCallable z wÄ…tku Dart (bezpieczne)
   void _onNativePosition(
     double lat,
     double lon,
@@ -293,11 +293,11 @@ class GnssSimulatorBridge {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SwathPlanner — bindingi do agrinav_plan_full / agrinav_free_plan
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// SwathPlanner â€” bindingi do agrinav_plan_full / agrinav_free_plan
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-/// Jeden przejazd uprawowy (odcinek start → end).
+/// Jeden przejazd uprawowy (odcinek start â†’ end).
 class Swath {
   const Swath(
       {required this.startLat,
@@ -311,9 +311,9 @@ class Swath {
   final double endLon;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Full SwathPlanner — bindingi do agrinav_plan_full / agrinav_free_plan
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// Full SwathPlanner â€” bindingi do agrinav_plan_full / agrinav_free_plan
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /// Natywna struktura FfiPlanResult (64-bit layout, 32 bytes):
 ///   +0   Pointer<Double>  swathData
@@ -335,21 +335,21 @@ typedef _PlanFullNative = Pointer<FfiPlanResult> Function(Pointer<Double>,
     Int32, Double, Double, Double, Double, Double, Double, Int32);
 typedef _FreePlanNative = Void Function(Pointer<FfiPlanResult>);
 
-/// Wynik pełnego planowania: ścieżki wewnętrzne + pierścienie uwrociowe.
+/// Wynik peĹ‚nego planowania: Ĺ›cieĹĽki wewnÄ™trzne + pierĹ›cienie uwrociowe.
 class PlanResult {
   const PlanResult({required this.swaths, required this.headlandRings});
 
-  /// Równoległe ścieżki uprawowe wewnątrz pola.
+  /// RĂłwnolegĹ‚e Ĺ›cieĹĽki uprawowe wewnÄ…trz pola.
   final List<Swath> swaths;
 
-  /// Pierścienie uwrociowe jako listy punktów.
-  /// Index 0 = zewnętrzny (objazd 1), ostatni = wewnętrzny (przy polu).
+  /// PierĹ›cienie uwrociowe jako listy punktĂłw.
+  /// Index 0 = zewnÄ™trzny (objazd 1), ostatni = wewnÄ™trzny (przy polu).
   final List<List<(double lat, double lon)>> headlandRings;
 
   static const PlanResult empty = PlanResult(swaths: [], headlandRings: []);
 }
 
-/// Singleton opakowujący agrinav_plan_full — zwraca swath'y + pierścienie uwroci.
+/// Singleton opakowujÄ…cy agrinav_plan_full â€” zwraca swath'y + pierĹ›cienie uwroci.
 class SwathPlannerFullBridge {
   SwathPlannerFullBridge._() {
     final lib = DynamicLibrary.open(
@@ -370,11 +370,11 @@ class SwathPlannerFullBridge {
       double, double, double, double, double, int) _planFull;
   late final void Function(Pointer<FfiPlanResult>) _freePlan;
 
-  /// Generuje ścieżki wewnętrzne ORAZ pierścienie uwrocia.
+  /// Generuje Ĺ›cieĹĽki wewnÄ™trzne ORAZ pierĹ›cienie uwrocia.
   ///
-  /// [polygon]       — granica pola (lat/lon, ≥ 3 punkty).
-  /// [overlapM]      — zakładka między pasami [m]  (0 = brak zakładki).
-  /// [headlandLaps]  — liczba objazdów uwrocia (0 = tylko ścieżki wewnętrzne).
+  /// [polygon]       â€” granica pola (lat/lon, â‰Ą 3 punkty).
+  /// [overlapM]      â€” zakĹ‚adka miÄ™dzy pasami [m]  (0 = brak zakĹ‚adki).
+  /// [headlandLaps]  â€” liczba objazdĂłw uwrocia (0 = tylko Ĺ›cieĹĽki wewnÄ™trzne).
   PlanResult planFull({
     required List<(double lat, double lon)> polygon,
     required double ax,
@@ -397,7 +397,7 @@ class SwathPlannerFullBridge {
         overlapM, headlandLaps);
     calloc.free(buf);
 
-    // ── Ścieżki wewnętrzne ─────────────────────────────────────────────────
+    // â”€â”€ ĹšcieĹĽki wewnÄ™trzne â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     final swathCount = r.ref.swathCount;
     final List<Swath> swaths = List.generate(swathCount, (i) {
       final d = r.ref.swathData;
@@ -409,7 +409,7 @@ class SwathPlannerFullBridge {
       );
     });
 
-    // ── Pierścienie uwrocia ────────────────────────────────────────────────
+    // â”€â”€ PierĹ›cienie uwrocia â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     final ringCount = r.ref.ringCount;
     final List<List<(double, double)>> rings = [];
     if (ringCount > 0) {
@@ -430,9 +430,9 @@ class SwathPlannerFullBridge {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SwathGuidance — snap-to-nearest-swath FFI bridge
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// SwathGuidance â€” snap-to-nearest-swath FFI bridge
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /// Mirrors the C struct FfiSnapResult (16 bytes: float, int32, int32, float).
 final class FfiSnapResult extends Struct {
@@ -458,13 +458,13 @@ class SnapInfo {
   /// Unsigned perpendicular distance to the nearest swath [m].
   final double distanceM;
 
-  /// Index into the current swath list (−1 = no swaths loaded).
+  /// Index into the current swath list (â’1 = no swaths loaded).
   final int swathIndex;
 
-  /// +1 = right of swath direction, −1 = left, 0 = on-line.
+  /// +1 = right of swath direction, â’1 = left, 0 = on-line.
   final int side;
 
-  /// Signed heading error [deg]: machine heading − swath direction.
+  /// Signed heading error [deg]: machine heading â’ swath direction.
   final double headingErrorDeg;
 
   static const SnapInfo none =
@@ -541,9 +541,9 @@ class SwathGuidanceBridge {
   void dispose() => _destroy(_handle);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SectionControl — Coverage area + overlap detection FFI bridge
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// SectionControl â€” Coverage area + overlap detection FFI bridge
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 typedef _SectionCreateNative = Pointer<Void> Function(Double);
 typedef _SectionDestroyNative = Void Function(Pointer<Void>);
@@ -558,7 +558,7 @@ typedef _SectionClearNative = Void Function(Pointer<Void>);
 
 /// Singleton wrapping the C++ SectionControl engine via dart:ffi.
 ///
-/// Provides grid-based coverage area tracking (1 m² cells) and per-strip
+/// Provides grid-based coverage area tracking (1 mÂ˛ cells) and per-strip
 /// overlap detection.  Call [setOrigin] before [addStrip].
 class SectionControlBridge {
   SectionControlBridge._() {
@@ -589,7 +589,7 @@ class SectionControlBridge {
     _clearFn =
         lib.lookupFunction<_SectionClearNative, void Function(Pointer<Void>)>(
             'agrinav_section_clear');
-    _handle = _create(1.0); // 1 m² cells
+    _handle = _create(1.0); // 1 mÂ˛ cells
   }
 
   static final instance = SectionControlBridge._();
@@ -609,7 +609,7 @@ class SectionControlBridge {
   /// Set ENU origin to the field centre.  Must be called before [addStrip].
   void setOrigin(double lat, double lon) => _setOriginFn(_handle, lat, lon);
 
-  /// Read-only overlap check; returns fraction [0–1] already covered.
+  /// Read-only overlap check; returns fraction [0â€“1] already covered.
   double checkOverlap(
           double lat, double lon, double headingDeg, double toolWidthM) =>
       _checkOverlapFn(_handle, lat, lon, headingDeg, toolWidthM);
@@ -653,11 +653,11 @@ class SectionControlBridge {
   void dispose() => _destroy(_handle);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ParcelMergerBridge — scalanie działek katastralnych przez C++ Clipper2
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ParcelMergerBridge â€” scalanie dziaĹ‚ek katastralnych przez C++ Clipper2
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-/// Typ pierścienia wynikowego — odpowiada FfiRingType w C.
+/// Typ pierĹ›cienia wynikowego â€” odpowiada FfiRingType w C.
 enum MergeRingType {
   outerPrimary(0),
   holePrimary(1),
@@ -672,7 +672,7 @@ enum MergeRingType {
           orElse: () => MergeRingType.outerPrimary);
 }
 
-/// Jeden pierścień w wyniku scalania.
+/// Jeden pierĹ›cieĹ„ w wyniku scalania.
 class MergeRing {
   const MergeRing({required this.points, required this.type});
   final List<LatLng> points;
@@ -683,16 +683,16 @@ class MergeRing {
       type == MergeRingType.outerSecondary;
 }
 
-/// Wynik scalania działek.
+/// Wynik scalania dziaĹ‚ek.
 class MergeFieldResult {
   const MergeFieldResult({required this.rings, required this.isMultipart});
 
   final List<MergeRing> rings;
 
-  /// true gdy działki nie stykają się i wynik zawiera wiele zewnętrznych granic.
+  /// true gdy dziaĹ‚ki nie stykajÄ… siÄ™ i wynik zawiera wiele zewnÄ™trznych granic.
   final bool isMultipart;
 
-  /// Główna granica zewnętrzna (największa).
+  /// GĹ‚Ăłwna granica zewnÄ™trzna (najwiÄ™ksza).
   List<LatLng> get primaryBoundary =>
       rings
           .where((r) => r.type == MergeRingType.outerPrimary)
@@ -700,14 +700,14 @@ class MergeFieldResult {
           .firstOrNull ??
       [];
 
-  /// Wszystkie otwory (dziury) w głównej granicy.
+  /// Wszystkie otwory (dziury) w gĹ‚Ăłwnej granicy.
   List<List<LatLng>> get holes => rings
       .where((r) => r.type == MergeRingType.holePrimary)
       .map((r) => r.points)
       .toList();
 }
 
-// ── FFI struct dla FfiMergeResult ────────────────────────────────────────────
+// â”€â”€ FFI struct dla FfiMergeResult â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 final class _FfiMergeResult extends Struct {
   external Pointer<Double> ringData;
@@ -719,15 +719,15 @@ final class _FfiMergeResult extends Struct {
   external int isMultipart;
 }
 
-// ── Sygnatury funkcji ────────────────────────────────────────────────────────
+// â”€â”€ Sygnatury funkcji â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 typedef _MergeParcelsNative = Pointer<_FfiMergeResult> Function(
     Pointer<Double>, Pointer<Int32>, Int32, Double);
 typedef _FreeMergeResultNative = Void Function(Pointer<_FfiMergeResult>);
 
-// ── Bridge ───────────────────────────────────────────────────────────────────
+// â”€â”€ Bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Singleton do scalania geometrii działek przez C++ Clipper2.
+/// Singleton do scalania geometrii dziaĹ‚ek przez C++ Clipper2.
 class ParcelMergerBridge {
   ParcelMergerBridge._() {
     final lib = DynamicLibrary.open(
@@ -751,19 +751,19 @@ class ParcelMergerBridge {
       Pointer<Double>, Pointer<Int32>, int, double) _merge;
   late final void Function(Pointer<_FfiMergeResult>) _free;
 
-  /// Scala listę wielokątów w jeden obrys pola.
+  /// Scala listÄ™ wielokÄ…tĂłw w jeden obrys pola.
   ///
-  /// [polygons] — lista wielokątów WGS-84.
-  /// [bufferM]  — outward buffer [m] do zamknięcia szczelin (domyślnie 5 cm).
+  /// [polygons] â€” lista wielokÄ…tĂłw WGS-84.
+  /// [bufferM]  â€” outward buffer [m] do zamkniÄ™cia szczelin (domyĹ›lnie 5 cm).
   ///
-  /// Rzuca [StateError] gdy wynik jest pusty (np. wszystkie wejścia niepoprawne).
+  /// Rzuca [StateError] gdy wynik jest pusty (np. wszystkie wejĹ›cia niepoprawne).
   MergeFieldResult merge(
     List<List<LatLng>> polygons, {
     double bufferM = 0.05,
   }) {
-    if (polygons.isEmpty) throw StateError('Brak wielokątów do scalenia');
+    if (polygons.isEmpty) throw StateError('Brak wielokÄ…tĂłw do scalenia');
 
-    // Zbuduj płaski bufor danych
+    // Zbuduj pĹ‚aski bufor danych
     final totalVerts = polygons.fold(0, (s, p) => s + p.length);
     final polyData = calloc<Double>(totalVerts * 2);
     final vertCounts = calloc<Int32>(polygons.length);
@@ -781,7 +781,7 @@ class ParcelMergerBridge {
 
       final result = _merge(polyData, vertCounts, polygons.length, bufferM);
       if (result == nullptr)
-        throw StateError('agrinav_merge_parcels zwrócił NULL');
+        throw StateError('agrinav_merge_parcels zwrĂłciĹ‚ NULL');
 
       try {
         return _parseResult(result);
@@ -822,12 +822,12 @@ class ParcelMergerBridge {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// LpisProcessorBridge — union + simplify + buffer dla działek ARiMR (LPIS)
-// ═══════════════════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// LpisProcessorBridge â€” union + simplify + buffer dla dziaĹ‚ek ARiMR (LPIS)
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 /// Natywna struktura FfiLpisOptions (32 bajty, identyczna z C).
-/// Pola muszą być w tej samej kolejności i rozmiarze co w agri_nav_ffi.h.
+/// Pola muszÄ… byÄ‡ w tej samej kolejnoĹ›ci i rozmiarze co w agri_nav_ffi.h.
 final class _FfiLpisOptions extends Struct {
   @Double()
   external double bufferM;
@@ -836,16 +836,16 @@ final class _FfiLpisOptions extends Struct {
   @Int32()
   external int minRingVertices;
   @Int32()
-  external int pad; // wyrównanie
+  external int pad; // wyrĂłwnanie
 }
 
 typedef _ProcessLpisNative = Pointer<_FfiMergeResult> Function(
     Pointer<Double>, Pointer<Int32>, Int32, _FfiLpisOptions);
 
-/// Singleton opakowujący `agrinav_process_lpis` — skaluje geometrie LPIS
+/// Singleton opakowujÄ…cy `agrinav_process_lpis` â€” skaluje geometrie LPIS
 /// przez C++ GeometryProcessor (union + simplify RDP + buffer Clipper2).
 ///
-/// Wywołanie jest uruchamiane w `Isolate.run` — nie blokuje wątku UI.
+/// WywoĹ‚anie jest uruchamiane w `Isolate.run` â€” nie blokuje wÄ…tku UI.
 class LpisProcessorBridge {
   LpisProcessorBridge._() {
     final lib = DynamicLibrary.open(
@@ -869,22 +869,22 @@ class LpisProcessorBridge {
       Pointer<Double>, Pointer<Int32>, int, _FfiLpisOptions) _processLpis;
   late final void Function(Pointer<_FfiMergeResult>) _free;
 
-  /// Scala i upraszcza listę wielokątów LPIS.
+  /// Scala i upraszcza listÄ™ wielokÄ…tĂłw LPIS.
   ///
-  /// [polygons]         — działki rolne ARiMR (WGS-84).
-  /// [bufferM]          — outward buffer [m], domyślnie 2 cm.
-  /// [simplifyEpsilonM] — epsilon RDP [m], domyślnie 0.3 m.
+  /// [polygons]         â€” dziaĹ‚ki rolne ARiMR (WGS-84).
+  /// [bufferM]          â€” outward buffer [m], domyĹ›lnie 2 cm.
+  /// [simplifyEpsilonM] â€” epsilon RDP [m], domyĹ›lnie 0.3 m.
   ///
-  /// Uruchamia C++ w `Isolate.run` — bezpieczne do wywołania z UI async.
+  /// Uruchamia C++ w `Isolate.run` â€” bezpieczne do wywoĹ‚ania z UI async.
   Future<MergeFieldResult> processAsync(
     List<List<LatLng>> polygons, {
     double bufferM = 0.02,
     double simplifyEpsilonM = 0.3,
   }) async {
     if (polygons.isEmpty)
-      throw StateError('Brak działek LPIS do przetworzenia');
+      throw StateError('Brak dziaĹ‚ek LPIS do przetworzenia');
 
-    // Serializuj do prostych list — bezpieczne do przekazania między Isolate
+    // Serializuj do prostych list â€” bezpieczne do przekazania miÄ™dzy Isolate
     final flatCoords = <double>[];
     final counts = <int>[];
     for (final poly in polygons) {
@@ -928,7 +928,7 @@ class LpisProcessorBridge {
 
       final result = _processLpis(polyData, vertCounts, counts.length, optsVal);
       if (result == nullptr) {
-        throw StateError('agrinav_process_lpis zwrócił NULL');
+        throw StateError('agrinav_process_lpis zwrĂłciĹ‚ NULL');
       }
 
       try {
@@ -963,4 +963,132 @@ class LpisProcessorBridge {
     }
     return MergeFieldResult(rings: rings, isMultipart: r.isMultipart != 0);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HeadlandGuidanceBridge — snap-to-nearest-headland-ring FFI bridge
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Mirrors the C struct FfiHeadlandResult (16 bytes: float, float, int32, int32).
+final class FfiHeadlandResult extends Struct {
+  @Float()
+  external double crossTrackM;
+  @Float()
+  external double headingErrorDeg;
+  @Int32()
+  external int ringIndex;
+  @Int32()
+  external int segmentIndex;
+}
+
+/// Dart-friendly result of a snap-to-nearest-headland-ring query.
+class HeadlandSnapInfo {
+  const HeadlandSnapInfo({
+    required this.crossTrackM,
+    required this.headingErrorDeg,
+    required this.ringIndex,
+    required this.segmentIndex,
+  });
+
+  /// Signed cross-track distance [m]: + = right of ring travel direction.
+  final double crossTrackM;
+
+  /// Signed heading error [deg]: machine heading minus ring local tangent.
+  final double headingErrorDeg;
+
+  /// Index of the nearest ring (−1 = no rings loaded).
+  final int ringIndex;
+
+  /// Index of the nearest segment within the ring.
+  final int segmentIndex;
+
+  static const HeadlandSnapInfo none = HeadlandSnapInfo(
+      crossTrackM: 0, headingErrorDeg: 0, ringIndex: -1, segmentIndex: -1);
+}
+
+typedef _HeadlandCreateNative = Pointer<Void> Function();
+typedef _HeadlandDestroyNative = Void Function(Pointer<Void>);
+typedef _HeadlandSetRingsNative = Void Function(
+    Pointer<Void>, Pointer<Double>, Pointer<Int32>, Int32, Double, Double);
+typedef _HeadlandQueryNative = FfiHeadlandResult Function(
+    Pointer<Void>, Double, Double, Float);
+
+/// Singleton wrapping the C++ HeadlandGuidance engine via dart:ffi.
+class HeadlandGuidanceBridge {
+  HeadlandGuidanceBridge._() {
+    final lib = DynamicLibrary.open(
+      Platform.isAndroid ? 'libagri_nav_ffi.so' : 'agri_nav_ffi.dll',
+    );
+    _create =
+        lib.lookupFunction<_HeadlandCreateNative, Pointer<Void> Function()>(
+            'agrinav_headland_create');
+    _destroy = lib.lookupFunction<_HeadlandDestroyNative,
+        void Function(Pointer<Void>)>('agrinav_headland_destroy');
+    _setRings = lib.lookupFunction<
+        _HeadlandSetRingsNative,
+        void Function(Pointer<Void>, Pointer<Double>, Pointer<Int32>, int,
+            double, double)>(
+      'agrinav_headland_set_rings',
+    );
+    _query = lib.lookupFunction<_HeadlandQueryNative,
+        FfiHeadlandResult Function(Pointer<Void>, double, double, double)>(
+      'agrinav_headland_query',
+    );
+    _handle = _create();
+  }
+
+  static final instance = HeadlandGuidanceBridge._();
+
+  late final Pointer<Void> _handle;
+  late final Pointer<Void> Function() _create;
+  late final void Function(Pointer<Void>) _destroy;
+  late final void Function(
+          Pointer<Void>, Pointer<Double>, Pointer<Int32>, int, double, double)
+      _setRings;
+  late final FfiHeadlandResult Function(Pointer<Void>, double, double, double)
+      _query;
+
+  /// Load (or replace) all headland rings used for snap-to-path queries.
+  ///
+  /// [rings]      — headland rings from [PlanResult.headlandRings].
+  /// [originLat]  — WGS-84 latitude  of the ENU origin (AB-line point A).
+  /// [originLon]  — WGS-84 longitude of the ENU origin.
+  void setRings(
+    List<List<LatLng>> rings,
+    double originLat,
+    double originLon,
+  ) {
+    if (rings.isEmpty) return;
+
+    final totalPts = rings.fold(0, (s, r) => s + r.length);
+    final pointBuf = calloc<Double>(totalPts * 2);
+    final countBuf = calloc<Int32>(rings.length);
+
+    int dataOffset = 0;
+    for (int ri = 0; ri < rings.length; ri++) {
+      final ring = rings[ri];
+      countBuf[ri] = ring.length;
+      for (final pt in ring) {
+        pointBuf[dataOffset++] = pt.latitude;
+        pointBuf[dataOffset++] = pt.longitude;
+      }
+    }
+
+    _setRings(_handle, pointBuf, countBuf, rings.length, originLat, originLon);
+    calloc.free(pointBuf);
+    calloc.free(countBuf);
+  }
+
+  /// Query the nearest headland ring segment for the given position / heading.
+  HeadlandSnapInfo query(double lat, double lon, double headingDeg) {
+    final r = _query(_handle, lat, lon, headingDeg);
+    return HeadlandSnapInfo(
+      crossTrackM: r.crossTrackM.toDouble(),
+      headingErrorDeg: r.headingErrorDeg.toDouble(),
+      ringIndex: r.ringIndex,
+      segmentIndex: r.segmentIndex,
+    );
+  }
+
+  void dispose() => _destroy(_handle);
 }

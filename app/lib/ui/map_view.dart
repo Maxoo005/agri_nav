@@ -571,6 +571,12 @@ class _MapViewState extends State<MapView> {
       SwathGuidanceBridge.instance
           .setSwaths(result.swaths, a.latitude, a.longitude);
     }
+
+    // Feed headland rings into the headland guidance engine
+    if (_headlandRings.isNotEmpty) {
+      HeadlandGuidanceBridge.instance
+          .setRings(_headlandRings, a.latitude, a.longitude);
+    }
   }
 
   // ── Helpers: kierunek ścieżek ─────────────────────────────────────────────
