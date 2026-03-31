@@ -104,8 +104,8 @@ class SwathPlannerFullBridge {
         buf[i * 2 + 1] = polygon[i].$2;
       }
 
-      final r = _planFull(
-          buf, polygon.length, ax, ay, bx, by, workingWidthM, overlapM, headlandLaps);
+      final r = _planFull(buf, polygon.length, ax, ay, bx, by, workingWidthM,
+          overlapM, headlandLaps);
 
       // BUG#2 FIX: null-check before dereferencing the result pointer
       if (r == nullptr) return PlanResult.empty;
@@ -370,7 +370,8 @@ class HeadlandGuidanceBridge {
           pointBuf[dataOffset++] = pt.longitude;
         }
       }
-      _setRings(_handle, pointBuf, countBuf, rings.length, originLat, originLon);
+      _setRings(
+          _handle, pointBuf, countBuf, rings.length, originLat, originLon);
     } finally {
       calloc.free(pointBuf);
       calloc.free(countBuf);

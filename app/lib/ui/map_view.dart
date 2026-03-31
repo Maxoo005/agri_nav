@@ -577,14 +577,12 @@ class _MapViewState extends State<MapView> {
 
     // Feed new swaths into the guidance engine
     if (result.swaths.isNotEmpty) {
-      SwathGuidanceBridge.instance
-          .setSwaths(result.swaths, ax, ay);
+      SwathGuidanceBridge.instance.setSwaths(result.swaths, ax, ay);
     }
 
     // Feed headland rings into the headland guidance engine
     if (_headlandRings.isNotEmpty) {
-      HeadlandGuidanceBridge.instance
-          .setRings(_headlandRings, ax, ay);
+      HeadlandGuidanceBridge.instance.setRings(_headlandRings, ax, ay);
     }
   }
 
@@ -951,7 +949,9 @@ class _MapViewState extends State<MapView> {
       _activeTask = task;
     });
 
-    _planSwaths(workingWidthM: _activeWorkingWidth);  // fire-and-forget; swaths appear when ready
+    _planSwaths(
+        workingWidthM:
+            _activeWorkingWidth); // fire-and-forget; swaths appear when ready
 
     // Step 6: start coverage tracking keyed by this task
     CoverageService.instance.startTracking(field.id, taskId: task.id);
