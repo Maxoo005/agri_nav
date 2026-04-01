@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -16,6 +17,7 @@ import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
+import '../services/gps_location_service.dart';
 import '../services/work_task_service.dart';
 import '../models/arimr_parcel.dart';
 import '../services/arimr_service.dart';
@@ -24,6 +26,7 @@ import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
 import 'field_manager_screen.dart';
+import 'gps_settings_screen.dart';
 import 'machine_manager_screen.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
@@ -112,15 +115,28 @@ class _MapViewState extends State<MapView> {
 
   LatLng? _prevPos;
 
+  /// GPS stream subscription — drives position updates from real or simulated GPS.
+  StreamSubscription<SimPosition>? _gpsSub;
+
   // ── Cykl życia ──────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
-    // Uruchom symulator C++ — callback co ~100 ms z wątku natywnego Dart
-    final sim = GnssSimulatorBridge.instance;
-    sim.onPosition = _onSimPosition;
-    sim.start(startLat: 51.930428, startLon: 17.726242);
+
+    // Uruchom serwis GPS (domyślnie symulator; przełącznik w GpsSettingsScreen)
+    GpsLocationService.instance.start(
+      simStartLat: 51.930428,
+      simStartLon: 17.726242,
+    );
+    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
+
+    // Poproś o uprawnienia po załadowaniu drzewa widgetów (context jest gotowy)
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (GpsLocationService.instance.useInternalGps) {
+        await GpsLocationService.instance.requestPermissions(context);
+      }
+    });
 
     // Załaduj zapisane pola z Hive
     _savedFields = FieldService.instance.getAll();
@@ -128,20 +144,35 @@ class _MapViewState extends State<MapView> {
 
   @override
   void dispose() {
-    GnssSimulatorBridge.instance.stop();
+    _gpsSub?.cancel();
+    GpsLocationService.instance.stop();
     super.dispose();
   }
 
-  // ── Callback z GnssSimulatorBridge (Dart main thread, ~100 ms) ─────────────
+  // ── Callback GPS (realny lub symulator, Dart main thread) ───────────────────
 
-  void _onSimPosition(SimPosition pos) {
+  void _onGpsPosition(SimPosition pos) {
     if (!mounted) return;
 
     final newPos = LatLng(pos.latitude, pos.longitude);
 
-    // Kurs obliczany z kolejnych pozycji GPS
+    // ── Accuracy gate ─────────────────────────────────────────────────────────
+    // When GPS fix is poor (accuracy > kMaxAccuracyM), move the visual marker
+    // to the raw position so the user sees they are moving, but skip all
+    // navigation computation (NavBridge, coverage, swath snap).
+    // GpsLocationService.fixStatus is already set to GpsFixStatus.searching
+    // and the GPS FAB turns orange — no extra UI action needed here.
+    if (!pos.isAccurate) {
+      setState(() => _tractorPos = newPos);
+      return;
+    }
+
+    // Kurs: używaj heading z GPS jeśli dostępny (speed-gated by service),
+    // inaczej oblicz z kolejnych pozycji
     double heading = _tractorHeading;
-    if (_prevPos != null) {
+    if (pos.heading >= 0) {
+      heading = pos.heading;
+    } else if (_prevPos != null) {
       final dlat = (newPos.latitude - _prevPos!.latitude).abs();
       final dlon = (newPos.longitude - _prevPos!.longitude).abs();
       if (dlat + dlon > 1e-7) {
@@ -667,35 +698,45 @@ class _MapViewState extends State<MapView> {
       setState(() => _trackingCoverage = true);
     }
 
-    await Navigator.push<void>(
-      context,
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => WorkModeView(
-          swaths: _swaths,
-          headlandRings: _headlandRings,
-          fieldBoundary: _fieldBoundary,
-          initialSnapInfo: _snapInfo,
-          initialCoveredHa: _coveredHa,
-          initialPos: _tractorPos,
-          initialHeading: _tractorHeading,
-          workingWidthM: _activeWorkingWidth,
-          fieldId: _activeField?.id,
-          activeTask: _activeTask,
+    // ── BUG FIX: pause MapView GPS subscription during WorkModeView ────────────
+    // Without this pause, both MapView._onGpsPosition AND
+    // WorkModeView._onGpsPosition receive every GPS event simultaneously,
+    // causing SectionControlBridge.addStrip() to be called twice per tick →
+    // hectare counts double. The broadcast stream still flows to WorkModeView;
+    // MapView's callback simply does not fire while paused.
+    _gpsSub?.pause();
+    try {
+      await Navigator.push<void>(
+        context,
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => WorkModeView(
+            swaths: _swaths,
+            headlandRings: _headlandRings,
+            fieldBoundary: _fieldBoundary,
+            initialSnapInfo: _snapInfo,
+            initialCoveredHa: _coveredHa,
+            initialPos: _tractorPos,
+            initialHeading: _tractorHeading,
+            workingWidthM: _activeWorkingWidth,
+            fieldId: _activeField?.id,
+            activeTask: _activeTask,
+          ),
+          transitionsBuilder: (_, anim, __, child) => SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 1),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(parent: anim, curve: Curves.easeInOut)),
+            child: FadeTransition(opacity: anim, child: child),
+          ),
+          transitionDuration: const Duration(milliseconds: 380),
         ),
-        transitionsBuilder: (_, anim, __, child) => SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 1),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeInOut)),
-          child: FadeTransition(opacity: anim, child: child),
-        ),
-        transitionDuration: const Duration(milliseconds: 380),
-      ),
-    );
+      );
+    } finally {
+      // Always resume — even if WorkModeView throws or is popped via OS back
+      _gpsSub?.resume();
+    }
 
-    // Przywróć callback GPS (WorkModeView.dispose już to robi, ale dla pewności)
     if (!mounted) return;
-    GnssSimulatorBridge.instance.onPosition = _onSimPosition;
 
     // Odśwież statystyki pokrycia po powrocie z trybu pracy
     final saved = _activeTask != null
@@ -1623,6 +1664,44 @@ class _MapViewState extends State<MapView> {
                         color: Colors.white,
                         size: 20,
                       ),
+                    ),
+                    const SizedBox(height: 8),
+                    // ── Ustawienia GPS ────────────────────────────────────────
+                    StreamBuilder<SimPosition>(
+                      stream: GpsLocationService.instance.positionStream,
+                      builder: (_, __) {
+                        final status = GpsLocationService.instance.fixStatus;
+                        final (color, icon) = switch (status) {
+                          GpsFixStatus.inactive => (
+                              const Color(0xAA000000),
+                              Icons.gps_off
+                            ),
+                          GpsFixStatus.searching => (
+                              Colors.orange[800]!,
+                              Icons.gps_not_fixed
+                            ),
+                          GpsFixStatus.gps => (
+                              Colors.green[700]!,
+                              Icons.gps_fixed
+                            ),
+                          GpsFixStatus.dgps => (
+                              Colors.teal[600]!,
+                              Icons.satellite_alt
+                            ),
+                        };
+                        return FloatingActionButton.small(
+                          heroTag: 'gpsSettings',
+                          tooltip: 'Ustawienia GPS',
+                          backgroundColor: color,
+                          onPressed: () => Navigator.push<void>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const GpsSettingsScreen(),
+                            ),
+                          ),
+                          child: Icon(icon, color: Colors.white, size: 20),
+                        );
+                      },
                     ),
                   ],
                 ),

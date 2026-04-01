@@ -8,6 +8,7 @@ import 'package:latlong2/latlong.dart';
 import '../ffi/nav_bridge.dart';
 import '../models/work_task.dart';
 import '../services/coverage_service.dart';
+import '../services/gps_location_service.dart';
 import '../services/material_monitor_service.dart';
 import '../utils/geo_utils.dart';
 
@@ -116,8 +117,8 @@ class _WorkModeViewState extends State<WorkModeView> {
   LatLng? _prevPos;
   DateTime? _prevTime;
 
-  /// Poprzedni callback symulatora GPS — przywracany w [dispose].
-  void Function(SimPosition)? _prevSimCallback;
+  /// Subscription to the unified GPS stream.
+  StreamSubscription<SimPosition>? _gpsSub;
 
   /// Skala widoku: pikseli na metr (zarządzana gestem pinch-to-zoom).
   double _pixelsPerMeter = 5.0;
@@ -161,36 +162,52 @@ class _WorkModeViewState extends State<WorkModeView> {
       });
     }
 
-    // Przejęcie callbacku GPS od MapView
-    _prevSimCallback = GnssSimulatorBridge.instance.onPosition;
-    GnssSimulatorBridge.instance.onPosition = _onSimPosition;
+    // Subskrypcja do zunifikowanego strumienia GPS (real lub symulator)
+    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
   }
 
   @override
   void dispose() {
     _monitorSub?.cancel();
     MaterialMonitorService.instance.stop();
-    // Zwróć callback GPS do poprzedniego właściciela (MapView)
-    GnssSimulatorBridge.instance.onPosition = _prevSimCallback;
+    _gpsSub?.cancel();
     _deviationCtrl.close();
     super.dispose();
   }
 
-  // ── GPS callback (~100 ms) ───────────────────────────────────────────────────
-  void _onSimPosition(SimPosition pos) {
+  // ── GPS callback (real device or simulator, ~100 ms) ───────────────────────
+  void _onGpsPosition(SimPosition pos) {
     if (!mounted) return;
 
     final newPos = LatLng(pos.latitude, pos.longitude);
     final now = DateTime.now();
-    double heading = _tractorHeading;
-    double speedKmh = _speedKmh;
+
+    // ── Accuracy gate ─────────────────────────────────────────────────────────
+    // Poor-fix positions (accuracy > kMaxAccuracyM) must not contaminate:
+    //   • SectionControlBridge strips (→ false hectare counts)
+    //   • HeadlandGuidanceBridge / SwathGuidanceBridge queries
+    //   • NavigationBridge.update (→ phantom cross-track errors)
+    // We still update the visual tractor position so the operator sees that
+    // the machine has moved, but all guidance and coverage logic is skipped.
+    if (!pos.isAccurate) {
+      setState(() => _tractorPos = newPos);
+      return;
+    }
+
+    // Use hardware heading when available (speed-gated by GpsLocationService),
+    // else compute from positions.
+    double heading = pos.heading >= 0 ? pos.heading : _tractorHeading;
+    // Use hardware speed when available (real GPS in m/s → km/h), else compute.
+    double speedKmh = pos.speed >= 0 ? pos.speed * 3.6 : _speedKmh;
 
     if (_prevPos != null) {
       final dlat = (newPos.latitude - _prevPos!.latitude).abs();
       final dlon = (newPos.longitude - _prevPos!.longitude).abs();
-      if (dlat + dlon > 1e-7) heading = _bearing(_prevPos!, newPos);
+      if (pos.heading < 0 && dlat + dlon > 1e-7) {
+        heading = _bearing(_prevPos!, newPos);
+      }
 
-      if (_prevTime != null) {
+      if (pos.speed < 0 && _prevTime != null) {
         final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
         if (dt > 0.01) {
           final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
