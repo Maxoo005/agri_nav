@@ -8,13 +8,16 @@ import 'native_lib.dart';
 
 final class FfiPosition extends Struct {
   @Double()
-  external double latitude;
+  external double latitude; // 64-bit — preserves sub-mm precision at equator
   @Double()
-  external double longitude;
+  external double
+      longitude; // 64-bit — NEVER downcast to float; would lose ~1 m
   @Double()
-  external double altitude; // [m] n.p.m.
+  external double altitude; // [m] a.s.l. — 64-bit
   @Float()
-  external double accuracy; // [m]
+  external double accuracy; // [m] horizontal accuracy — 32-bit is sufficient
+  //                         //   float gives ~7 sig. digits; for a value of
+  //                         //   3.1415 m the error is < 0.001 m — acceptable.
 }
 
 final class FfiGuidance extends Struct {
@@ -144,23 +147,40 @@ typedef _SimIsRunningNative = Int32 Function(Pointer<Void>);
 typedef _SimGetPositionNative = FfiPosition Function(Pointer<Void>);
 typedef _SimLastNmeaNative = Pointer<Utf8> Function(Pointer<Void>);
 
-/// Position data provided by the simulator.
+/// Position data from any GPS source (simulator or real hardware).
+///
+/// [heading] — true bearing in degrees (0 = N, 90 = E). Returns −1 when the
+///             hardware heading is unavailable OR ground speed is below
+///             [GpsLocationService.kMinHeadingSpeedMs] (phone GPS "spins" at
+///             standstill). The UI layer falls back to bearing from two positions.
+/// [speed]   — ground speed in m/s. −1 when unavailable.
+/// [isAccurate] — `false` when [accuracy] > [GpsLocationService.kMaxAccuracyM].
+///               Callers should skip NavBridge updates and coverage tracking but
+///               may still render the approximate position as a visual hint.
 class SimPosition {
   const SimPosition({
     required this.latitude,
     required this.longitude,
     required this.altitude,
     required this.accuracy,
+    this.heading = -1.0,
+    this.speed = -1.0,
+    this.isAccurate = true,
   });
 
   final double latitude;
   final double longitude;
-  final double altitude; // [m]
-  final double accuracy; // [m]
+  final double altitude; // [m] above sea level  (EMA-smoothed on real GPS)
+  final double accuracy; // [m] horizontal accuracy, raw (not smoothed)
+  final double heading; // [°] from north, −1 = unavailable / speed too low
+  final double speed; // [m/s], −1 = unavailable
+  /// `true` when accuracy ≤ [GpsLocationService.kMaxAccuracyM] (or simulator).
+  final bool isAccurate;
 
   @override
   String toString() =>
-      'SimPosition(lat=$latitude, lon=$longitude, alt=$altitude, acc=$accuracy)';
+      'SimPosition(lat=$latitude, lon=$longitude, alt=$altitude, '
+      'acc=$accuracy, hdg=$heading, spd=$speed, ok=$isAccurate)';
 }
 
 /// GPS Simulator — wraps the native [GnssSimulator] from C++.
