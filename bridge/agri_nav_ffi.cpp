@@ -1,6 +1,6 @@
 #include "agri_nav_ffi.h"
 #include "GeometryProcessor.h"
-#include "GnssSimulator.h"
+// #include "GnssSimulator.h"  // odłączony — symulator zachowany w core/src/GnssSimulator.cpp
 #include "HeadlandGuidance.h"
 #include "NavEngine.h"
 #include "ParcelMerger.h"
@@ -60,53 +60,16 @@ FfiPosition agrinav_get_position(NavHandle h) {
     return FfiPosition{p.latitude, p.longitude, p.altitude, p.accuracy};
 }
 
-// ── Symulator GPS ────────────────────────────────────────────────────────────
-
-struct SimContext {
-    agrinav::GnssSimulator sim;
-    // bufor dla last_nmea – zabezpiecza wskaźnik char* przed danglem
-    std::string nmea;
-
-    SimContext(double lat, double lon, double alt)
-        : sim(lat, lon, alt) {}
-};
-
-SimHandle agrinav_sim_create(double startLat, double startLon, double startAlt) {
-    return new SimContext(startLat, startLon, startAlt);
-}
-
-void agrinav_sim_start(SimHandle h, SimPositionCallback cb) {
-    auto* ctx = static_cast<SimContext*>(h);
-    ctx->sim.start([ctx, cb](const agrinav::GnssPosition& pos,
-                              const std::string& nmea) {
-        // Przechowaj NMEA przed wywołaniem callbacku
-        ctx->nmea = nmea;
-        if (cb) cb(pos.latitude, pos.longitude, pos.altitude, pos.accuracy);
-    });
-}
-
-void agrinav_sim_stop(SimHandle h) {
-    static_cast<SimContext*>(h)->sim.stop();
-}
-
-void agrinav_sim_destroy(SimHandle h) {
-    auto* ctx = static_cast<SimContext*>(h);
-    ctx->sim.stop();
-    delete ctx;
-}
-
-int32_t agrinav_sim_is_running(SimHandle h) {
-    return static_cast<SimContext*>(h)->sim.isRunning() ? 1 : 0;
-}
-
-FfiPosition agrinav_sim_get_position(SimHandle h) {
-    const auto p = static_cast<SimContext*>(h)->sim.currentPosition();
-    return FfiPosition{p.latitude, p.longitude, p.altitude, p.accuracy};
-}
-
-const char* agrinav_sim_last_nmea(SimHandle h) {
-    return static_cast<SimContext*>(h)->nmea.c_str();
-}
+// ── Symulator GPS (odłączony — zachowany na później) ─────────────────────────
+//
+// struct SimContext { agrinav::GnssSimulator sim; std::string nmea; ... };
+// SimHandle agrinav_sim_create(...) { return new SimContext(...); }
+// void agrinav_sim_start(...) { ctx->sim.start([ctx, cb](...) { ... }); }
+// void agrinav_sim_stop(...) { ctx->sim.stop(); }
+// void agrinav_sim_destroy(...) { ctx->sim.stop(); delete ctx; }
+// int32_t agrinav_sim_is_running(...) { return ctx->sim.isRunning() ? 1 : 0; }
+// FfiPosition agrinav_sim_get_position(...) { ... }
+// const char* agrinav_sim_last_nmea(...) { return ctx->nmea.c_str(); }
 
 // ── Planowanie ścieżek uprawowych ─────────────────────────────────────────────
 

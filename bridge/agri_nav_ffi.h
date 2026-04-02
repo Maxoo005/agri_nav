@@ -51,29 +51,18 @@ FfiGuidance agrinav_update(NavHandle h, FfiPosition pos);
 // Zwraca ostatnią pozycję zapisaną w silniku (po agrinav_update).
 FfiPosition agrinav_get_position(NavHandle h);
 
-// ── Symulator GPS ─────────────────────────────────────────────────────────────
-
-// Callback wywoływany z wątku symulatora co 100 ms.
-// Argumenty: latitude, longitude, altitude [m], accuracy [m]
-typedef void (*SimPositionCallback)(double lat, double lon,
-                                    double alt, float  accuracy);
-
-typedef void* SimHandle;
-
-SimHandle agrinav_sim_create(double startLat, double startLon, double startAlt);
-void      agrinav_sim_start(SimHandle h, SimPositionCallback cb);
-void      agrinav_sim_stop(SimHandle h);
-void      agrinav_sim_destroy(SimHandle h);
-
-// Zwraca 1 jeśli wątek symulatora jest aktywny, 0 w przeciwnym razie.
-int32_t     agrinav_sim_is_running(SimHandle h);
-
-// Polling: zwraca ostatnią pozycję symulatora bez potrzeby callbacku.
-FfiPosition agrinav_sim_get_position(SimHandle h);
-
-// Zwraca ostatnie zdanie $GPGGA (wskaźnik ważny do następnego wywołania tick).
-// Wołać tylko z wątku Dart (głównego), nie z callbacku.
-const char* agrinav_sim_last_nmea(SimHandle h);
+// ── Symulator GPS (odłączony — zachowany na później) ─────────────────────────
+//
+// typedef void (*SimPositionCallback)(double lat, double lon,
+//                                     double alt, float  accuracy);
+// typedef void* SimHandle;
+// SimHandle agrinav_sim_create(double startLat, double startLon, double startAlt);
+// void      agrinav_sim_start(SimHandle h, SimPositionCallback cb);
+// void      agrinav_sim_stop(SimHandle h);
+// void      agrinav_sim_destroy(SimHandle h);
+// int32_t     agrinav_sim_is_running(SimHandle h);
+// FfiPosition agrinav_sim_get_position(SimHandle h);
+// const char* agrinav_sim_last_nmea(SimHandle h);
 
 // ── Planowanie ścieżek uprawowych (swath planning) ───────────────────────────
 

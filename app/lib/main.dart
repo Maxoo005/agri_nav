@@ -7,7 +7,7 @@ import 'services/coverage_service.dart';
 import 'services/field_service.dart';
 import 'services/machine_service.dart';
 import 'services/work_task_service.dart';
-import 'ui/map_view.dart';
+import 'ui/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,7 +36,7 @@ class AgriNavApp extends StatelessWidget {
     return MaterialApp(
       title: 'AgriNav',
       theme: ThemeData(colorSchemeSeed: Colors.green, useMaterial3: true),
-      home: const MapView(),
+      home: const HomeScreen(),
     );
   }
 }

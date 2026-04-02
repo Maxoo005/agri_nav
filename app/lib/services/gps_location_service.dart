@@ -24,8 +24,8 @@ enum GpsFixStatus {
   dgps,
 }
 
-/// Singleton that unifies real-device GPS (via `geolocator`) and the
-/// C++ [GnssSimulatorBridge] behind a single [Stream<SimPosition>].
+/// Singleton that provides real-device GPS (via `geolocator`) as a
+/// [Stream<SimPosition>].
 ///
 /// ### Filtering applied to real GPS positions:
 /// 1. **EMA position smoothing** (α = [_kEmaAlpha]) — applied only to
@@ -40,7 +40,6 @@ enum GpsFixStatus {
 /// Usage:
 /// ```dart
 /// await GpsLocationService.instance.requestPermissions(context);
-/// GpsLocationService.instance.useInternalGps = true;
 /// final sub = GpsLocationService.instance.positionStream.listen(_onPos);
 /// // …
 /// sub.cancel();
@@ -64,22 +63,6 @@ class GpsLocationService {
 
   // ── Public state ─────────────────────────────────────────────────────────────
 
-  /// When `true` — stream emits positions from the real device GPS.
-  /// When `false` — stream emits positions from [GnssSimulatorBridge].
-  ///
-  /// Changing this while the stream has active listeners automatically
-  /// switches the underlying source.
-  bool get useInternalGps => _useInternalGps;
-  set useInternalGps(bool value) {
-    if (_useInternalGps == value) return;
-    _useInternalGps = value;
-    if (_activeListeners > 0) {
-      _stopCurrentSource();
-      _startCurrentSource();
-    }
-  }
-
-  bool _useInternalGps = false; // default: simulator
 
   /// Latest computed fix quality (updated on every new position).
   GpsFixStatus get fixStatus => _fixStatus;
@@ -113,12 +96,7 @@ class GpsLocationService {
 
   /// Start forwarding positions to [positionStream].
   /// Safe to call multiple times (ref-counted).
-  void start({
-    double simStartLat = 52.2297,
-    double simStartLon = 21.0122,
-  }) {
-    _simStartLat = simStartLat;
-    _simStartLon = simStartLon;
+  void start() {
     _activeListeners++;
     if (_activeListeners == 1) {
       _fixStatus = GpsFixStatus.searching;
@@ -136,24 +114,9 @@ class GpsLocationService {
     }
   }
 
-  double _simStartLat = 52.2297;
-  double _simStartLon = 21.0122;
+  void _startCurrentSource() => _startRealGps();
 
-  void _startCurrentSource() {
-    if (_useInternalGps) {
-      _startRealGps();
-    } else {
-      _startSimulator();
-    }
-  }
-
-  void _stopCurrentSource() {
-    if (_useInternalGps) {
-      _stopRealGps();
-    } else {
-      _stopSimulator();
-    }
-  }
+  void _stopCurrentSource() => _stopRealGps();
 
   // ── EMA (Exponential Moving Average) filter ──────────────────────────────────
   //
@@ -266,23 +229,6 @@ class GpsLocationService {
     if (!_controller.isClosed) _controller.add(simPos);
   }
 
-  // ── GnssSimulatorBridge adapter ──────────────────────────────────────────────
-
-  void _startSimulator() {
-    final sim = GnssSimulatorBridge.instance;
-    sim.onPosition = _onSimulatorPosition;
-    sim.start(startLat: _simStartLat, startLon: _simStartLon);
-  }
-
-  void _stopSimulator() {
-    GnssSimulatorBridge.instance
-      ..onPosition = null
-      ..stop();
-  }
-
-  void _onSimulatorPosition(SimPosition pos) {
-    if (!_controller.isClosed) _controller.add(pos);
-  }
 
   // ── Permissions ──────────────────────────────────────────────────────────────
 

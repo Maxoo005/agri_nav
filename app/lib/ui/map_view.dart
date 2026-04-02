@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -27,7 +26,6 @@ import 'cadastral_widgets.dart';
 
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
-import 'machine_manager_screen.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
@@ -124,18 +122,13 @@ class _MapViewState extends State<MapView> {
   void initState() {
     super.initState();
 
-    // Uruchom serwis GPS (domyślnie symulator; przełącznik w GpsSettingsScreen)
-    GpsLocationService.instance.start(
-      simStartLat: 51.930428,
-      simStartLon: 17.726242,
-    );
+    // Uruchom serwis GPS (GPS telefonu)
+    GpsLocationService.instance.start();
     _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
 
     // Poproś o uprawnienia po załadowaniu drzewa widgetów (context jest gotowy)
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (GpsLocationService.instance.useInternalGps) {
-        await GpsLocationService.instance.requestPermissions(context);
-      }
+      await GpsLocationService.instance.requestPermissions(context);
     });
 
     // Załaduj zapisane pola z Hive
@@ -571,8 +564,13 @@ class _MapViewState extends State<MapView> {
     await _planSwaths(workingWidthM: width);
   }
 
-  /// Calls SwathPlannerFullBridge.planFull() in a background Isolate to avoid
-  /// blocking the UI thread during polygon processing (≈20–200 ms per call).
+  /// Calls SwathPlannerFullBridge.planFull() on the main isolate.
+  ///
+  /// NOTE: We deliberately do NOT use Isolate.run() here. Spawned Dart
+  /// isolates on Android do not inherit Flutter's native-library linker
+  /// namespace, so DynamicLibrary.open('libagri_nav_ffi.so') silently fails
+  /// and the FFI call never executes.  The C++ plan_full typically takes
+  /// 20–200 ms which may cause a brief frame drop, but is acceptable here.
   Future<void> _planSwaths({double workingWidthM = 3.0}) async {
     final polygon =
         _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
@@ -583,18 +581,32 @@ class _MapViewState extends State<MapView> {
     final overlapM = _overlapM;
     final headlandLaps = _headlandLaps;
 
-    final result = await Isolate.run(() {
-      return SwathPlannerFullBridge.instance.planFull(
-        polygon: polygon,
-        ax: ax,
-        ay: ay,
-        bx: bx,
-        by: by,
-        workingWidthM: workingWidthM,
-        overlapM: overlapM,
-        headlandLaps: headlandLaps,
+    PlanResult result;
+    try {
+      // Schedule on the next microtask so the dialog dismissal animation
+      // finishes before the synchronous C++ call blocks the UI thread.
+      result = await Future.microtask(
+        () => SwathPlannerFullBridge.instance.planFull(
+          polygon: polygon,
+          ax: ax,
+          ay: ay,
+          bx: bx,
+          by: by,
+          workingWidthM: workingWidthM,
+          overlapM: overlapM,
+          headlandLaps: headlandLaps,
+        ),
       );
-    });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Błąd generowania ścieżek: $e'),
+          backgroundColor: Colors.red[800],
+        ),
+      );
+      return;
+    }
 
     if (!mounted) return;
 
@@ -1562,19 +1574,6 @@ class _MapViewState extends State<MapView> {
                         textColor: Colors.black,
                         child: const Icon(Icons.agriculture,
                             color: Colors.white, size: 20),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Zarządzanie maszynami ────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'machines',
-                      tooltip: 'Zarządzanie maszynami',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: () => MachineManagerScreen.open(context),
-                      child: const Icon(
-                        Icons.agriculture_outlined,
-                        color: Colors.white,
-                        size: 20,
                       ),
                     ),
                     const SizedBox(height: 8),
