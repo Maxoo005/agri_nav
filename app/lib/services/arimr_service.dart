@@ -75,69 +75,6 @@ class ArimrService {
   static Future<void> init() async => Hive.openBox(_kArimrBox);
   Box get _box => Hive.box(_kArimrBox);
 
-  // ── Pobieranie działek w obszarze (siatka XY) ─────────────────────────────────
-
-  Future<LpisFetchResult> fetchAgriculturalParcels(
-    LatLngBounds bounds, {
-    String? cropGroupCode,
-    String? farmId,
-    bool fallbackToCache = true,
-  }) async {
-    if (!await _checkNetwork()) {
-      if (fallbackToCache) {
-        return LpisFetchResult(
-            parcels: getCachedParcels(bounds), fromCache: true);
-      }
-      throw const ArimrNoNetworkException();
-    }
-
-    const stepsLat = 5;
-    const stepsLon = 5;
-    final dLat = (bounds.north - bounds.south) / stepsLat;
-    final dLon = (bounds.east - bounds.west) / stepsLon;
-
-    // Build the full grid of (lat, lon) sample points
-    final gridPoints = <(double, double)>[];
-    for (var i = 0; i <= stepsLat; i++) {
-      for (var j = 0; j <= stepsLon; j++) {
-        gridPoints.add((bounds.south + i * dLat, bounds.west + j * dLon));
-      }
-    }
-
-    // Fetch in parallel chunks of 5 to stay within server rate limits
-    // while reducing total wall-clock time from ~4.3 s to ~0.9 s.
-    const chunkSize = 5;
-    final seen = <String>{};
-    final parcels = <ArimrParcel>[];
-
-    for (int start = 0; start < gridPoints.length; start += chunkSize) {
-      final chunk = gridPoints.skip(start).take(chunkSize);
-      final results = await Future.wait(chunk.map((pt) async {
-        try {
-          return await _fetchByXY(pt.$1, pt.$2);
-        } catch (e) {
-          dev.log('ULDK xy=${pt.$1},${pt.$2} error: $e', name: 'ArimrService');
-          return null;
-        }
-      }));
-      for (final parcel in results) {
-        if (parcel != null && !seen.contains(parcel.objectId)) {
-          seen.add(parcel.objectId);
-          parcels.add(parcel);
-        }
-      }
-      // Brief pause between chunks to be polite to the public ULDK server
-      if (start + chunkSize < gridPoints.length) {
-        await Future<void>.delayed(const Duration(milliseconds: 200));
-      }
-    }
-
-    dev.log('ULDK pobrano ${parcels.length} działek', name: 'ArimrService');
-    await _cacheParcels(parcels);
-    return LpisFetchResult(
-        parcels: parcels, fromCache: false, totalCount: parcels.length);
-  }
-
   // ── Pobieranie działki po ID TERYT ──────────────────────────────────────────
 
   Future<LpisFetchResult> fetchByFarmId(String parcelId) async {
@@ -162,23 +99,6 @@ class ArimrService {
       if (p.boundaryLats.isEmpty) return false;
       return bounds.contains(p.center);
     }).toList();
-  }
-
-  Future<void> clearCache() => _box.clear();
-
-  // ── ULDK: GetParcelByXY ───────────────────────────────────────────────────────
-
-  Future<ArimrParcel?> _fetchByXY(double lat, double lon) async {
-    final uri = Uri.parse(_uldkBase).replace(queryParameters: {
-      'request': 'GetParcelByXY',
-      'xy': '${lon.toStringAsFixed(6)},${lat.toStringAsFixed(6)}',
-      'result': 'geom_wkt,teryt,powiat,gmina,obreb',
-      'srid':
-          '4326', // Wymuszenie re-projekcji do EPSG:4326 (WGS-84) po stronie serwera
-    });
-    dev.log('ULDK XY $lat,$lon', name: 'ArimrService');
-    final resp = await _get(uri);
-    return _parseUldkResponse(resp.body);
   }
 
   // ── ULDK: GetParcelById ───────────────────────────────────────────────────────
