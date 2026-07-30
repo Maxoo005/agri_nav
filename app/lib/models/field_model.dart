@@ -90,12 +90,6 @@ class FieldModel {
         ),
       );
 
-  /// Granica bez offsetu (oryginalne wartości z bazy).
-  List<LatLng> get boundaryRaw => List.generate(
-        boundaryLats.length,
-        (i) => LatLng(boundaryLats[i], boundaryLons[i]),
-      );
-
   LatLng? get lineA => lineALat != null ? LatLng(lineALat!, lineALon!) : null;
   LatLng? get lineB => lineBLat != null ? LatLng(lineBLat!, lineBLon!) : null;
 
