@@ -35,9 +35,6 @@ class FieldModel {
   /// Null gdy pole narysowane ręcznie.
   String? uLDKParcelId;
 
-  /// Alias semantyczny — identyfikator urzędowy działki.
-  String? get officialId => uLDKParcelId;
-
   /// Siedmiocyfrowy kod TERYT gminy, np. "1412012" (woj+pow+gm).
   String? terytCode;
 

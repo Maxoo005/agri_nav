@@ -24,9 +24,5 @@ dependencies:
   # Real GPS — permissions + position stream
   geolocator: ^13.0.4
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-
 flutter:
   uses-material-design: true

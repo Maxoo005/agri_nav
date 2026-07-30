@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -10,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
+import 'app_theme.dart';
 import '../models/field_model.dart';
 import '../models/machine_model.dart';
 import '../models/work_task.dart';
@@ -25,9 +25,6 @@ import '../services/geoportal_service.dart';
 import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
-import 'field_manager_screen.dart';
-import 'gps_settings_screen.dart';
-import 'machine_manager_screen.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
@@ -37,7 +34,9 @@ import '../utils/geo_utils.dart';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class MapView extends StatefulWidget {
-  const MapView({super.key});
+  final FieldModel? initialField;
+
+  const MapView({super.key, this.initialField});
 
   @override
   State<MapView> createState() => _MapViewState();
@@ -124,22 +123,20 @@ class _MapViewState extends State<MapView> {
   void initState() {
     super.initState();
 
-    // Uruchom serwis GPS (domyślnie symulator; przełącznik w GpsSettingsScreen)
-    GpsLocationService.instance.start(
-      simStartLat: 51.930428,
-      simStartLon: 17.726242,
-    );
-    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
-
-    // Poproś o uprawnienia po załadowaniu drzewa widgetów (context jest gotowy)
+    // Poproś o uprawnienia i uruchom GPS po załadowaniu drzewa widgetów
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (GpsLocationService.instance.useInternalGps) {
-        await GpsLocationService.instance.requestPermissions(context);
-      }
+      await GpsLocationService.instance.start(context);
     });
+
+    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
 
     // Załaduj zapisane pola z Hive
     _savedFields = FieldService.instance.getAll();
+
+    if (widget.initialField != null) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _loadField(widget.initialField!));
+    }
   }
 
   @override
@@ -571,9 +568,16 @@ class _MapViewState extends State<MapView> {
     await _planSwaths(workingWidthM: width);
   }
 
-  /// Calls SwathPlannerFullBridge.planFull() in a background Isolate to avoid
-  /// blocking the UI thread during polygon processing (≈20–200 ms per call).
+  /// Generates swaths via SwathPlannerFullBridge.planFull().
+  ///
+  /// Runs synchronously on the main thread — the native C++ plan_full()
+  /// typically completes in 20–200 ms which is acceptable for a button press.
+  /// Previous [Isolate.run] approach was removed because FFI singletons
+  /// (DynamicLibrary / calloc) are not reliably transferable across Dart
+  /// isolates on Android, causing silent failures.
   Future<void> _planSwaths({double workingWidthM = 3.0}) async {
+    if (_fieldBoundary.length < 3) return;
+
     final polygon =
         _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
 
@@ -583,8 +587,9 @@ class _MapViewState extends State<MapView> {
     final overlapM = _overlapM;
     final headlandLaps = _headlandLaps;
 
-    final result = await Isolate.run(() {
-      return SwathPlannerFullBridge.instance.planFull(
+    PlanResult result;
+    try {
+      result = SwathPlannerFullBridge.instance.planFull(
         polygon: polygon,
         ax: ax,
         ay: ay,
@@ -594,7 +599,15 @@ class _MapViewState extends State<MapView> {
         overlapM: overlapM,
         headlandLaps: headlandLaps,
       );
-    });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd generowania ścieżek: $e'),
+        backgroundColor: Colors.red[800],
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
 
     if (!mounted) return;
 
@@ -837,6 +850,235 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  // ── Akcje panelu ──────────────────────────────────────────────────────────
+
+  void _toggleArimrLayer() {
+    final show = !_arimrLayerVisible;
+    if (show && _arimrParcels.isEmpty) {
+      final cached = ArimrService.instance.getCachedParcels();
+      if (cached.isNotEmpty) {
+        setState(() {
+          _arimrParcels = cached;
+          _arimrLayerVisible = true;
+        });
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+    setState(() => _arimrLayerVisible = show);
+  }
+
+  Future<void> _importArimr() async {
+    final bounds = _mapController.camera.visibleBounds;
+    final field = await ArimrImportSheet.show(
+      context,
+      mapBounds: bounds,
+    );
+    if (field != null && mounted) {
+      _loadField(field);
+      setState(() {
+        _savedFields = FieldService.instance.getAll();
+        _arimrParcels = ArimrService.instance.getCachedParcels();
+        _arimrLayerVisible = true;
+      });
+    }
+  }
+
+  void _downloadOffline() {
+    DownloadRegionSheet.show(
+      context,
+      center: _mapController.camera.center,
+    );
+  }
+
+  void _showActionsPanel() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.50,
+        minChildSize: 0.30,
+        maxChildSize: 0.75,
+        expand: false,
+        builder: (_, controller) => _buildPanelContent(controller),
+      ),
+    );
+  }
+
+  Widget _buildPanelContent(ScrollController controller) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: ListView(
+        controller: controller,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textFaint,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          _buildSectionHeader('WARSTWY MAPY'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: Icons.grass,
+                label: 'Działki LPIS',
+                tooltip: 'Pokaż/ukryj działki LPIS (ARiMR)',
+                isActive: _arimrLayerVisible,
+                onPressed: _toggleArimrLayer,
+              ),
+              if (_arimrLayerVisible)
+                _ActionTile(
+                  icon: Icons.tune,
+                  label: 'Manual Offset',
+                  tooltip: 'Kalibracja warstwy LPIS względem satelity',
+                  isActive: _offsetPanelVisible,
+                  onPressed: () => setState(
+                      () => _offsetPanelVisible = !_offsetPanelVisible),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('POLE'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              if (_activeField != null)
+                _ActionTile(
+                  icon: Icons.open_with_rounded,
+                  label: 'Korekta',
+                  tooltip: 'Koryguj położenie granicy',
+                  isActive: _nudgePanelVisible,
+                  onPressed: () => setState(
+                      () => _nudgePanelVisible = !_nudgePanelVisible),
+                ),
+              _ActionTile(
+                icon: _drawingMode ? Icons.cancel_outlined : Icons.edit,
+                label: _drawingMode ? 'Anuluj' : 'Rysuj',
+                tooltip: _drawingMode
+                    ? 'Anuluj rysowanie'
+                    : 'Rysuj granicę pola',
+                isActive: _drawingMode,
+                onPressed: _toggleDrawingMode,
+              ),
+              _ActionTile(
+                icon: _swaths.isNotEmpty || _headlandRings.isNotEmpty
+                    ? Icons.grid_on
+                    : Icons.grid_off,
+                label: 'Ścieżki',
+                tooltip: _swaths.isNotEmpty || _headlandRings.isNotEmpty
+                    ? 'Parametry ścieżek (aktywne)'
+                    : 'Generuj ścieżki',
+                isActive: _swaths.isNotEmpty || _headlandRings.isNotEmpty,
+                onPressed: _showSwathParamsDialog,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('POKRYCIE'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: _trackingCoverage
+                    ? Icons.stop_circle_outlined
+                    : Icons.radio_button_checked,
+                label: _trackingCoverage ? 'Zatrzymaj' : 'Nagraj',
+                tooltip: _trackingCoverage
+                    ? 'Zatrzymaj nagrywanie pokrycia'
+                    : 'Nagraj pokrycie pola',
+                isActive: _trackingCoverage,
+                onPressed: _toggleCoverage,
+              ),
+              if (_savedTrack.isNotEmpty || _coveredHa > 0)
+                _ActionTile(
+                  icon: Icons.layers_clear,
+                  label: 'Wyczyść ślad',
+                  tooltip: 'Usuń nagrany ślad',
+                  isActive: false,
+                  onPressed: _clearTrackWithConfirm,
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('WIĘCEJ'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: Icons.agriculture,
+                label: 'Import ARiMR',
+                tooltip: 'Importuj działki LPIS z ARiMR',
+                isActive: false,
+                onPressed: _importArimr,
+              ),
+              _ActionTile(
+                icon: Icons.assignment_add,
+                label: _activeTask != null ? 'Zmień zadanie' : 'Nowe zadanie',
+                tooltip: _activeTask != null
+                    ? 'Zadanie aktywne — zmień'
+                    : 'Nowe zadanie',
+                isActive: _activeTask != null,
+                onPressed: _showNewTaskDialog,
+              ),
+              _ActionTile(
+                icon: Icons.download_for_offline_outlined,
+                label: 'Mapy offline',
+                tooltip: 'Pobierz mapy offline',
+                isActive: false,
+                onPressed: _downloadOffline,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  static Widget _buildSectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        color: AppColors.textMuted,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 1.0,
+      ),
+    );
+  }
+
   // ── Nowe Zadanie ────────────────────────────────────────────────────────────
 
   /// Multi-step workflow: Field → Machine → TaskType → generate swaths in RAM.
@@ -990,9 +1232,7 @@ class _MapViewState extends State<MapView> {
       _activeTask = task;
     });
 
-    _planSwaths(
-        workingWidthM:
-            _activeWorkingWidth); // fire-and-forget; swaths appear when ready
+    await _planSwaths(workingWidthM: _activeWorkingWidth);
 
     // Step 6: start coverage tracking keyed by this task
     CoverageService.instance.startTracking(field.id, taskId: task.id);
@@ -1360,129 +1600,7 @@ class _MapViewState extends State<MapView> {
                       const SizedBox(height: 8),
                     ],
 
-                    // ── Warstwa LPIS ARiMR ───────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'arimrLayer',
-                      tooltip: _arimrLayerVisible
-                          ? 'Ukryj działki LPIS (ARiMR)'
-                          : 'Pokaż działki LPIS (ARiMR)',
-                      backgroundColor: _arimrLayerVisible
-                          ? Colors.green[700]
-                          : const Color(0xAA000000),
-                      onPressed: () {
-                        final show = !_arimrLayerVisible;
-                        if (show && _arimrParcels.isEmpty) {
-                          final cached =
-                              ArimrService.instance.getCachedParcels();
-                          if (cached.isNotEmpty) {
-                            setState(() {
-                              _arimrParcels = cached;
-                              _arimrLayerVisible = true;
-                            });
-                            return;
-                          }
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                  'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
-                              backgroundColor: Colors.orange,
-                              duration: Duration(seconds: 3),
-                            ),
-                          );
-                          return;
-                        }
-                        setState(() => _arimrLayerVisible = show);
-                      },
-                      child: const Icon(
-                        Icons.grass,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Import działek ARiMR ─────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'arimrImport',
-                      tooltip: 'Importuj działki LPIS z ARiMR',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: () async {
-                        final bounds = _mapController.camera.visibleBounds;
-                        final field = await ArimrImportSheet.show(
-                          context,
-                          mapBounds: bounds,
-                        );
-                        if (field != null && mounted) {
-                          _loadField(field);
-                          setState(() {
-                            _savedFields = FieldService.instance.getAll();
-                            // Załaduj nowe działki do warstwy podglądu
-                            _arimrParcels =
-                                ArimrService.instance.getCachedParcels();
-                            _arimrLayerVisible = true;
-                          });
-                        }
-                      },
-                      child: const Icon(
-                        Icons.agriculture,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Manual Offset (kalibracja LPIS względem satelity) ─────
-                    if (_arimrLayerVisible) ...[
-                      FloatingActionButton.small(
-                        heroTag: 'manualOffset',
-                        tooltip: 'Manual Offset — kalibracja warstwy LPIS',
-                        backgroundColor: _offsetPanelVisible
-                            ? Colors.teal[700]
-                            : const Color(0xAA000000),
-                        onPressed: () => setState(
-                            () => _offsetPanelVisible = !_offsetPanelVisible),
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            const Icon(Icons.tune,
-                                color: Colors.white, size: 20),
-                            if (_parcelLatOffset != 0 || _parcelLonOffset != 0)
-                              Positioned(
-                                top: 0,
-                                right: 0,
-                                child: Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: const BoxDecoration(
-                                    color: Colors.orangeAccent,
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-
-                    // ── Nudge (korekta offsetu działki) ──────────────────────────────
-                    if (_activeField != null) ...[
-                      FloatingActionButton.small(
-                        heroTag: 'nudge',
-                        tooltip: 'Koryguj położenie granicy',
-                        backgroundColor: _nudgePanelVisible
-                            ? Colors.orange[700]
-                            : const Color(0xAA000000),
-                        onPressed: () => setState(
-                            () => _nudgePanelVisible = !_nudgePanelVisible),
-                        child: const Icon(
-                          Icons.open_with_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
+                    // ── Śledź ciągnik ─────────────────────────────────────────
                     FloatingActionButton.small(
                       heroTag: 'follow',
                       tooltip: _followTractor
@@ -1501,7 +1619,7 @@ class _MapViewState extends State<MapView> {
                     ),
                     const SizedBox(height: 8),
 
-                    // ── Przełącznik Tryb Konfiguracji / Tryb Pracy ───────────
+                    // ── Przełącznik trybu mapy ─────────────────────────────────
                     FloatingActionButton.small(
                       heroTag: 'mapMode',
                       tooltip: _mapMode == MapLayerMode.geoportal
@@ -1525,183 +1643,17 @@ class _MapViewState extends State<MapView> {
                     ),
                     const SizedBox(height: 8),
 
+                    // ── Menu — panel z pozostałymi opcjami ─────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'offline',
-                      tooltip: 'Mapy offline',
+                      heroTag: 'menu',
+                      tooltip: 'Więcej opcji',
                       backgroundColor: const Color(0xAA000000),
-                      onPressed: () => DownloadRegionSheet.show(
-                        context,
-                        center: _mapController.camera.center,
-                      ),
+                      onPressed: _showActionsPanel,
                       child: const Icon(
-                        Icons.download_for_offline_outlined,
+                        Icons.tune,
                         color: Colors.white,
                         size: 20,
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Lista zapisanych pól ──────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'fields',
-                      tooltip: 'Zapisane pola',
-                      backgroundColor: _activeField != null
-                          ? const Color(0xFF1B5E20)
-                          : const Color(0xAA000000),
-                      onPressed: () async {
-                        final selected = await FieldManagerScreen.open(context);
-                        if (selected != null && mounted) _loadField(selected);
-                        if (mounted) {
-                          setState(() =>
-                              _savedFields = FieldService.instance.getAll());
-                        }
-                      },
-                      child: Badge(
-                        isLabelVisible: _savedFields.isNotEmpty,
-                        label: Text('${_savedFields.length}'),
-                        backgroundColor: Colors.greenAccent,
-                        textColor: Colors.black,
-                        child: const Icon(Icons.agriculture,
-                            color: Colors.white, size: 20),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Zarządzanie maszynami ────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'machines',
-                      tooltip: 'Zarządzanie maszynami',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: () => MachineManagerScreen.open(context),
-                      child: const Icon(
-                        Icons.agriculture_outlined,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Nowe Zadanie ──────────────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'newTask',
-                      tooltip: _activeTask != null
-                          ? 'Zadanie aktywne — zmień'
-                          : 'Nowe zadanie',
-                      backgroundColor: _activeTask != null
-                          ? Colors.amber[800]
-                          : const Color(0xAA000000),
-                      onPressed: _showNewTaskDialog,
-                      child: const Icon(
-                        Icons.assignment_add,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Rysowanie granicy palcem ──────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'draw',
-                      tooltip: _drawingMode
-                          ? 'Anuluj rysowanie'
-                          : 'Rysuj granicę pola',
-                      backgroundColor: _drawingMode
-                          ? Colors.orange[800]
-                          : const Color(0xAA000000),
-                      onPressed: _toggleDrawingMode,
-                      child: Icon(
-                        _drawingMode ? Icons.cancel_outlined : Icons.edit,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Nagrywanie pokrycia ───────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'coverage',
-                      tooltip: _trackingCoverage
-                          ? 'Zatrzymaj nagrywanie pokrycia'
-                          : 'Nagraj pokrycie pola',
-                      backgroundColor: _trackingCoverage
-                          ? Colors.blue[700]
-                          : const Color(0xAA000000),
-                      onPressed: _toggleCoverage,
-                      child: Icon(
-                        _trackingCoverage
-                            ? Icons.stop_circle_outlined
-                            : Icons.radio_button_checked,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Wyczyść ślad ──────────────────────────────────────────
-                    if (_savedTrack.isNotEmpty || _coveredHa > 0)
-                      FloatingActionButton.small(
-                        heroTag: 'clearTrack',
-                        tooltip: 'Wyczyść ślad',
-                        backgroundColor: Colors.red[900],
-                        onPressed: _clearTrackWithConfirm,
-                        child: const Icon(
-                          Icons.layers_clear,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                    if (_savedTrack.isNotEmpty || _coveredHa > 0)
-                      const SizedBox(height: 8),
-                    // ── Generowanie ścieżek ────────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'swaths',
-                      tooltip: _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                          ? 'Parametry ścieżek (aktywne)'
-                          : 'Generuj ścieżki',
-                      backgroundColor:
-                          _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                              ? Colors.green[700]
-                              : const Color(0xAA000000),
-                      onPressed: _showSwathParamsDialog,
-                      child: Icon(
-                        _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                            ? Icons.grid_on
-                            : Icons.grid_off,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Ustawienia GPS ────────────────────────────────────────
-                    StreamBuilder<SimPosition>(
-                      stream: GpsLocationService.instance.positionStream,
-                      builder: (_, __) {
-                        final status = GpsLocationService.instance.fixStatus;
-                        final (color, icon) = switch (status) {
-                          GpsFixStatus.inactive => (
-                              const Color(0xAA000000),
-                              Icons.gps_off
-                            ),
-                          GpsFixStatus.searching => (
-                              Colors.orange[800]!,
-                              Icons.gps_not_fixed
-                            ),
-                          GpsFixStatus.gps => (
-                              Colors.green[700]!,
-                              Icons.gps_fixed
-                            ),
-                          GpsFixStatus.dgps => (
-                              Colors.teal[600]!,
-                              Icons.satellite_alt
-                            ),
-                        };
-                        return FloatingActionButton.small(
-                          heroTag: 'gpsSettings',
-                          tooltip: 'Ustawienia GPS',
-                          backgroundColor: color,
-                          onPressed: () => Navigator.push<void>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const GpsSettingsScreen(),
-                            ),
-                          ),
-                          child: Icon(icon, color: Colors.white, size: 20),
-                        );
-                      },
                     ),
                   ],
                 ),
@@ -1726,6 +1678,65 @@ class _MapViewState extends State<MapView> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Kafelek akcji w panelu bocznym
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.onPressed,
+    this.isActive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final VoidCallback onPressed;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? AppColors.success : AppColors.textSecondary;
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        width: 96,
+        child: Card(
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          color: Colors.transparent,
+          elevation: 0,
+          child: InkWell(
+            onTap: onPressed,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: color, size: 24),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    style: TextStyle(color: color, fontSize: 11),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

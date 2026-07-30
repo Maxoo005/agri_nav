@@ -5,19 +5,14 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
 
     <!-- ── GPS / Lokalizacja ─────────────────────────────────────────────────── -->
-    <!-- Wymagane przez geolocator — precyzyjna lokalizacja (GPS + sieć) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-    <!-- Fallback — przybliżona lokalizacja (sieć, Cell ID) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <!-- Lokalizacja w tle (ekran wygaszony podczas pracy w polu).
-         Android 10+ wymaga osobnego zapytania o to uprawnienie w runtime.
-         Usuń jeśli nie potrzebujesz pracy przy wygaszonym ekranie. -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
-    <!-- Wymagane na Android 9+ dla ForegroundService z lokalizacją.
-         Zapobiega zabijaniu aplikacji przez system podczas nawigacji. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <!-- Android 14+ — jawna deklaracja typu foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <!-- Wymagane przez geolocator (enableWakeLock: true) — wake lock utrzymuje
+         CPU przy życiu gdy ekran jest wygaszony podczas nawigacji GPS. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
     <application
         android:label="agri_nav"

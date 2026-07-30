@@ -57,7 +57,7 @@ class LpisFetchResult {
 //   clearCache()                    — wyczyść Hive
 // ─────────────────────────────────────────────────────────────────────────────
 
-const kArimrBox = 'arimr_lpis';
+const _kArimrBox = 'arimr_lpis';
 
 class ArimrService {
   ArimrService._();
@@ -72,8 +72,8 @@ class ArimrService {
 
   final _http = http.Client();
 
-  static Future<void> init() async => Hive.openBox(kArimrBox);
-  Box get _box => Hive.box(kArimrBox);
+  static Future<void> init() async => Hive.openBox(_kArimrBox);
+  Box get _box => Hive.box(_kArimrBox);
 
   // ── Pobieranie działek w obszarze (siatka XY) ─────────────────────────────────
 

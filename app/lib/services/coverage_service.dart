@@ -2,7 +2,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:latlong2/latlong.dart';
 
 /// Hive box name for coverage tracks.
-const kCoverageBox = 'coverage';
+const _kCoverageBox = 'coverage';
 
 /// Persists and exposes the GPS track recorded during field work.
 ///
@@ -14,9 +14,9 @@ class CoverageService {
   static final instance = CoverageService._();
 
   /// Open the Hive box.  Call once in main() after Hive.initFlutter().
-  static Future<void> init() => Hive.openBox(kCoverageBox);
+  static Future<void> init() => Hive.openBox(_kCoverageBox);
 
-  Box get _box => Hive.box(kCoverageBox);
+  Box get _box => Hive.box(_kCoverageBox);
 
   static const int _flushInterval = 100; // flush every N new points
 

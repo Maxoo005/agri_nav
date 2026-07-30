@@ -3,16 +3,16 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/machine_model.dart';
 
-const kMachineBox = 'machines';
+const _kMachineBox = 'machines';
 
 /// CRUD dla maszyn rolniczych. Dane trwałe przez Hive.
 class MachineService {
   MachineService._();
   static final instance = MachineService._();
 
-  static Future<void> init() async => Hive.openBox(kMachineBox);
+  static Future<void> init() async => Hive.openBox(_kMachineBox);
 
-  Box get _box => Hive.box(kMachineBox);
+  Box get _box => Hive.box(_kMachineBox);
 
   List<MachineModel> getAll() =>
       _box.values.map((e) => MachineModel.fromJson(e as Map)).toList()

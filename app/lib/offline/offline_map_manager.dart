@@ -3,11 +3,10 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:latlong2/latlong.dart';
 
 /// Nazwa magazynu FMTC używana w całej aplikacji.
-const String kTileStore = 'osmTiles';
+const String _kTileStore = 'osmTiles';
 
 /// URL OpenStreetMap — globalny podkład wektorowy, poprawnie wyrównany z GUGiK.
-const String kSatUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-const String kOsmUrl = kSatUrl;
+const String _kSatUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 /// URL bazowy serwisu WMS — Ortofotomapa HighResolution GUGiK (Polska).
 ///
@@ -37,7 +36,7 @@ class OfflineMapManager {
   OfflineMapManager._();
   static final instance = OfflineMapManager._();
 
-  final _store = const FMTCStore(kTileStore);
+  final _store = const FMTCStore(_kTileStore);
 
   // ── Statystyki ──────────────────────────────────────────────────────────────
 
@@ -72,7 +71,7 @@ class OfflineMapManager {
         minZoom: minZoom,
         maxZoom: maxZoom,
         options: TileLayer(
-          urlTemplate: kSatUrl,
+          urlTemplate: _kSatUrl,
           userAgentPackageName: 'com.example.agri_nav',
         ),
       ),

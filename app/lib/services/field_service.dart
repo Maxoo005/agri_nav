@@ -4,7 +4,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../models/field_model.dart';
 
 /// Nazwa boxa Hive.
-const kFieldBox = 'fields';
+const _kFieldBox = 'fields';
 
 /// CRUD dla pól uprawowych. Dane trwałe przez Hive.
 ///
@@ -18,9 +18,9 @@ class FieldService {
   static final instance = FieldService._();
 
   /// Inicjalizacja: otwiera box Hive. Wywołać w main() po Hive.initFlutter().
-  static Future<void> init() async => Hive.openBox(kFieldBox);
+  static Future<void> init() async => Hive.openBox(_kFieldBox);
 
-  Box get _box => Hive.box(kFieldBox);
+  Box get _box => Hive.box(_kFieldBox);
 
   // ── Odczyt ───────────────────────────────────────────────────────────────────
 
