@@ -101,16 +101,6 @@ class FieldModel {
     return LatLng(lat, lon);
   }
 
-  /// Przesuwa offset całej granicy o [latOffset] stopni szerokości i
-  /// [lonOffset] stopni długości geograficznej.
-  ///
-  /// Modyfikuje [offsetLat] i [offsetLon] addytywnie.
-  /// Aby użyć metrów, przelicz najpierw przez [GeoportalService.nudgeField].
-  void applyOffset(double latOffset, double lonOffset) {
-    offsetLat += latOffset;
-    offsetLon += lonOffset;
-  }
-
   // ── Serializacja ─────────────────────────────────────────────────────────────
 
   Map<String, dynamic> toJson() => {
