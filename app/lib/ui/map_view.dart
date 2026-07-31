@@ -1398,7 +1398,7 @@ class _MapViewState extends State<MapView> {
                           f.boundaryLats.length >= 3)
                       .map((f) => Polygon(
                             points: f.boundary,
-                            color: Colors.white.withOpacity(0.06),
+                            color: Colors.white.withValues(alpha: 0.06),
                             borderColor: Colors.white38,
                             borderStrokeWidth: 1.0,
                           ))
@@ -1424,7 +1424,7 @@ class _MapViewState extends State<MapView> {
                   polylines: _headlandRings
                       .map((ring) => Polyline(
                             points: [...ring, ring.first], // zamknij pierścień
-                            color: Colors.orangeAccent.withOpacity(0.75),
+                            color: Colors.orangeAccent.withValues(alpha: 0.75),
                             strokeWidth: 1.8,
                           ))
                       .toList(),
@@ -1437,7 +1437,7 @@ class _MapViewState extends State<MapView> {
                   polylines: [
                     Polyline(
                       points: CoverageService.instance.currentTrack,
-                      color: Colors.blue.withOpacity(0.50),
+                      color: Colors.blue.withValues(alpha: 0.50),
                       strokeWidth: _coverageStrokeWidth(),
                     ),
                   ],
@@ -1455,8 +1455,8 @@ class _MapViewState extends State<MapView> {
                         LatLng(s.endLat, s.endLon),
                       ],
                       color: isNearest
-                          ? Colors.yellow.withOpacity(0.95)
-                          : Colors.greenAccent.withOpacity(0.7),
+                          ? Colors.yellow.withValues(alpha: 0.95)
+                          : Colors.greenAccent.withValues(alpha: 0.7),
                       strokeWidth: isNearest ? 3.2 : 1.4,
                     );
                   }).toList(),
@@ -2089,8 +2089,8 @@ class _ManualOffsetPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: hasOffset
-              ? Colors.orangeAccent.withOpacity(0.8)
-              : Colors.tealAccent.withOpacity(0.5),
+              ? Colors.orangeAccent.withValues(alpha: 0.8)
+              : Colors.tealAccent.withValues(alpha: 0.5),
           width: 1,
         ),
         boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 8)],

@@ -406,7 +406,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: Colors.red.shade900.withOpacity(0.3),
+              color: Colors.red.shade900.withValues(alpha: 0.3),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Row(
@@ -811,7 +811,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.green.shade900.withOpacity(0.3),
+            color: Colors.green.shade900.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(8),
             border: Border.all(color: Colors.green.shade700),
           ),
