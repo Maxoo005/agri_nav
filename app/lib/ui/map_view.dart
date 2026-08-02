@@ -12,6 +12,7 @@ import '../ffi/nav_bridge.dart';
 import 'app_theme.dart';
 import '../models/field_model.dart';
 import '../models/machine_model.dart';
+import '../models/task_plan.dart';
 import '../models/work_task.dart';
 import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
@@ -36,7 +37,11 @@ import '../utils/geo_utils.dart';
 class MapView extends StatefulWidget {
   final FieldModel? initialField;
 
-  const MapView({super.key, this.initialField});
+  /// Zapisany plan zadania (z bazy SQLite) — gdy podany, pole, maszyna,
+  /// parametry ścieżek i śledzenie pokrycia są konfigurowane z planu.
+  final TaskPlan? initialTask;
+
+  const MapView({super.key, this.initialField, this.initialTask});
 
   @override
   State<MapView> createState() => _MapViewState();
@@ -136,6 +141,9 @@ class _MapViewState extends State<MapView> {
     if (widget.initialField != null) {
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _loadField(widget.initialField!));
+    } else if (widget.initialTask != null) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _loadTaskPlan(widget.initialTask!));
     }
   }
 
@@ -228,43 +236,6 @@ class _MapViewState extends State<MapView> {
     }
   }
 
-  // ── Obsługa linii AB ─────────────────────────────────────────────────────────
-
-  void _setPointA() {
-    setState(() => _pointA = _tractorPos);
-    _trySendAbLine();
-  }
-
-  void _setPointB() {
-    setState(() => _pointB = _tractorPos);
-    _trySendAbLine();
-  }
-
-  void _trySendAbLine() {
-    if (_pointA != null && _pointB != null) {
-      // Przekaż WGS-84 do C++ — NavEngine przeliczy na ENU
-      NavBridge.instance.setAbLine(
-        _pointA!.latitude,
-        _pointA!.longitude,
-        _pointB!.latitude,
-        _pointB!.longitude,
-      );
-    }
-  }
-
-  void _resetAbLine() {
-    setState(() {
-      _pointA = null;
-      _pointB = null;
-      _crossTrack = 0;
-      _guidanceValid = false;
-      _swaths = [];
-      _headlandRings = [];
-      _snapInfo = SnapInfo.none;
-    });
-    NavBridge.instance.resetAbLine();
-  }
-
   // ── Granica pola (DrawingMode) ────────────────────────────────────────────
 
   void _toggleDrawingMode() {
@@ -278,7 +249,7 @@ class _MapViewState extends State<MapView> {
         _activeField = null;
       } else {
         if (_fieldBoundary.length >= 3) {
-          _swathAngleDeg = _minPassesAngle(_fieldBoundary);
+          _swathAngleDeg = GeoUtils.minPassesBearing(_fieldBoundary);
           WidgetsBinding.instance
               .addPostFrameCallback((_) => _showSaveFieldDialog());
         }
@@ -390,10 +361,36 @@ class _MapViewState extends State<MapView> {
 
   // ── Ładowanie pola z listy ─────────────────────────────────────────────────
 
-  void _loadField(FieldModel field) async {
-    final savedTrack = _activeTask != null
-        ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
-        : CoverageService.instance.loadForField(field.id);
+  /// Ładuje pole; przy podanym [plan] (zapisany plan zadania w SQLite)
+  /// dodatkowo konfiguruje aktywne zadanie/maszynę oraz parametry ścieżek
+  /// zgodnie z migawką zapisaną w planie.
+  Future<void> _loadField(FieldModel field, {TaskPlan? plan}) async {
+    if (plan != null) {
+      _activeTask = WorkTask(
+        id: plan.id,
+        fieldId: plan.fieldId,
+        machineId: plan.machineId,
+        taskType: plan.taskType,
+        effectiveWidthM: plan.workingWidthM,
+        targetRate: plan.targetRate,
+        initialTankVolume: plan.tankVolume,
+        unit: plan.unit,
+        createdAt: plan.createdAt,
+        name: plan.name,
+      );
+      _activeMachine = MachineModel(
+        id: plan.machineId ?? '',
+        name: plan.machineName ?? '—',
+        type: MachineType.fromJson(plan.machineType),
+        workingWidthM: plan.workingWidthM,
+      );
+    }
+
+    final savedTrack = plan != null
+        ? CoverageService.instance.loadForTask(field.id, plan.id)
+        : (_activeTask != null
+            ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
+            : CoverageService.instance.loadForField(field.id));
 
     // Reset SectionControl to new field origin and replay saved track
     SectionControlBridge.instance
@@ -401,7 +398,9 @@ class _MapViewState extends State<MapView> {
       ..setOrigin(field.center.latitude, field.center.longitude);
 
     var coveredHa = 0.0;
-    final replayWidth = _activeTask?.effectiveWidthM ?? field.workingWidthM;
+    final replayWidth = plan?.workingWidthM ??
+        _activeTask?.effectiveWidthM ??
+        field.workingWidthM;
     if (savedTrack.isNotEmpty) {
       coveredHa = await SectionControlBridge.instance
           .replayTrack(savedTrack, replayWidth);
@@ -415,7 +414,10 @@ class _MapViewState extends State<MapView> {
       _swaths = [];
       _headlandRings = [];
       _snapInfo = SnapInfo.none;
-      _swathAngleDeg = _minPassesAngle(field.boundary);
+      _swathAngleDeg =
+          plan?.swathAngleDeg ?? GeoUtils.minPassesBearing(field.boundary);
+      _overlapM = plan?.overlapM ?? 0.0;
+      _headlandLaps = plan?.headlandLaps ?? 0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
       if (field.lineA != null) _pointA = field.lineA;
@@ -441,6 +443,32 @@ class _MapViewState extends State<MapView> {
         );
       }
     });
+  }
+
+  /// Ładuje pole i konfigurację z zapisanego planu zadania (SQLite),
+  /// a następnie od razu uruchamia śledzenie pokrycia dla tego zadania.
+  Future<void> _loadTaskPlan(TaskPlan plan) async {
+    final field = FieldModel(
+      id: plan.fieldId,
+      name: plan.fieldName,
+      boundaryLats: plan.boundaryLats,
+      boundaryLons: plan.boundaryLons,
+      workingWidthM: plan.workingWidthM,
+      lineALat: plan.lineALat,
+      lineALon: plan.lineALon,
+      lineBLat: plan.lineBLat,
+      lineBLon: plan.lineBLon,
+    );
+    await _loadField(field, plan: plan);
+    if (_activeField != null) {
+      CoverageService.instance.startTracking(_activeField!.id, taskId: plan.id);
+      SectionControlBridge.instance
+        ..setOrigin(
+            _activeField!.center.latitude, _activeField!.center.longitude)
+        ..clear();
+      setState(() => _trackingCoverage = true);
+    }
+    await _planSwaths(workingWidthM: plan.workingWidthM);
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -631,50 +659,6 @@ class _MapViewState extends State<MapView> {
   }
 
   // ── Helpers: kierunek ścieżek ─────────────────────────────────────────────
-
-  /// Finds the swath bearing [0, 180) that minimises the number of passes.
-  ///
-  /// Strategy: sweep every 1° in [0°, 179°] and for each candidate angle
-  /// measure the field extent along the perpendicular axis (= sweep width).
-  /// The angle with the smallest perpendicular extent needs fewest passes.
-  static double _minPassesAngle(List<LatLng> pts) {
-    if (pts.length < 2) return 0.0;
-
-    // Convert all vertices to a local ENU frame (first vertex as origin)
-    // to work in metres rather than degrees.
-    final originLat = pts[0].latitude;
-    final originLon = pts[0].longitude;
-    final cosLat = math.cos(originLat * math.pi / 180.0);
-    final enu = pts
-        .map((p) => (
-              (p.longitude - originLon) * 111320.0 * cosLat, // E
-              (p.latitude - originLat) * 111320.0, // N
-            ))
-        .toList();
-
-    double bestAngle = 0.0;
-    double minWidth = double.infinity;
-
-    for (int deg = 0; deg < 180; deg++) {
-      final rad = deg * math.pi / 180.0;
-      // Swath direction (bearing): unit vector = (sinθ, cosθ) in (E, N).
-      // Perpendicular axis (90° CW):  unit vector = (cosθ, -sinθ) in (E, N).
-      // Projection of (e, n) onto perpendicular: e·cosθ − n·sinθ.
-      double minP = double.infinity;
-      double maxP = double.negativeInfinity;
-      for (final (e, n) in enu) {
-        final p = e * math.cos(rad) - n * math.sin(rad);
-        if (p < minP) minP = p;
-        if (p > maxP) maxP = p;
-      }
-      final width = maxP - minP;
-      if (width < minWidth) {
-        minWidth = width;
-        bestAngle = deg.toDouble();
-      }
-    }
-    return bestAngle;
-  }
 
   /// Synthetic AB pair from boundary centroid + azimuth [deg].
   /// Returns (A, B) 2 km apart — well outside any realistic field.
@@ -1299,7 +1283,7 @@ class _MapViewState extends State<MapView> {
           userAgentPackageName: 'com.example.agri_nav',
           keepBuffer: 4,
           maxNativeZoom: 18,
-          tileProvider: FMTCStore(kGeoportalTileStore).getTileProvider(
+          tileProvider: const FMTCStore(kGeoportalTileStore).getTileProvider(
             settings: FMTCTileProviderSettings(
               behavior: CacheBehavior.cacheFirst,
             ),
@@ -1316,30 +1300,6 @@ class _MapViewState extends State<MapView> {
 
   /// Delegates to [GeoUtils.bearing].
   static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
-
-  // ── Budowniczy znacznika A/B ─────────────────────────────────────────────────
-
-  Marker _abMarker(LatLng pos, String label) => Marker(
-        point: pos,
-        width: 30,
-        height: 30,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.blue[800],
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      );
 
   // ── Build ────────────────────────────────────────────────────────────────────
 
@@ -1462,23 +1422,9 @@ class _MapViewState extends State<MapView> {
                   }).toList(),
                 ),
 
-              // ── Linia AB ─────────────────────────────────────────────────────
-              if (_pointA != null && _pointB != null)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: [_pointA!, _pointB!],
-                      color: Colors.lightBlueAccent,
-                      strokeWidth: 2.5,
-                    ),
-                  ],
-                ),
-
-              // ── Markery A, B + ikona ciągnika ────────────────────────────────
+              // ── Ikona ciągnika ────────────────────────────────────────────────
               MarkerLayer(
                 markers: [
-                  if (_pointA != null) _abMarker(_pointA!, 'A'),
-                  if (_pointB != null) _abMarker(_pointB!, 'B'),
                   Marker(
                     point: _tractorPos,
                     width: 52,
@@ -1544,8 +1490,9 @@ class _MapViewState extends State<MapView> {
                 },
                 onPanUpdate: (d) {
                   final pt = _screenToLatLng(d.localPosition);
-                  if (_shouldAddPoint(pt))
+                  if (_shouldAddPoint(pt)) {
                     setState(() => _fieldBoundary.add(pt));
+                  }
                 },
                 onPanEnd: (_) {
                   setState(() => _drawingMode = false);
@@ -1660,23 +1607,6 @@ class _MapViewState extends State<MapView> {
               ),
             ),
           ),
-
-          // ── Panel dolny: odchylenie + przyciski AB ────────────────────────────
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: _NavPanel(
-              crossTrack: _crossTrack,
-              valid: _guidanceValid,
-              hasA: _pointA != null,
-              hasB: _pointB != null,
-              onSetA: _setPointA,
-              onSetB: _setPointB,
-              onReset: _resetAbLine,
-              snapInfo: _snapInfo.swathIndex >= 0 ? _snapInfo : null,
-            ),
-          ),
         ],
       ),
     );
@@ -1753,7 +1683,7 @@ class _WorkModeGridLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Positioned.fill(
+    return const Positioned.fill(
       child: RepaintBoundary(
         child: CustomPaint(
           painter: _GridPainter(),
@@ -1852,202 +1782,6 @@ class _TractorArrow extends CustomPainter {
   @override
   bool shouldRepaint(_TractorArrow old) =>
       old.valid != valid || old.crossTrack != crossTrack;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Panel nawigacyjny (dolny pasek)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class _NavPanel extends StatelessWidget {
-  const _NavPanel({
-    required this.crossTrack,
-    required this.valid,
-    required this.hasA,
-    required this.hasB,
-    required this.onSetA,
-    required this.onSetB,
-    required this.onReset,
-    this.snapInfo,
-  });
-
-  final double crossTrack;
-  final bool valid;
-  final bool hasA;
-  final bool hasB;
-  final VoidCallback onSetA;
-  final VoidCallback onSetB;
-  final VoidCallback onReset;
-  final SnapInfo? snapInfo;
-
-  Color get _ctColor {
-    if (!valid) return Colors.grey;
-    final abs = crossTrack.abs();
-    if (abs < 0.15) return const Color(0xFF00E676);
-    if (abs < 0.50) return Colors.orange;
-    return Colors.redAccent;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final abs = crossTrack.abs();
-    final side = crossTrack >= 0 ? 'prawo' : 'lewo';
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xEE000000),
-        border: Border(top: BorderSide(color: Colors.white12, width: 0.5)),
-      ),
-      padding: EdgeInsets.fromLTRB(
-        12,
-        10,
-        12,
-        12 + MediaQuery.of(context).padding.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // ── Snap-to-swath info (gdy ścieżki są wygenerowane) ────────────────
-          if (snapInfo != null) ...[
-            _SnapInfoRow(snapInfo: snapInfo!),
-            const SizedBox(height: 6)
-          ],
-
-          // ── Pasek wskaźnika odchylenia (zakres ±1.5 m) ─────────────────────
-          Row(
-            children: [
-              const Text('L',
-                  style: TextStyle(color: Colors.white38, fontSize: 10)),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(3),
-                  child: LinearProgressIndicator(
-                    value:
-                        valid ? (crossTrack.clamp(-1.5, 1.5) + 1.5) / 3.0 : 0.5,
-                    minHeight: 8,
-                    backgroundColor: Colors.white10,
-                    valueColor: AlwaysStoppedAnimation(_ctColor),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-              const Text('P',
-                  style: TextStyle(color: Colors.white38, fontSize: 10)),
-            ],
-          ),
-
-          const SizedBox(height: 4),
-
-          // ── Wartość odchylenia (numeryczna) ────────────────────────────────
-          Text(
-            valid
-                ? '${abs.toStringAsFixed(2)} m  $side'
-                : 'Linia AB nie ustawiona',
-            style: TextStyle(
-              color: _ctColor,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 0.5,
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ── Przyciski Punkt A / Punkt B / Reset ─────────────────────────────
-          Row(
-            children: [
-              Expanded(
-                  child:
-                      _AbButton(label: 'Punkt A', isSet: hasA, onTap: onSetA)),
-              const SizedBox(width: 8),
-              Expanded(
-                  child:
-                      _AbButton(label: 'Punkt B', isSet: hasB, onTap: onSetB)),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.clear, color: Colors.white38),
-                tooltip: 'Resetuj linię AB',
-                onPressed: onReset,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Wiersz informacji o snap-to-swath ────────────────────────────────────────
-
-class _SnapInfoRow extends StatelessWidget {
-  const _SnapInfoRow({required this.snapInfo});
-
-  final SnapInfo snapInfo;
-
-  @override
-  Widget build(BuildContext context) {
-    final sideStr = snapInfo.side > 0
-        ? 'prawo'
-        : snapInfo.side < 0
-            ? 'lewo'
-            : 'środek';
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.linear_scale, color: Colors.yellowAccent, size: 14),
-        const SizedBox(width: 6),
-        Text(
-          'Pas ${snapInfo.swathIndex + 1}: '
-          '${snapInfo.distanceM.toStringAsFixed(2)} m  $sideStr',
-          style: const TextStyle(
-            color: Colors.yellowAccent,
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Przycisk Punkt A/B ────────────────────────────────────────────────────────
-
-class _AbButton extends StatelessWidget {
-  const _AbButton(
-      {required this.label, required this.isSet, required this.onTap});
-
-  final String label;
-  final bool isSet;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        decoration: BoxDecoration(
-          color: isSet ? Colors.blue[800] : Colors.white10,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isSet ? Colors.lightBlueAccent : Colors.white24,
-          ),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          isSet ? '✓  $label' : label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-            fontSize: 13,
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2176,7 +1910,7 @@ class _ManualOffsetPanel extends StatelessWidget {
           ),
 
           const SizedBox(height: 4),
-          Text(
+          const Text(
             '1 krok ≈ 1.1 m',
             style: TextStyle(color: Colors.white24, fontSize: 8.5),
           ),

@@ -3,6 +3,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/field_model.dart';
 import '../services/field_service.dart';
+import 'field_tasks_screen.dart';
 
 /// Ekran listy zapisanych pól.
 ///
@@ -64,6 +65,7 @@ class FieldManagerScreen extends StatelessWidget {
             itemBuilder: (context, i) => _FieldTile(
               field: fields[i],
               onTap: () => Navigator.pop(context, fields[i]),
+              onTasks: () => FieldTasksScreen.open(context, fields[i]),
               onDelete: () => _delete(context, fields[i]),
               onEdit: () => _editName(context, fields[i]),
             ),
@@ -161,12 +163,14 @@ class _FieldTile extends StatelessWidget {
   const _FieldTile({
     required this.field,
     required this.onTap,
+    required this.onTasks,
     required this.onDelete,
     required this.onEdit,
   });
 
   final FieldModel field;
   final VoidCallback onTap;
+  final VoidCallback onTasks;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
 
@@ -197,6 +201,12 @@ class _FieldTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          IconButton(
+            icon: const Icon(Icons.assignment_outlined,
+                color: Colors.white70, size: 20),
+            tooltip: 'Zadania dla pola',
+            onPressed: onTasks,
+          ),
           IconButton(
               icon: const Icon(Icons.edit_outlined,
                   color: Colors.white38, size: 20),

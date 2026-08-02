@@ -209,8 +209,9 @@ class GeoportalService {
         ? lines[1].trim()
         : lines[0].trim();
     final parts = dataLine.split(';');
-    if (parts.length < 2)
+    if (parts.length < 2) {
       throw ULDKException('Niepoprawna odpowiedź: $dataLine');
+    }
 
     return WktParser.parse(parts[1].trim());
   }
@@ -244,7 +245,9 @@ class GeoportalService {
 
   Future<void> _requireNetwork() async {
     final result = await Connectivity().checkConnectivity();
-    if (result == ConnectivityResult.none) throw const NoNetworkException();
+    if (result.contains(ConnectivityResult.none)) {
+      throw const NoNetworkException();
+    }
   }
 
   Future<FieldModel> _handleParcelResponse(http.Response response) async {

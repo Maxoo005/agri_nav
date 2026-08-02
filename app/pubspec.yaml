@@ -23,6 +23,13 @@ dependencies:
   http: ^1.2.0
   # Real GPS — permissions + position stream
   geolocator: ^13.0.4
+  # SQLite — zapis zadań roboczych do pliku .db
+  sqflite: ^2.4.0
+  # Łączenie ścieżek w SQLite (getDatabasesPath + plik .db)
+  path: ^1.9.0
+  # SQLite FFI — backend dla platform desktop (Windows), gdy brak wtyczki sqflite
+  sqflite_common_ffi: ^2.3.0
+  sqlite3_flutter_libs: ^0.5.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0

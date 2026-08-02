@@ -154,7 +154,7 @@ class GpsLocationService {
       accuracy: LocationAccuracy.bestForNavigation,
       intervalDuration: const Duration(milliseconds: 100),
       distanceFilter: 0,
-      foregroundNotificationConfig: ForegroundNotificationConfig(
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
         notificationText: 'AgriNav — aktywna nawigacja GPS',
         notificationTitle: 'AgriNav GPS',
         enableWakeLock: true,

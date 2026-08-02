@@ -75,39 +75,6 @@ FfiPosition agrinav_sim_get_position(SimHandle h);
 // Wołać tylko z wątku Dart (głównego), nie z callbacku.
 const char* agrinav_sim_last_nmea(SimHandle h);
 
-// ── Planowanie ścieżek uprawowych (swath planning) ───────────────────────────
-
-/// Wynik planowania ścieżek: płaski bufor double + liczba swath'ów.
-///
-/// Układ danych w `data`:
-///   [ startLat₀, startLon₀, endLat₀, endLon₀,
-///     startLat₁, startLon₁, endLat₁, endLon₁, ... ]
-///
-/// Zwolnij pamięć przez agrinav_free_swaths().
-typedef struct {
-    double*  data;        ///< swath_count * 4 wartości double
-    int32_t  swath_count; ///< liczba ścieżek
-} FfiSwathList;
-
-/// Generuje równoległe ścieżki uprawowe wypełniające wielokąt pola.
-///
-/// @param polygon       Wierzchołki granic pola (WGS-84), przeplatane: lat₀,lon₀,lat₁,lon₁,...
-/// @param vertex_count  Liczba wierzchołków (nie par!).
-/// @param ax,ay         Punkt A linii AB (WGS-84 lat/lon).
-/// @param bx,by         Punkt B linii AB (WGS-84 lat/lon).
-/// @param working_width Szerokość robocza [m].
-/// @return              Wskaźnik na FfiSwathList (właściciel callera), nigdy NULL.
-FfiSwathList* agrinav_plan_swaths(
-    const double* polygon,
-    int32_t       vertex_count,
-    double        ax, double ay,
-    double        bx, double by,
-    double        working_width
-);
-
-/// Zwalnia pamięć przydzieloną przez agrinav_plan_swaths().
-void agrinav_free_swaths(FfiSwathList* list);
-
 // ── Full planning result (swaths + headland rings) ────────────────────────────
 
 /// Combined result of agrinav_plan_full().

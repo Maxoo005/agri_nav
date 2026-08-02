@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
+import 'arimr_import_sheet.dart';
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
 import 'machine_manager_screen.dart';
 import 'map_view.dart';
+import 'new_task_screen.dart';
+import 'work_mode_task_picker.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -24,7 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 32),
-              Text(
+              const Text(
                 'AgriNav',
                 style: TextStyle(
                   color: AppColors.textPrimary,
@@ -34,7 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
+              const Text(
                 'Nawigacja rolnicza',
                 style: TextStyle(
                   color: AppColors.textSecondary,
@@ -52,25 +55,18 @@ class _HomeScreenState extends State<HomeScreen> {
                     _MenuTile(
                       icon: Icons.map_rounded,
                       label: 'Tryb pracy',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const MapView(),
-                        ),
-                      ),
+                      onTap: () => WorkModeTaskPickerScreen.open(context),
                     ),
                     _MenuTile(
                       icon: Icons.agriculture,
                       label: 'Pola',
                       onTap: () async {
-                        final selected =
-                            await FieldManagerScreen.open(context);
-                        if (selected != null && mounted) {
+                        final selected = await FieldManagerScreen.open(context);
+                        if (selected != null && context.mounted) {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) =>
-                                  MapView(initialField: selected),
+                              builder: (_) => MapView(initialField: selected),
                             ),
                           );
                         }
@@ -84,22 +80,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     _MenuTile(
                       icon: Icons.assignment_add,
                       label: 'Nowe zadanie',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const MapView(),
-                        ),
-                      ),
+                      onTap: () => NewTaskScreen.open(context),
                     ),
                     _MenuTile(
                       icon: Icons.satellite_alt,
                       label: 'Import ARiMR',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const MapView(),
-                        ),
-                      ),
+                      onTap: () async {
+                        final field = await ArimrImportSheet.show(context,
+                            mapBounds: null, fullScreen: true);
+                        if (field != null && context.mounted) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => MapView(initialField: field),
+                            ),
+                          );
+                        }
+                      },
                     ),
                     _MenuTile(
                       icon: Icons.gps_fixed,
@@ -108,16 +105,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         context,
                         MaterialPageRoute(
                           builder: (_) => const GpsSettingsScreen(),
-                        ),
-                      ),
-                    ),
-                    _MenuTile(
-                      icon: Icons.download_for_offline_outlined,
-                      label: 'Mapy offline',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const MapView(),
                         ),
                       ),
                     ),
@@ -159,7 +146,7 @@ class _MenuTile extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               label,
-              style: TextStyle(
+              style: const TextStyle(
                 color: AppColors.textSecondary,
                 fontSize: 13,
               ),

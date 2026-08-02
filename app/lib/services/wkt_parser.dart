@@ -45,8 +45,9 @@ class WktParser {
     final ringPat = RegExp(r'\(([^()]+)\)');
     final rings =
         ringPat.allMatches(wkt).map((m) => _parseRing(m.group(1)!)).toList();
-    if (rings.isEmpty)
+    if (rings.isEmpty) {
       throw FormatException('MULTIPOLYGON bez pierścieni: $wkt');
+    }
     rings.sort((a, b) => b.length.compareTo(a.length));
     return rings.first;
   }
@@ -72,7 +73,9 @@ class WktParser {
       // Pomijamy punkt zamykający identyczny z pierwszym
       if (points.isNotEmpty &&
           points.last.latitude == lat &&
-          points.last.longitude == lon) continue;
+          points.last.longitude == lon) {
+        continue;
+      }
       points.add(LatLng(lat, lon));
     }
     if (points.length < 3) {

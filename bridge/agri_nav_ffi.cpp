@@ -108,60 +108,6 @@ const char* agrinav_sim_last_nmea(SimHandle h) {
     return static_cast<SimContext*>(h)->nmea.c_str();
 }
 
-// ── Planowanie ścieżek uprawowych ─────────────────────────────────────────────
-
-FfiSwathList* agrinav_plan_swaths(
-    const double* polygon,
-    int32_t       vertex_count,
-    double        ax, double ay,
-    double        bx, double by,
-    double        working_width
-) {
-    // Konwertuj płaski bufor [lat₀,lon₀, lat₁,lon₁, ...] → wektor LatLon
-    std::vector<agrinav::LatLon> pts;
-    pts.reserve(static_cast<size_t>(vertex_count));
-    for (int32_t i = 0; i < vertex_count; ++i)
-        pts.push_back({ polygon[i * 2], polygon[i * 2 + 1] });
-
-    const auto plan = agrinav::SwathPlanner::plan(
-        pts,
-        { ax, ay },
-        { bx, by },
-        working_width
-        // overlapM = 0.0, headlandLaps = 0 (legacy call — no headland)
-    );
-
-    // Zaalokuj strukturę wynikową
-    auto* result = static_cast<FfiSwathList*>(std::malloc(sizeof(FfiSwathList)));
-    result->swath_count = static_cast<int32_t>(plan.swaths.size());
-
-    if (plan.swaths.empty()) {
-        result->data = nullptr;
-        return result;
-    }
-
-    // Każdy swath = 4 double: startLat, startLon, endLat, endLon
-    result->data = static_cast<double*>(
-        std::malloc(sizeof(double) * 4 * static_cast<size_t>(result->swath_count))
-    );
-
-    for (int32_t i = 0; i < result->swath_count; ++i) {
-        const auto& s = plan.swaths[static_cast<size_t>(i)];
-        result->data[i * 4 + 0] = s.start.lat;
-        result->data[i * 4 + 1] = s.start.lon;
-        result->data[i * 4 + 2] = s.end.lat;
-        result->data[i * 4 + 3] = s.end.lon;
-    }
-
-    return result;
-}
-
-void agrinav_free_swaths(FfiSwathList* list) {
-    if (!list) return;
-    std::free(list->data);
-    std::free(list);
-}
-
 // ── Full planning (swaths + headland rings) ───────────────────────────────────
 
 FfiPlanResult* agrinav_plan_full(

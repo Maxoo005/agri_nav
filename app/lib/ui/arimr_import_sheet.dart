@@ -46,20 +46,38 @@ enum _ImportStep {
 class ArimrImportSheet extends StatefulWidget {
   const ArimrImportSheet({
     super.key,
-    required this.mapBounds,
+    this.mapBounds,
     this.onFieldCreated,
+    this.fullScreen = false,
   });
 
   /// Aktualny widok mapy — używany jako obszar domyślny dla zapytania LPIS.
-  final LatLngBounds mapBounds;
+  /// Opcjonalny: po otwarciu z ekranu głównego (bez mapy) import odbywa się
+  /// po numerze TERYT, a granice pola są dopasowywane na mapie po zapisie.
+  final LatLngBounds? mapBounds;
 
   /// Callback wywoływany po zapisaniu pola do Hive.
   final void Function(FieldModel field)? onFieldCreated;
 
+  /// Gdy true — sheet otwiera się jako pełny ekran (bez mapy w tle).
+  final bool fullScreen;
+
   static Future<FieldModel?> show(
     BuildContext context, {
-    required LatLngBounds mapBounds,
+    LatLngBounds? mapBounds,
+    bool fullScreen = false,
   }) {
+    if (fullScreen) {
+      return Navigator.push<FieldModel>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ArimrImportSheet(
+            mapBounds: mapBounds,
+            fullScreen: true,
+          ),
+        ),
+      );
+    }
     return showModalBottomSheet<FieldModel>(
       context: context,
       isScrollControlled: true,
@@ -76,6 +94,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
   // ── Kontrolery ────────────────────────────────────────────────────────────────
   final List<TextEditingController> _terytCtrls = [TextEditingController()];
   final _nameCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
 
   // ── Stan ─────────────────────────────────────────────────────────────────────
   _ImportStep _step = _ImportStep.configure;
@@ -99,6 +118,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   @override
   void dispose() {
+    _scrollCtrl.dispose();
     for (final c in _terytCtrls) {
       c.dispose();
     }
@@ -267,18 +287,32 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.fullScreen) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF1E1E1E),
+        body: SafeArea(child: _buildContent(_scrollCtrl)),
+      );
+    }
     return DraggableScrollableSheet(
       initialChildSize: 0.6,
       minChildSize: 0.4,
       maxChildSize: 0.95,
-      builder: (ctx, scrollCtrl) => Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-        ),
-        child: Column(
-          children: [
-            // ── Uchwyt ────────────────────────────────────────────────────────
+      builder: (ctx, scrollCtrl) => _buildContent(scrollCtrl),
+    );
+  }
+
+  Widget _buildContent(ScrollController scrollCtrl) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: widget.fullScreen
+            ? BorderRadius.zero
+            : const BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Column(
+        children: [
+          // ── Uchwyt (tylko tryb bottom sheet) ────────────────────────────────
+          if (!widget.fullScreen)
             Center(
               child: Container(
                 margin: const EdgeInsets.symmetric(vertical: 8),
@@ -290,11 +324,10 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
                 ),
               ),
             ),
-            _buildHeader(),
-            const Divider(color: Colors.white12, height: 1),
-            Expanded(child: _buildBody(scrollCtrl)),
-          ],
-        ),
+          _buildHeader(),
+          const Divider(color: Colors.white12, height: 1),
+          Expanded(child: _buildBody(scrollCtrl)),
+        ],
       ),
     );
   }
@@ -308,11 +341,33 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       _ImportStep.done: 'Nazwa pola',
     };
 
+    final canGoBack =
+        _step == _ImportStep.preview || _step == _ImportStep.done;
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
-          if (_step == _ImportStep.preview || _step == _ImportStep.done)
+          if (widget.fullScreen)
+            IconButton(
+              icon: Icon(
+                canGoBack ? Icons.arrow_back : Icons.close,
+                color: Colors.white70,
+              ),
+              tooltip: canGoBack ? 'Wstecz' : 'Zamknij',
+              onPressed: () {
+                if (canGoBack) {
+                  setState(() {
+                    _step = _step == _ImportStep.done
+                        ? _ImportStep.preview
+                        : _ImportStep.configure;
+                  });
+                } else {
+                  Navigator.pop(context);
+                }
+              },
+            )
+          else if (canGoBack)
             IconButton(
               icon: const Icon(Icons.arrow_back, color: Colors.white70),
               onPressed: () => setState(() {
@@ -363,29 +418,53 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       controller: scrollCtrl,
       padding: const EdgeInsets.all(16),
       children: [
-        // Opis obszaru
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF2A2A2A),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.crop_free, color: Colors.greenAccent, size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Obszar: ${widget.mapBounds.south.toStringAsFixed(4)}°N, '
-                  '${widget.mapBounds.west.toStringAsFixed(4)}°E → '
-                  '${widget.mapBounds.north.toStringAsFixed(4)}°N, '
-                  '${widget.mapBounds.east.toStringAsFixed(4)}°E',
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+        // Opis obszaru (lub wskazówka, gdy brak mapy — import po TERYT)
+        if (widget.mapBounds != null)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A2A2A),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.crop_free, color: Colors.greenAccent, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Obszar: ${widget.mapBounds!.south.toStringAsFixed(4)}°N, '
+                    '${widget.mapBounds!.west.toStringAsFixed(4)}°E → '
+                    '${widget.mapBounds!.north.toStringAsFixed(4)}°N, '
+                    '${widget.mapBounds!.east.toStringAsFixed(4)}°E',
+                    style:
+                        const TextStyle(color: Colors.white60, fontSize: 12),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A2A2A),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.pin_drop, color: Colors.greenAccent, size: 20),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Wpisz numery ewidencyjne działek (TERYT), aby pobrać '
+                    'granice z rejestru ARiMR. Pole zostanie pokazane na mapie '
+                    'po zapisaniu.',
+                    style: TextStyle(color: Colors.white60, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
         const SizedBox(height: 16),
 
         // Numery ewidencyjne działek (TERYT) — wiele pól
@@ -456,8 +535,9 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
               final cached =
                   ArimrService.instance.getCachedParcels(widget.mapBounds);
               if (cached.isEmpty) {
-                setState(
-                    () => _error = 'Brak danych w cache dla tego obszaru.');
+                setState(() => _error = widget.mapBounds != null
+                    ? 'Brak danych w cache dla tego obszaru.'
+                    : 'Brak zapisanych działek w cache.');
                 return;
               }
               setState(() {
@@ -818,8 +898,8 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: const [
+              const Row(
+                children: [
                   Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
                   SizedBox(width: 8),
                   Text('Granica gotowa',

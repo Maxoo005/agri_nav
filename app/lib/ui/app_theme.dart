@@ -31,7 +31,7 @@ ThemeData buildAppTheme() {
       backgroundColor: Color(0xFF1E1E1E),
       foregroundColor: Colors.white,
     ),
-    dialogTheme: DialogThemeData(
+    dialogTheme: const DialogThemeData(
       backgroundColor: AppColors.dialogBackground,
     ),
   );

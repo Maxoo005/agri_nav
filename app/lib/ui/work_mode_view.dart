@@ -337,12 +337,12 @@ class _WorkModeViewState extends State<WorkModeView> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlg) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: Row(
+          title: const Row(
             children: [
-              const Icon(Icons.local_gas_station_rounded,
+              Icon(Icons.local_gas_station_rounded,
                   color: Colors.greenAccent),
-              const SizedBox(width: 10),
-              const Text('Tankowanie', style: TextStyle(color: Colors.white)),
+              SizedBox(width: 10),
+              Text('Tankowanie', style: TextStyle(color: Colors.white)),
             ],
           ),
           content: Column(
@@ -1048,7 +1048,7 @@ class _StatsPanel extends StatelessWidget {
             value: '${coveredHa.toStringAsFixed(2)} ha',
           ),
           const _TileDivider(),
-          _StatTile(
+          const _StatTile(
             icon: Icons.gps_fixed_rounded,
             color: Colors.lightBlueAccent,
             label: 'GPS',

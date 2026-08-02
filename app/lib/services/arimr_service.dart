@@ -201,9 +201,9 @@ class ArimrService {
   LatLng _epsg2180toWgs84(double x, double y) {
     const a = 6378137.0;
     const f = 1 / 298.257222101;
-    final e2 = 2 * f - f * f;
-    final e4 = e2 * e2;
-    final e6 = e4 * e2;
+    const e2 = 2 * f - f * f;
+    const e4 = e2 * e2;
+    const e6 = e4 * e2;
     const k0 = 0.9993;
     const lon0 = 19.0 * math.pi / 180.0;
     const fe = 500000.0;
@@ -223,41 +223,41 @@ class ArimrService {
     final cosPhi1 = math.cos(phi1);
     final tanPhi1 = math.tan(phi1);
 
-    final N1 = a / math.sqrt(1 - e2 * sinPhi1 * sinPhi1);
-    final T1 = tanPhi1 * tanPhi1;
-    final C1 = e2 / (1 - e2) * cosPhi1 * cosPhi1;
-    final R1 = a * (1 - e2) / math.pow(1 - e2 * sinPhi1 * sinPhi1, 1.5);
-    final D = X / (N1 * k0);
-    final D2 = D * D;
-    final D4 = D2 * D2;
-    final D6 = D4 * D2;
+    final n1 = a / math.sqrt(1 - e2 * sinPhi1 * sinPhi1);
+    final t1 = tanPhi1 * tanPhi1;
+    final c1 = e2 / (1 - e2) * cosPhi1 * cosPhi1;
+    final r1 = a * (1 - e2) / math.pow(1 - e2 * sinPhi1 * sinPhi1, 1.5);
+    final d = X / (n1 * k0);
+    final d2 = d * d;
+    final d4 = d2 * d2;
+    final d6 = d4 * d2;
 
     final lat = phi1 -
-        (N1 * tanPhi1 / R1) *
-            (D2 / 2 -
-                (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * e2 / (1 - e2)) *
-                    D4 /
+        (n1 * tanPhi1 / r1) *
+            (d2 / 2 -
+                (5 + 3 * t1 + 10 * c1 - 4 * c1 * c1 - 9 * e2 / (1 - e2)) *
+                    d4 /
                     24 +
                 (61 +
-                        90 * T1 +
-                        298 * C1 +
-                        45 * T1 * T1 -
+                        90 * t1 +
+                        298 * c1 +
+                        45 * t1 * t1 -
                         252 * e2 / (1 - e2) -
-                        3 * C1 * C1) *
-                    D6 /
+                        3 * c1 * c1) *
+                    d6 /
                     720);
 
     final lon = lon0 +
-        (D -
-                (1 + 2 * T1 + C1) * D2 * D / 6 +
+        (d -
+                (1 + 2 * t1 + c1) * d2 * d / 6 +
                 (5 -
-                        2 * C1 +
-                        28 * T1 -
-                        3 * C1 * C1 +
+                        2 * c1 +
+                        28 * t1 -
+                        3 * c1 * c1 +
                         8 * e2 / (1 - e2) +
-                        24 * T1 * T1) *
-                    D4 *
-                    D /
+                        24 * t1 * t1) *
+                    d4 *
+                    d /
                     120) /
             cosPhi1;
 
