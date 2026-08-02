@@ -18,7 +18,7 @@ add_library(Clipper2::Clipper2 ALIAS Clipper2)
 add_library(agri_nav_core STATIC
     core/src/NavEngine.cpp
     core/src/GnssProcessor.cpp
-    core/src/GnssSimulator.cpp
+    # core/src/GnssSimulator.cpp  # odłączony — zachowany na później
     core/src/SwathPlanner.cpp
     core/src/SwathGuidance.cpp
     core/src/HeadlandGuidance.cpp

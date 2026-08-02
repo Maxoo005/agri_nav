@@ -4,6 +4,160 @@ Aplikacja nawigacji precyzyjnej dla maszyn rolniczych. Rdzeń obliczeniowy w **C
 
 ---
 
+## Architektura ogólna
+
+```
+C++17 core  ──►  C ABI bridge  ──►  dart:ffi  ──►  Flutter UI
+```
+
+| Warstwa | Technologia | Odpowiedzialność |
+|---|---|---|
+| `core` | C++17, CMake 3.21 | ENU cross-track, swath + headland, snap-guidance, coverage grid, parcel union, LPIS processing |
+| `bridge` | C ABI | Czyste C API eksponowane przez `dart:ffi` (malloc/free, brak wyjątków C++) |
+| `app` | Flutter 3, Dart ≥ 3.3 | Nawigacja, mapa, offline cache, ślad GPS, kreator pola ULDK, import ARiMR |
+| `third_party` | Clipper2 1.4.0 (vendored) | Operacje boolowskie na wielokątach 2D (Union, Buffer, SimplifyPaths RDP) |
+
+---
+
+## Funkcjonalności
+
+| Funkcja | Status |
+|---|---|
+| **Ekran główny** — panel kafelkowy (Mapa / Dodaj pole / Widok pól / Maszyny) | ✅ |
+| Linia AB (punkt A i punkt B) + odchylenie poprzeczne (cross-track, C++) | ✅ |
+| Mapa satelitarna Geoportal WMS + tryb pracy (siatka, brak kafelków) | ✅ |
+| Pobieranie map offline przez Wi-Fi (FMTC ObjectBox) | ✅ |
+| Planowanie ścieżek uprawowych (swath planning, kąt + szerokość + zakładka) | ✅ |
+| Planowanie uwroci (headland rings, Clipper2 InflatePaths Round join) | ✅ |
+| Snap-to-nearest-swath (SwathGuidance, ENU pre-filter, thread-safe) | ✅ |
+| HeadlandGuidance — snap do segmentu uwrocia (ENU XTE + heading error) | ✅ |
+| Przełącznik trybu prowadzenia: linia AB ↔ uwrocie | ✅ |
+| Section Control — coverage grid, detekcja nakładki, licznik ha | ✅ |
+| Ślad GPS trasy uprawowej (CoverageService, Hive, per zadanie) | ✅ |
+| Lightbar z animowanymi strzałkami i pulsowaniem (HUD WorkModeView) | ✅ |
+| Wstrzymanie/wznowienie pracy + znaczniki GPS uzupełnienia materiału | ✅ |
+| Trwały zapis pól (Hive) — CRUD + serializacja JSON | ✅ |
+| Kreator pola geodezyjnego (ULDK GUGiK → scalenie → Hive) | ✅ |
+| Parser WKT (POLYGON / MULTIPOLYGON, EPSG:4326) | ✅ |
+| Scalanie działek katastralnych (C++ Clipper2 Union + ENU buffer) | ✅ |
+| Integracja ARiMR/LPIS — pobieranie upraw po obszarze, bulk import | ✅ |
+| Warstwa LPIS na mapie (półprzezroczyste wielokąty) + kalibracja Manual Offset | ✅ |
+| Zarządzanie maszynami rolniczymi (CRUD, typ, marka, szerokość robocza) | ✅ |
+| Selektor aktywnej maszyny z poziomu mapy | ✅ |
+| Zadania robocze WorkTask (typ zabiegu, dawka, objętość zbiornika) | ✅ |
+| Monitor materiału — real-time zużycie ze strumienia, dialog refill | ✅ |
+| GPS z telefonu (Geolocator) — accuracy gate + kurs z heading/pozycji | ✅ |
+| Nudge — korekta przesunięcia granicy pola względem ortofoto | ✅ |
+| Tryb offline map (brak internetu) — kafelki z lokalnej bazy FMTC | ✅ |
+
+---
+
+## Struktura projektu
+
+```
+agri_nav/
+├── CMakeLists.txt              # Buduje agri_nav_core (static) + agri_nav_ffi (shared .so)
+├── core/
+│   ├── include/
+│   │   ├── GnssProcessor.h     # Interfejs GNSS (abstract), struct GnssPosition
+│   │   ├── GnssSimulator.h     # Symulator toru kołowego (zachowany, odłączony)
+│   │   ├── NavEngine.h         # Silnik prowadzenia po linii AB
+│   │   ├── SwathPlanner.h      # Planowanie ścieżek z uwornicami
+│   │   ├── SwathGuidance.h     # Snap-to-nearest-swath (thread-safe, ENU pre-filter)
+│   │   ├── HeadlandGuidance.h  # Snap-to-nearest-headland-ring (ENU XTE + heading error)
+│   │   ├── SectionControl.h    # Grid pokrycia pola + detekcja nakładki
+│   │   ├── ParcelMerger.h      # Union działek (Clipper2): ENU buffer → boolean → WGS-84
+│   │   └── GeometryProcessor.h # LPIS: union + RDP simplify (ε=0.3m) + buffer 2 cm
+│   └── src/
+│       ├── GnssSimulator.cpp   # Zachowany na dysku, nie kompilowany (odłączony)
+│       ├── NavEngine.cpp       # Cross-track ENU (WGS-84 → metry, formuła 2D)
+│       ├── SwathPlanner.cpp    # Algorytm ścieżek + uwornice
+│       ├── SwathGuidance.cpp   # Cylinder spatial pre-filter, punkt-do-odcinka
+│       ├── HeadlandGuidance.cpp# Snap-to-ring: ENU pre-index, XTE + hdg
+│       ├── SectionControl.cpp  # unordered_set<int64_t> jako haszowane komórki siatki
+│       ├── ParcelMerger.cpp    # Clipper2 Union: centroida ENU, outward buffer
+│       └── GeometryProcessor.cpp # LPIS: InflatePaths → Union → SimplifyPaths → WGS-84
+├── bridge/
+│   ├── agri_nav_ffi.h          # Publiczne C API (brak wyjątków, POD-only)
+│   └── agri_nav_ffi.cpp        # NavContext, SwathPlanner, SwathGuidance,
+│                               #   SectionControl, ParcelMerger, HeadlandGuidance — FFI
+├── third_party/
+│   └── clipper2/               # Clipper2 1.4.0 — vendored (bez FetchContent)
+└── app/                        # Flutter
+    ├── pubspec.yaml
+    └── lib/
+        ├── main.dart           # Inicjalizacja FMTC ObjectBox + Hive; start: HomeScreen
+        ├── ffi/
+        │   ├── native_lib.dart          # Singleton DynamicLibrary (raz otwarta .so)
+        │   ├── gps_bridge.dart          # NavBridge, SimPosition (FFI bridge)
+        │   ├── guidance_bridge.dart     # SwathPlannerFullBridge, SwathGuidanceBridge,
+        │   │                            #   HeadlandGuidanceBridge, SnapInfo
+        │   ├── field_processor_bridge.dart # ParcelMergerBridge, GeometryProcessorBridge
+        │   └── nav_bridge.dart          # Barrel re-export wszystkich bridge'ów
+        ├── offline/
+        │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
+        │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
+        ├── models/
+        │   ├── field_model.dart          # FieldModel: granica, linia AB (Hive)
+        │   ├── arimr_parcel.dart         # ArimrParcel: działka LPIS (JSON/Hive)
+        │   ├── machine_model.dart        # MachineModel: typ, marka, szerokość robocza
+        │   └── work_task.dart            # WorkTask: typ zabiegu, dawka, zbiornik
+        ├── services/
+        │   ├── field_service.dart        # Hive CRUD: pola uprawowe
+        │   ├── coverage_service.dart     # Hive: ślad GPS per zadanie
+        │   ├── geoportal_service.dart    # ULDK/GUGiK fetch + nudge
+        │   ├── arimr_service.dart        # ARiMR ArcGIS REST: pagination, Hive cache
+        │   ├── wkt_parser.dart           # WKT → List<LatLng>
+        │   ├── machine_service.dart      # Hive CRUD: maszyny
+        │   ├── work_task_service.dart    # Aktywne zadanie robocze (singleton)
+        │   ├── gps_location_service.dart # GPS telefonu (Geolocator) — accuracy gate
+        │   └── material_monitor_service.dart # real-time zużycie materiału
+        └── ui/
+            ├── home_screen.dart         # Ekran główny — kafelki: Mapa/Pole/Pola/Maszyny
+            ├── map_view.dart            # Mapa: AB, swaths, snap-guidance, coverage
+            ├── work_mode_view.dart      # HUD nawigacji: lightbar, coverage, tank, pause
+            ├── field_manager_screen.dart # Lista i zarządzanie polami
+            ├── field_builder_screen.dart # Kreator pola: ULDK → scalenie → zapis
+            ├── arimr_import_sheet.dart  # Import LPIS: obszar → ARiMR → C++ → Hive
+            ├── cadastral_widgets.dart   # TerytSearchSheet
+            ├── gps_settings_screen.dart # Status GPS + optymalizacja baterii
+            ├── machine_manager_screen.dart  # CRUD: maszyny
+            ├── machine_selector_screen.dart # BottomSheet: wybór maszyny
+            └── work_mode_view.dart      # HUD nawigacji WorkModeView
+```
+
+---
+
+## GPS
+
+Aplikacja używa **wyłącznie rzeczywistego GPS telefonu** (pakiet `geolocator`).
+
+- Accuracy gate: pozycje > progu dokładności obracają marker, ale nie wchodzą do silnika C++
+- Kurs pobierany z `heading` GPS (speed-gated) lub obliczany z kolejnych pozycji
+- `GnssSimulator` (C++) zachowany w `core/src/` lecz **odłączony** od kompilacji — może być przywrócony na potrzeby testów
+
+---
+
+## Wymagania
+
+- Flutter 3.x, Dart ≥ 3.3
+- Android NDK r27+ (CMake 3.21)
+- Uprawnienia Android: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `INTERNET`
+
+---
+
+## Budowanie
+
+```bash
+cd app
+flutter pub get
+flutter run          # debug na podłączonym urządzeniu Android
+flutter build apk    # release APK
+```
+
+
+---
+
 ## Funkcjonalności
 
 | Funkcja | Status |
@@ -437,3 +591,8 @@ CMake jest uruchamiane automatycznie przez Gradle — nie trzeba własnoręcznie
 | Przycisk satelita | Pobieranie map offline |
 | Przycisk `add_location` | Otwiera kreator pola geodezyjnego (ULDK) |
 | Snap-guidance HUD | Wyświetla odległość i kierunek do nearest swath |
+
+
+
+## TO DO
+historia działania na polu, podczas siania nawozu albo oprysków ustalamy dawke i jaki nawóz, co później będzie uwzględnione w podsumowaniu
