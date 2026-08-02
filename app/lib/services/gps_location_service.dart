@@ -2,11 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 import '../ffi/gps_bridge.dart';
 
+const _kGpsBox = 'gps_settings';
+const _kUseInternalGpsKey = 'useInternalGps';
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// GpsLocationService — real GPS via Geolocator, with simulator fallback
+// GpsLocationService — real GNSS via Geolocator
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Fix quality reported via [GpsFixStatus].
@@ -24,8 +28,7 @@ enum GpsFixStatus {
   dgps,
 }
 
-/// Singleton that provides real-device GPS (via `geolocator`) as a
-/// [Stream<SimPosition>].
+/// Singleton that wraps the real-device GNSS receiver via `geolocator`.
 ///
 /// ### Filtering applied to real GPS positions:
 /// 1. **EMA position smoothing** (α = [_kEmaAlpha]) — applied only to
@@ -39,32 +42,43 @@ enum GpsFixStatus {
 ///
 /// Usage:
 /// ```dart
-/// await GpsLocationService.instance.requestPermissions(context);
+/// await GpsLocationService.instance.start(context);
 /// final sub = GpsLocationService.instance.positionStream.listen(_onPos);
 /// // …
 /// sub.cancel();
+/// GpsLocationService.instance.stop();
 /// ```
 class GpsLocationService {
   GpsLocationService._();
 
   static final instance = GpsLocationService._();
 
+  /// Inicjalizacja: otwiera box Hive i odczytuje zapisaną preferencję.
+  /// Wywołać w main() po Hive.initFlutter().
+  static Future<void> init() async {
+    final box = await Hive.openBox(_kGpsBox);
+    instance._useInternalGps = box.get(_kUseInternalGpsKey, defaultValue: true);
+  }
+
   // ── Public constants ──────────────────────────────────────────────────────────
 
   /// Positions with `accuracy > kMaxAccuracyM` are emitted as inaccurate.
-  /// 10 m is a good real-world threshold: a phone GPS in open field typically
-  /// achieves 3–8 m; > 10 m indicates multipath / poor sky visibility.
   static const double kMaxAccuracyM = 10.0;
 
   /// Hardware heading is only trusted when ground speed ≥ this value [m/s].
-  /// Below ~0.5 m/s the phone magnetometer/GPS heading is noisy; ignoring it
-  /// prevents the tractor icon from spinning while stationary.
   static const double kMinHeadingSpeedMs = 0.5;
 
   // ── Public state ─────────────────────────────────────────────────────────────
 
+  bool get useInternalGps => _useInternalGps;
+  set useInternalGps(bool value) {
+    if (_useInternalGps == value) return;
+    _useInternalGps = value;
+    Hive.box(_kGpsBox).put(_kUseInternalGpsKey, value);
+  }
 
-  /// Latest computed fix quality (updated on every new position).
+  bool _useInternalGps = true;
+
   GpsFixStatus get fixStatus => _fixStatus;
   GpsFixStatus _fixStatus = GpsFixStatus.inactive;
 
@@ -72,11 +86,6 @@ class GpsLocationService {
 
   final _controller = StreamController<SimPosition>.broadcast();
 
-  /// Unified GPS stream — subscribe to receive [SimPosition] at up to 10 Hz
-  /// (real GPS typically 1 Hz; simulator ~10 Hz).
-  ///
-  /// Each emitted position has [SimPosition.isAccurate] set appropriately.
-  /// Callers should check this flag before updating navigation state.
   Stream<SimPosition> get positionStream {
     return _controller.stream.transform(
       StreamTransformer.fromHandlers(
@@ -94,13 +103,23 @@ class GpsLocationService {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-  /// Start forwarding positions to [positionStream].
-  /// Safe to call multiple times (ref-counted).
-  void start() {
+  /// Start GPS.  Requests permissions first, then subscribes to the GNSS
+  /// position stream.  Safe to call multiple times (ref-counted).
+  ///
+  /// If permissions are denied, the stream will not emit positions.
+  Future<void> start(BuildContext context) async {
     _activeListeners++;
     if (_activeListeners == 1) {
       _fixStatus = GpsFixStatus.searching;
-      _startCurrentSource();
+
+      if (_useInternalGps) {
+        final granted = await requestPermissions(context);
+        if (granted) {
+          _startRealGps();
+        } else {
+          _fixStatus = GpsFixStatus.inactive;
+        }
+      }
     }
   }
 
@@ -109,24 +128,13 @@ class GpsLocationService {
     if (_activeListeners <= 0) return;
     _activeListeners--;
     if (_activeListeners == 0) {
-      _stopCurrentSource();
+      _stopRealGps();
       _fixStatus = GpsFixStatus.inactive;
     }
   }
 
-  void _startCurrentSource() => _startRealGps();
-
-  void _stopCurrentSource() => _stopRealGps();
-
   // ── EMA (Exponential Moving Average) filter ──────────────────────────────────
-  //
-  // Applied only to *accurate* samples (accuracy ≤ kMaxAccuracyM) so that
-  // a single 50 m "blip" cannot pull the smoothed track off course.
-  //
-  // α = 0.3 → effective memory of ≈ 1/α = 3.3 samples.
-  // At 1 Hz GPS this gives ~3 s lag for step-function changes — acceptable
-  // for tractor guidance where speeds are 5–15 km/h (1.5–4 m/s).
-  // Effectively smooths out 3–5 m jitter at typical phone GPS accuracy.
+
   static const double _kEmaAlpha = 0.3;
 
   double? _emaLat;
@@ -139,14 +147,14 @@ class GpsLocationService {
     _emaAlt = null;
   }
 
-  // ── Real GPS (Geolocator) ────────────────────────────────────────────────────
+  // ── Real GNSS (Geolocator) ──────────────────────────────────────────────────
 
   void _startRealGps() {
     final settings = AndroidSettings(
       accuracy: LocationAccuracy.bestForNavigation,
-      intervalDuration: const Duration(milliseconds: 100), // request 10 Hz
+      intervalDuration: const Duration(milliseconds: 100),
       distanceFilter: 0,
-      foregroundNotificationConfig: ForegroundNotificationConfig(
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
         notificationText: 'AgriNav — aktywna nawigacja GPS',
         notificationTitle: 'AgriNav GPS',
         enableWakeLock: true,
@@ -172,26 +180,17 @@ class GpsLocationService {
   void _stopRealGps() {
     _geolocatorSub?.cancel();
     _geolocatorSub = null;
-    // Reset EMA so the next GPS session starts from a clean state;
-    // stale values from the previous session would cause a "teleport" jitter
-    // at startup (the first accurate fix would be pulled toward old coordinates).
     _resetEma();
   }
 
   void _onGeolocatorPosition(Position pos) {
-    // ── 1. Accuracy gate ──────────────────────────────────────────────────────
     final bool isAccurate = pos.accuracy <= kMaxAccuracyM;
 
-    // ── 2. EMA position smoothing ─────────────────────────────────────────────
-    // Only update the filter with accurate samples. Inaccurate samples are
-    // forwarded as-is (raw coordinates) so the UI can show a faded indicator,
-    // but they do not contaminate the smooth path used for navigation.
     double lat = pos.latitude;
     double lon = pos.longitude;
     double alt = pos.altitude;
 
     if (isAccurate) {
-      // Seed from first accurate fix
       _emaLat ??= lat;
       _emaLon ??= lon;
       _emaAlt ??= alt;
@@ -205,11 +204,6 @@ class GpsLocationService {
       alt = _emaAlt!;
     }
 
-    // ── 3. Heading speed gate ─────────────────────────────────────────────────
-    // Phone GPS heading from Geolocator is computed from consecutive fixes
-    // (not a magnetometer bearing). At low speed the fixes are so close
-    // together that quantisation error dominates → heading oscillates wildly.
-    // Only forward the hardware heading above kMinHeadingSpeedMs.
     final double speed = pos.speed >= 0 ? pos.speed : -1.0;
     final double heading =
         (speed >= kMinHeadingSpeedMs && pos.headingAccuracy >= 0)
@@ -220,7 +214,7 @@ class GpsLocationService {
       latitude: lat,
       longitude: lon,
       altitude: alt,
-      accuracy: pos.accuracy, // raw — callers see true fix quality
+      accuracy: pos.accuracy,
       heading: heading,
       speed: speed,
       isAccurate: isAccurate,
@@ -229,20 +223,12 @@ class GpsLocationService {
     if (!_controller.isClosed) _controller.add(simPos);
   }
 
-
   // ── Permissions ──────────────────────────────────────────────────────────────
 
   /// Request all required location permissions.
   ///
   /// Returns `true` when the app may use precise location.
-  /// Handles all branches including [LocationPermission.deniedForever]
-  /// (shows a dialog that redirects to system settings).
-  ///
-  /// **"Tylko tym razem"** — Android grants `whileInUse`; this is sufficient
-  /// for foreground navigation with a foreground service.  The app
-  /// never silently falls back to background-only operation.
   Future<bool> requestPermissions(BuildContext context) async {
-    // 1. Check if location services are enabled at OS level.
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       if (context.mounted) {
@@ -257,16 +243,12 @@ class GpsLocationService {
       return false;
     }
 
-    // 2. Check current permission status before requesting.
     LocationPermission permission = await Geolocator.checkPermission();
 
-    // 3. If denied (but NOT permanently), show the system dialog once.
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
 
-    // 4. Permanently denied — user must go to system settings manually.
-    //    After openAppSettings() returns, re-check in case user just granted.
     if (permission == LocationPermission.deniedForever) {
       if (context.mounted) {
         await _showDialog(
@@ -277,7 +259,6 @@ class GpsLocationService {
           onSettings: () => Geolocator.openAppSettings(),
         );
       }
-      // Re-check — user may have just granted access in settings.
       permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.deniedForever ||
           permission == LocationPermission.denied) {
@@ -285,12 +266,8 @@ class GpsLocationService {
       }
     }
 
-    // 5. Soft denial (system dialog dismissed without choosing).
     if (permission == LocationPermission.denied) return false;
 
-    // 6. Optionally upgrade whileInUse → always for screen-off fieldwork.
-    //    Android 10+ requires a SEPARATE runtime request for background access.
-    //    Not critical: foreground service keeps GPS alive with the screen on.
     if (permission == LocationPermission.whileInUse) {
       final always = await Geolocator.requestPermission();
       if (always == LocationPermission.always) {

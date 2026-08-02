@@ -4,15 +4,6 @@ import 'package:latlong2/latlong.dart';
 // ArimrParcel — działka rolna LPIS z rejestru ARiMR
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Źródło danych działki LPIS.
-enum LpisSource {
-  /// Pobrana ze zdalnego serwisu ArcGIS (ARiMR).
-  remote,
-
-  /// Wczytana z lokalnego cache Hive.
-  cached,
-}
-
 /// Model działki rolnej z rejestru LPIS (ARiMR).
 ///
 /// Serializacja ręczna do JSON (brak generatora kodu, jak w [FieldModel]).

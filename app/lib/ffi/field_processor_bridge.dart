@@ -374,8 +374,12 @@ class LpisProcessorBridge {
     final vertCounts = calloc<Int32>(counts.length);
 
     try {
-      for (int i = 0; i < flatCoords.length; i++) polyData[i] = flatCoords[i];
-      for (int i = 0; i < counts.length; i++) vertCounts[i] = counts[i];
+      for (int i = 0; i < flatCoords.length; i++) {
+        polyData[i] = flatCoords[i];
+      }
+      for (int i = 0; i < counts.length; i++) {
+        vertCounts[i] = counts[i];
+      }
 
       final opts = calloc<_FfiLpisOptions>();
       opts.ref.bufferM = bufferM;

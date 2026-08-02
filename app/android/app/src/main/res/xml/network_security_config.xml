@@ -25,4 +25,13 @@
             <certificates src="user"/>
         </trust-anchors>
     </domain-config>
+
+    <!-- Geoportal GUGiK — WMS Ortofotomapa -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">mapy.geoportal.gov.pl</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="user"/>
+        </trust-anchors>
+    </domain-config>
 </network-security-config>

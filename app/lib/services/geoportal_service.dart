@@ -76,28 +76,6 @@ class GeoportalService {
 
   // ── Publiczne API ────────────────────────────────────────────────────────────
 
-  /// Pobiera działkę z ULDK na podstawie współrzędnych [lat]/[lon] (WGS-84).
-  ///
-  /// Zapisuje wynik jako [FieldModel] w Hive i zwraca go.
-  /// Rzuca [NoNetworkException] gdy brak sieci, [ULDKException] przy błędzie API.
-  Future<FieldModel> fetchAndCacheParcel(double lat, double lon) async {
-    await _requireNetwork();
-
-    // ULDK przyjmuje XY w EPSG:4326 jako lon,lat
-    final uri = Uri.parse(_baseUrl).replace(
-      queryParameters: {
-        'request': 'GetParcelByXY',
-        'xy': '${lon.toStringAsFixed(6)},${lat.toStringAsFixed(6)}',
-        'result': 'id,geom_wkt,teryt,voivodeship,county,municipality',
-        'srid': '4326',
-      },
-    );
-
-    dev.log('ULDK GetParcelByXY → $uri', name: 'GeoportalService');
-    final response = await _http.get(uri, headers: _headers).timeout(_timeout);
-    return _handleParcelResponse(response);
-  }
-
   /// Pobiera działkę z ULDK na podstawie numeru ewidencyjnego [terytId].
   ///
   /// Przykład: "141201_2.0001.1234/2"
@@ -231,8 +209,9 @@ class GeoportalService {
         ? lines[1].trim()
         : lines[0].trim();
     final parts = dataLine.split(';');
-    if (parts.length < 2)
+    if (parts.length < 2) {
       throw ULDKException('Niepoprawna odpowiedź: $dataLine');
+    }
 
     return WktParser.parse(parts[1].trim());
   }
@@ -266,7 +245,9 @@ class GeoportalService {
 
   Future<void> _requireNetwork() async {
     final result = await Connectivity().checkConnectivity();
-    if (result == ConnectivityResult.none) throw const NoNetworkException();
+    if (result.contains(ConnectivityResult.none)) {
+      throw const NoNetworkException();
+    }
   }
 
   Future<FieldModel> _handleParcelResponse(http.Response response) async {

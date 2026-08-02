@@ -337,12 +337,12 @@ class _WorkModeViewState extends State<WorkModeView> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlg) => AlertDialog(
           backgroundColor: const Color(0xFF1E1E1E),
-          title: Row(
+          title: const Row(
             children: [
-              const Icon(Icons.local_gas_station_rounded,
+              Icon(Icons.local_gas_station_rounded,
                   color: Colors.greenAccent),
-              const SizedBox(width: 10),
-              const Text('Tankowanie', style: TextStyle(color: Colors.white)),
+              SizedBox(width: 10),
+              Text('Tankowanie', style: TextStyle(color: Colors.white)),
             ],
           ),
           content: Column(
@@ -745,7 +745,7 @@ class _FieldCanvasPainter extends CustomPainter {
         Offset.zero,
         r * 1.8,
         Paint()
-          ..color = Colors.white.withOpacity(0.07)
+          ..color = Colors.white.withValues(alpha: 0.07)
           ..style = PaintingStyle.fill);
 
     canvas
@@ -905,13 +905,13 @@ class _LightbarWidgetState extends State<_Lightbar>
             // Obramowanie: subtelna poświata w aktywnym kolorze
             final borderColor = state == _LbState.invalid
                 ? Colors.white12
-                : color.withOpacity(isNeutral ? 0.28 : 0.45);
+                : color.withValues(alpha: isNeutral ? 0.28 : 0.45);
 
             // Cień zewnętrzny: w fazie ERROR rozszerza się rytmicznie
             final List<BoxShadow> shadows = isError
                 ? [
                     BoxShadow(
-                      color: color.withOpacity(pulse * 0.40),
+                      color: color.withValues(alpha: pulse * 0.40),
                       blurRadius: 14,
                       spreadRadius: 2,
                     ),
@@ -1048,7 +1048,7 @@ class _StatsPanel extends StatelessWidget {
             value: '${coveredHa.toStringAsFixed(2)} ha',
           ),
           const _TileDivider(),
-          _StatTile(
+          const _StatTile(
             icon: Icons.gps_fixed_rounded,
             color: Colors.lightBlueAccent,
             label: 'GPS',
@@ -1337,7 +1337,7 @@ class _PauseButton extends StatelessWidget {
         minimumSize: const Size(88, 54),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: fg.withOpacity(0.45)),
+          side: BorderSide(color: fg.withValues(alpha: 0.45)),
         ),
         textStyle: const TextStyle(
           fontSize: 13,

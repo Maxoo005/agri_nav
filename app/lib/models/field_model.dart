@@ -35,9 +35,6 @@ class FieldModel {
   /// Null gdy pole narysowane ręcznie.
   String? uLDKParcelId;
 
-  /// Alias semantyczny — identyfikator urzędowy działki.
-  String? get officialId => uLDKParcelId;
-
   /// Siedmiocyfrowy kod TERYT gminy, np. "1412012" (woj+pow+gm).
   String? terytCode;
 
@@ -93,12 +90,6 @@ class FieldModel {
         ),
       );
 
-  /// Granica bez offsetu (oryginalne wartości z bazy).
-  List<LatLng> get boundaryRaw => List.generate(
-        boundaryLats.length,
-        (i) => LatLng(boundaryLats[i], boundaryLons[i]),
-      );
-
   LatLng? get lineA => lineALat != null ? LatLng(lineALat!, lineALon!) : null;
   LatLng? get lineB => lineBLat != null ? LatLng(lineBLat!, lineBLon!) : null;
 
@@ -108,16 +99,6 @@ class FieldModel {
     final lat = boundaryLats.reduce((a, b) => a + b) / boundaryLats.length;
     final lon = boundaryLons.reduce((a, b) => a + b) / boundaryLons.length;
     return LatLng(lat, lon);
-  }
-
-  /// Przesuwa offset całej granicy o [latOffset] stopni szerokości i
-  /// [lonOffset] stopni długości geograficznej.
-  ///
-  /// Modyfikuje [offsetLat] i [offsetLon] addytywnie.
-  /// Aby użyć metrów, przelicz najpierw przez [GeoportalService.nudgeField].
-  void applyOffset(double latOffset, double lonOffset) {
-    offsetLat += latOffset;
-    offsetLon += lonOffset;
   }
 
   // ── Serializacja ─────────────────────────────────────────────────────────────

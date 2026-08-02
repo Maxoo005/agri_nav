@@ -9,8 +9,10 @@ import 'package:latlong2/latlong.dart';
 import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
+import 'app_theme.dart';
 import '../models/field_model.dart';
 import '../models/machine_model.dart';
+import '../models/task_plan.dart';
 import '../models/work_task.dart';
 import '../offline/download_region_sheet.dart';
 import '../offline/offline_map_manager.dart';
@@ -24,8 +26,6 @@ import '../services/geoportal_service.dart';
 import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
-import 'field_manager_screen.dart';
-import 'gps_settings_screen.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
@@ -35,7 +35,13 @@ import '../utils/geo_utils.dart';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class MapView extends StatefulWidget {
-  const MapView({super.key});
+  final FieldModel? initialField;
+
+  /// Zapisany plan zadania (z bazy SQLite) — gdy podany, pole, maszyna,
+  /// parametry ścieżek i śledzenie pokrycia są konfigurowane z planu.
+  final TaskPlan? initialTask;
+
+  const MapView({super.key, this.initialField, this.initialTask});
 
   @override
   State<MapView> createState() => _MapViewState();
@@ -122,17 +128,23 @@ class _MapViewState extends State<MapView> {
   void initState() {
     super.initState();
 
-    // Uruchom serwis GPS (GPS telefonu)
-    GpsLocationService.instance.start();
-    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
-
-    // Poproś o uprawnienia po załadowaniu drzewa widgetów (context jest gotowy)
+    // Poproś o uprawnienia i uruchom GPS po załadowaniu drzewa widgetów
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await GpsLocationService.instance.requestPermissions(context);
+      await GpsLocationService.instance.start(context);
     });
+
+    _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
 
     // Załaduj zapisane pola z Hive
     _savedFields = FieldService.instance.getAll();
+
+    if (widget.initialField != null) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _loadField(widget.initialField!));
+    } else if (widget.initialTask != null) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _loadTaskPlan(widget.initialTask!));
+    }
   }
 
   @override
@@ -224,43 +236,6 @@ class _MapViewState extends State<MapView> {
     }
   }
 
-  // ── Obsługa linii AB ─────────────────────────────────────────────────────────
-
-  void _setPointA() {
-    setState(() => _pointA = _tractorPos);
-    _trySendAbLine();
-  }
-
-  void _setPointB() {
-    setState(() => _pointB = _tractorPos);
-    _trySendAbLine();
-  }
-
-  void _trySendAbLine() {
-    if (_pointA != null && _pointB != null) {
-      // Przekaż WGS-84 do C++ — NavEngine przeliczy na ENU
-      NavBridge.instance.setAbLine(
-        _pointA!.latitude,
-        _pointA!.longitude,
-        _pointB!.latitude,
-        _pointB!.longitude,
-      );
-    }
-  }
-
-  void _resetAbLine() {
-    setState(() {
-      _pointA = null;
-      _pointB = null;
-      _crossTrack = 0;
-      _guidanceValid = false;
-      _swaths = [];
-      _headlandRings = [];
-      _snapInfo = SnapInfo.none;
-    });
-    NavBridge.instance.resetAbLine();
-  }
-
   // ── Granica pola (DrawingMode) ────────────────────────────────────────────
 
   void _toggleDrawingMode() {
@@ -274,7 +249,7 @@ class _MapViewState extends State<MapView> {
         _activeField = null;
       } else {
         if (_fieldBoundary.length >= 3) {
-          _swathAngleDeg = _minPassesAngle(_fieldBoundary);
+          _swathAngleDeg = GeoUtils.minPassesBearing(_fieldBoundary);
           WidgetsBinding.instance
               .addPostFrameCallback((_) => _showSaveFieldDialog());
         }
@@ -386,10 +361,36 @@ class _MapViewState extends State<MapView> {
 
   // ── Ładowanie pola z listy ─────────────────────────────────────────────────
 
-  void _loadField(FieldModel field) async {
-    final savedTrack = _activeTask != null
-        ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
-        : CoverageService.instance.loadForField(field.id);
+  /// Ładuje pole; przy podanym [plan] (zapisany plan zadania w SQLite)
+  /// dodatkowo konfiguruje aktywne zadanie/maszynę oraz parametry ścieżek
+  /// zgodnie z migawką zapisaną w planie.
+  Future<void> _loadField(FieldModel field, {TaskPlan? plan}) async {
+    if (plan != null) {
+      _activeTask = WorkTask(
+        id: plan.id,
+        fieldId: plan.fieldId,
+        machineId: plan.machineId,
+        taskType: plan.taskType,
+        effectiveWidthM: plan.workingWidthM,
+        targetRate: plan.targetRate,
+        initialTankVolume: plan.tankVolume,
+        unit: plan.unit,
+        createdAt: plan.createdAt,
+        name: plan.name,
+      );
+      _activeMachine = MachineModel(
+        id: plan.machineId ?? '',
+        name: plan.machineName ?? '—',
+        type: MachineType.fromJson(plan.machineType),
+        workingWidthM: plan.workingWidthM,
+      );
+    }
+
+    final savedTrack = plan != null
+        ? CoverageService.instance.loadForTask(field.id, plan.id)
+        : (_activeTask != null
+            ? CoverageService.instance.loadForTask(field.id, _activeTask!.id)
+            : CoverageService.instance.loadForField(field.id));
 
     // Reset SectionControl to new field origin and replay saved track
     SectionControlBridge.instance
@@ -397,7 +398,9 @@ class _MapViewState extends State<MapView> {
       ..setOrigin(field.center.latitude, field.center.longitude);
 
     var coveredHa = 0.0;
-    final replayWidth = _activeTask?.effectiveWidthM ?? field.workingWidthM;
+    final replayWidth = plan?.workingWidthM ??
+        _activeTask?.effectiveWidthM ??
+        field.workingWidthM;
     if (savedTrack.isNotEmpty) {
       coveredHa = await SectionControlBridge.instance
           .replayTrack(savedTrack, replayWidth);
@@ -411,7 +414,10 @@ class _MapViewState extends State<MapView> {
       _swaths = [];
       _headlandRings = [];
       _snapInfo = SnapInfo.none;
-      _swathAngleDeg = _minPassesAngle(field.boundary);
+      _swathAngleDeg =
+          plan?.swathAngleDeg ?? GeoUtils.minPassesBearing(field.boundary);
+      _overlapM = plan?.overlapM ?? 0.0;
+      _headlandLaps = plan?.headlandLaps ?? 0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
       if (field.lineA != null) _pointA = field.lineA;
@@ -437,6 +443,32 @@ class _MapViewState extends State<MapView> {
         );
       }
     });
+  }
+
+  /// Ładuje pole i konfigurację z zapisanego planu zadania (SQLite),
+  /// a następnie od razu uruchamia śledzenie pokrycia dla tego zadania.
+  Future<void> _loadTaskPlan(TaskPlan plan) async {
+    final field = FieldModel(
+      id: plan.fieldId,
+      name: plan.fieldName,
+      boundaryLats: plan.boundaryLats,
+      boundaryLons: plan.boundaryLons,
+      workingWidthM: plan.workingWidthM,
+      lineALat: plan.lineALat,
+      lineALon: plan.lineALon,
+      lineBLat: plan.lineBLat,
+      lineBLon: plan.lineBLon,
+    );
+    await _loadField(field, plan: plan);
+    if (_activeField != null) {
+      CoverageService.instance.startTracking(_activeField!.id, taskId: plan.id);
+      SectionControlBridge.instance
+        ..setOrigin(
+            _activeField!.center.latitude, _activeField!.center.longitude)
+        ..clear();
+      setState(() => _trackingCoverage = true);
+    }
+    await _planSwaths(workingWidthM: plan.workingWidthM);
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -564,14 +596,16 @@ class _MapViewState extends State<MapView> {
     await _planSwaths(workingWidthM: width);
   }
 
-  /// Calls SwathPlannerFullBridge.planFull() on the main isolate.
+  /// Generates swaths via SwathPlannerFullBridge.planFull().
   ///
-  /// NOTE: We deliberately do NOT use Isolate.run() here. Spawned Dart
-  /// isolates on Android do not inherit Flutter's native-library linker
-  /// namespace, so DynamicLibrary.open('libagri_nav_ffi.so') silently fails
-  /// and the FFI call never executes.  The C++ plan_full typically takes
-  /// 20–200 ms which may cause a brief frame drop, but is acceptable here.
+  /// Runs synchronously on the main thread — the native C++ plan_full()
+  /// typically completes in 20–200 ms which is acceptable for a button press.
+  /// Previous [Isolate.run] approach was removed because FFI singletons
+  /// (DynamicLibrary / calloc) are not reliably transferable across Dart
+  /// isolates on Android, causing silent failures.
   Future<void> _planSwaths({double workingWidthM = 3.0}) async {
+    if (_fieldBoundary.length < 3) return;
+
     final polygon =
         _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
 
@@ -583,28 +617,23 @@ class _MapViewState extends State<MapView> {
 
     PlanResult result;
     try {
-      // Schedule on the next microtask so the dialog dismissal animation
-      // finishes before the synchronous C++ call blocks the UI thread.
-      result = await Future.microtask(
-        () => SwathPlannerFullBridge.instance.planFull(
-          polygon: polygon,
-          ax: ax,
-          ay: ay,
-          bx: bx,
-          by: by,
-          workingWidthM: workingWidthM,
-          overlapM: overlapM,
-          headlandLaps: headlandLaps,
-        ),
+      result = SwathPlannerFullBridge.instance.planFull(
+        polygon: polygon,
+        ax: ax,
+        ay: ay,
+        bx: bx,
+        by: by,
+        workingWidthM: workingWidthM,
+        overlapM: overlapM,
+        headlandLaps: headlandLaps,
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Błąd generowania ścieżek: $e'),
-          backgroundColor: Colors.red[800],
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd generowania ścieżek: $e'),
+        backgroundColor: Colors.red[800],
+        duration: const Duration(seconds: 4),
+      ));
       return;
     }
 
@@ -630,50 +659,6 @@ class _MapViewState extends State<MapView> {
   }
 
   // ── Helpers: kierunek ścieżek ─────────────────────────────────────────────
-
-  /// Finds the swath bearing [0, 180) that minimises the number of passes.
-  ///
-  /// Strategy: sweep every 1° in [0°, 179°] and for each candidate angle
-  /// measure the field extent along the perpendicular axis (= sweep width).
-  /// The angle with the smallest perpendicular extent needs fewest passes.
-  static double _minPassesAngle(List<LatLng> pts) {
-    if (pts.length < 2) return 0.0;
-
-    // Convert all vertices to a local ENU frame (first vertex as origin)
-    // to work in metres rather than degrees.
-    final originLat = pts[0].latitude;
-    final originLon = pts[0].longitude;
-    final cosLat = math.cos(originLat * math.pi / 180.0);
-    final enu = pts
-        .map((p) => (
-              (p.longitude - originLon) * 111320.0 * cosLat, // E
-              (p.latitude - originLat) * 111320.0, // N
-            ))
-        .toList();
-
-    double bestAngle = 0.0;
-    double minWidth = double.infinity;
-
-    for (int deg = 0; deg < 180; deg++) {
-      final rad = deg * math.pi / 180.0;
-      // Swath direction (bearing): unit vector = (sinθ, cosθ) in (E, N).
-      // Perpendicular axis (90° CW):  unit vector = (cosθ, -sinθ) in (E, N).
-      // Projection of (e, n) onto perpendicular: e·cosθ − n·sinθ.
-      double minP = double.infinity;
-      double maxP = double.negativeInfinity;
-      for (final (e, n) in enu) {
-        final p = e * math.cos(rad) - n * math.sin(rad);
-        if (p < minP) minP = p;
-        if (p > maxP) maxP = p;
-      }
-      final width = maxP - minP;
-      if (width < minWidth) {
-        minWidth = width;
-        bestAngle = deg.toDouble();
-      }
-    }
-    return bestAngle;
-  }
 
   /// Synthetic AB pair from boundary centroid + azimuth [deg].
   /// Returns (A, B) 2 km apart — well outside any realistic field.
@@ -849,6 +834,235 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  // ── Akcje panelu ──────────────────────────────────────────────────────────
+
+  void _toggleArimrLayer() {
+    final show = !_arimrLayerVisible;
+    if (show && _arimrParcels.isEmpty) {
+      final cached = ArimrService.instance.getCachedParcels();
+      if (cached.isNotEmpty) {
+        setState(() {
+          _arimrParcels = cached;
+          _arimrLayerVisible = true;
+        });
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+    setState(() => _arimrLayerVisible = show);
+  }
+
+  Future<void> _importArimr() async {
+    final bounds = _mapController.camera.visibleBounds;
+    final field = await ArimrImportSheet.show(
+      context,
+      mapBounds: bounds,
+    );
+    if (field != null && mounted) {
+      _loadField(field);
+      setState(() {
+        _savedFields = FieldService.instance.getAll();
+        _arimrParcels = ArimrService.instance.getCachedParcels();
+        _arimrLayerVisible = true;
+      });
+    }
+  }
+
+  void _downloadOffline() {
+    DownloadRegionSheet.show(
+      context,
+      center: _mapController.camera.center,
+    );
+  }
+
+  void _showActionsPanel() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.50,
+        minChildSize: 0.30,
+        maxChildSize: 0.75,
+        expand: false,
+        builder: (_, controller) => _buildPanelContent(controller),
+      ),
+    );
+  }
+
+  Widget _buildPanelContent(ScrollController controller) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: ListView(
+        controller: controller,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.textFaint,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          _buildSectionHeader('WARSTWY MAPY'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: Icons.grass,
+                label: 'Działki LPIS',
+                tooltip: 'Pokaż/ukryj działki LPIS (ARiMR)',
+                isActive: _arimrLayerVisible,
+                onPressed: _toggleArimrLayer,
+              ),
+              if (_arimrLayerVisible)
+                _ActionTile(
+                  icon: Icons.tune,
+                  label: 'Manual Offset',
+                  tooltip: 'Kalibracja warstwy LPIS względem satelity',
+                  isActive: _offsetPanelVisible,
+                  onPressed: () => setState(
+                      () => _offsetPanelVisible = !_offsetPanelVisible),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('POLE'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              if (_activeField != null)
+                _ActionTile(
+                  icon: Icons.open_with_rounded,
+                  label: 'Korekta',
+                  tooltip: 'Koryguj położenie granicy',
+                  isActive: _nudgePanelVisible,
+                  onPressed: () => setState(
+                      () => _nudgePanelVisible = !_nudgePanelVisible),
+                ),
+              _ActionTile(
+                icon: _drawingMode ? Icons.cancel_outlined : Icons.edit,
+                label: _drawingMode ? 'Anuluj' : 'Rysuj',
+                tooltip: _drawingMode
+                    ? 'Anuluj rysowanie'
+                    : 'Rysuj granicę pola',
+                isActive: _drawingMode,
+                onPressed: _toggleDrawingMode,
+              ),
+              _ActionTile(
+                icon: _swaths.isNotEmpty || _headlandRings.isNotEmpty
+                    ? Icons.grid_on
+                    : Icons.grid_off,
+                label: 'Ścieżki',
+                tooltip: _swaths.isNotEmpty || _headlandRings.isNotEmpty
+                    ? 'Parametry ścieżek (aktywne)'
+                    : 'Generuj ścieżki',
+                isActive: _swaths.isNotEmpty || _headlandRings.isNotEmpty,
+                onPressed: _showSwathParamsDialog,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('POKRYCIE'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: _trackingCoverage
+                    ? Icons.stop_circle_outlined
+                    : Icons.radio_button_checked,
+                label: _trackingCoverage ? 'Zatrzymaj' : 'Nagraj',
+                tooltip: _trackingCoverage
+                    ? 'Zatrzymaj nagrywanie pokrycia'
+                    : 'Nagraj pokrycie pola',
+                isActive: _trackingCoverage,
+                onPressed: _toggleCoverage,
+              ),
+              if (_savedTrack.isNotEmpty || _coveredHa > 0)
+                _ActionTile(
+                  icon: Icons.layers_clear,
+                  label: 'Wyczyść ślad',
+                  tooltip: 'Usuń nagrany ślad',
+                  isActive: false,
+                  onPressed: _clearTrackWithConfirm,
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          const Divider(color: AppColors.textFaint),
+          const SizedBox(height: 8),
+
+          _buildSectionHeader('WIĘCEJ'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _ActionTile(
+                icon: Icons.agriculture,
+                label: 'Import ARiMR',
+                tooltip: 'Importuj działki LPIS z ARiMR',
+                isActive: false,
+                onPressed: _importArimr,
+              ),
+              _ActionTile(
+                icon: Icons.assignment_add,
+                label: _activeTask != null ? 'Zmień zadanie' : 'Nowe zadanie',
+                tooltip: _activeTask != null
+                    ? 'Zadanie aktywne — zmień'
+                    : 'Nowe zadanie',
+                isActive: _activeTask != null,
+                onPressed: _showNewTaskDialog,
+              ),
+              _ActionTile(
+                icon: Icons.download_for_offline_outlined,
+                label: 'Mapy offline',
+                tooltip: 'Pobierz mapy offline',
+                isActive: false,
+                onPressed: _downloadOffline,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  static Widget _buildSectionHeader(String title) {
+    return Text(
+      title,
+      style: const TextStyle(
+        color: AppColors.textMuted,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 1.0,
+      ),
+    );
+  }
+
   // ── Nowe Zadanie ────────────────────────────────────────────────────────────
 
   /// Multi-step workflow: Field → Machine → TaskType → generate swaths in RAM.
@@ -1002,9 +1216,7 @@ class _MapViewState extends State<MapView> {
       _activeTask = task;
     });
 
-    _planSwaths(
-        workingWidthM:
-            _activeWorkingWidth); // fire-and-forget; swaths appear when ready
+    await _planSwaths(workingWidthM: _activeWorkingWidth);
 
     // Step 6: start coverage tracking keyed by this task
     CoverageService.instance.startTracking(field.id, taskId: task.id);
@@ -1071,7 +1283,7 @@ class _MapViewState extends State<MapView> {
           userAgentPackageName: 'com.example.agri_nav',
           keepBuffer: 4,
           maxNativeZoom: 18,
-          tileProvider: FMTCStore(kGeoportalTileStore).getTileProvider(
+          tileProvider: const FMTCStore(kGeoportalTileStore).getTileProvider(
             settings: FMTCTileProviderSettings(
               behavior: CacheBehavior.cacheFirst,
             ),
@@ -1088,30 +1300,6 @@ class _MapViewState extends State<MapView> {
 
   /// Delegates to [GeoUtils.bearing].
   static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
-
-  // ── Budowniczy znacznika A/B ─────────────────────────────────────────────────
-
-  Marker _abMarker(LatLng pos, String label) => Marker(
-        point: pos,
-        width: 30,
-        height: 30,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.blue[800],
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      );
 
   // ── Build ────────────────────────────────────────────────────────────────────
 
@@ -1170,7 +1358,7 @@ class _MapViewState extends State<MapView> {
                           f.boundaryLats.length >= 3)
                       .map((f) => Polygon(
                             points: f.boundary,
-                            color: Colors.white.withOpacity(0.06),
+                            color: Colors.white.withValues(alpha: 0.06),
                             borderColor: Colors.white38,
                             borderStrokeWidth: 1.0,
                           ))
@@ -1196,7 +1384,7 @@ class _MapViewState extends State<MapView> {
                   polylines: _headlandRings
                       .map((ring) => Polyline(
                             points: [...ring, ring.first], // zamknij pierścień
-                            color: Colors.orangeAccent.withOpacity(0.75),
+                            color: Colors.orangeAccent.withValues(alpha: 0.75),
                             strokeWidth: 1.8,
                           ))
                       .toList(),
@@ -1209,7 +1397,7 @@ class _MapViewState extends State<MapView> {
                   polylines: [
                     Polyline(
                       points: CoverageService.instance.currentTrack,
-                      color: Colors.blue.withOpacity(0.50),
+                      color: Colors.blue.withValues(alpha: 0.50),
                       strokeWidth: _coverageStrokeWidth(),
                     ),
                   ],
@@ -1227,30 +1415,16 @@ class _MapViewState extends State<MapView> {
                         LatLng(s.endLat, s.endLon),
                       ],
                       color: isNearest
-                          ? Colors.yellow.withOpacity(0.95)
-                          : Colors.greenAccent.withOpacity(0.7),
+                          ? Colors.yellow.withValues(alpha: 0.95)
+                          : Colors.greenAccent.withValues(alpha: 0.7),
                       strokeWidth: isNearest ? 3.2 : 1.4,
                     );
                   }).toList(),
                 ),
 
-              // ── Linia AB ─────────────────────────────────────────────────────
-              if (_pointA != null && _pointB != null)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: [_pointA!, _pointB!],
-                      color: Colors.lightBlueAccent,
-                      strokeWidth: 2.5,
-                    ),
-                  ],
-                ),
-
-              // ── Markery A, B + ikona ciągnika ────────────────────────────────
+              // ── Ikona ciągnika ────────────────────────────────────────────────
               MarkerLayer(
                 markers: [
-                  if (_pointA != null) _abMarker(_pointA!, 'A'),
-                  if (_pointB != null) _abMarker(_pointB!, 'B'),
                   Marker(
                     point: _tractorPos,
                     width: 52,
@@ -1316,8 +1490,9 @@ class _MapViewState extends State<MapView> {
                 },
                 onPanUpdate: (d) {
                   final pt = _screenToLatLng(d.localPosition);
-                  if (_shouldAddPoint(pt))
+                  if (_shouldAddPoint(pt)) {
                     setState(() => _fieldBoundary.add(pt));
+                  }
                 },
                 onPanEnd: (_) {
                   setState(() => _drawingMode = false);
@@ -1372,129 +1547,7 @@ class _MapViewState extends State<MapView> {
                       const SizedBox(height: 8),
                     ],
 
-                    // ── Warstwa LPIS ARiMR ───────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'arimrLayer',
-                      tooltip: _arimrLayerVisible
-                          ? 'Ukryj działki LPIS (ARiMR)'
-                          : 'Pokaż działki LPIS (ARiMR)',
-                      backgroundColor: _arimrLayerVisible
-                          ? Colors.green[700]
-                          : const Color(0xAA000000),
-                      onPressed: () {
-                        final show = !_arimrLayerVisible;
-                        if (show && _arimrParcels.isEmpty) {
-                          final cached =
-                              ArimrService.instance.getCachedParcels();
-                          if (cached.isNotEmpty) {
-                            setState(() {
-                              _arimrParcels = cached;
-                              _arimrLayerVisible = true;
-                            });
-                            return;
-                          }
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                  'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
-                              backgroundColor: Colors.orange,
-                              duration: Duration(seconds: 3),
-                            ),
-                          );
-                          return;
-                        }
-                        setState(() => _arimrLayerVisible = show);
-                      },
-                      child: const Icon(
-                        Icons.grass,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Import działek ARiMR ─────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'arimrImport',
-                      tooltip: 'Importuj działki LPIS z ARiMR',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: () async {
-                        final bounds = _mapController.camera.visibleBounds;
-                        final field = await ArimrImportSheet.show(
-                          context,
-                          mapBounds: bounds,
-                        );
-                        if (field != null && mounted) {
-                          _loadField(field);
-                          setState(() {
-                            _savedFields = FieldService.instance.getAll();
-                            // Załaduj nowe działki do warstwy podglądu
-                            _arimrParcels =
-                                ArimrService.instance.getCachedParcels();
-                            _arimrLayerVisible = true;
-                          });
-                        }
-                      },
-                      child: const Icon(
-                        Icons.agriculture,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Manual Offset (kalibracja LPIS względem satelity) ─────
-                    if (_arimrLayerVisible) ...[
-                      FloatingActionButton.small(
-                        heroTag: 'manualOffset',
-                        tooltip: 'Manual Offset — kalibracja warstwy LPIS',
-                        backgroundColor: _offsetPanelVisible
-                            ? Colors.teal[700]
-                            : const Color(0xAA000000),
-                        onPressed: () => setState(
-                            () => _offsetPanelVisible = !_offsetPanelVisible),
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            const Icon(Icons.tune,
-                                color: Colors.white, size: 20),
-                            if (_parcelLatOffset != 0 || _parcelLonOffset != 0)
-                              Positioned(
-                                top: 0,
-                                right: 0,
-                                child: Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: const BoxDecoration(
-                                    color: Colors.orangeAccent,
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-
-                    // ── Nudge (korekta offsetu działki) ──────────────────────────────
-                    if (_activeField != null) ...[
-                      FloatingActionButton.small(
-                        heroTag: 'nudge',
-                        tooltip: 'Koryguj położenie granicy',
-                        backgroundColor: _nudgePanelVisible
-                            ? Colors.orange[700]
-                            : const Color(0xAA000000),
-                        onPressed: () => setState(
-                            () => _nudgePanelVisible = !_nudgePanelVisible),
-                        child: const Icon(
-                          Icons.open_with_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
+                    // ── Śledź ciągnik ─────────────────────────────────────────
                     FloatingActionButton.small(
                       heroTag: 'follow',
                       tooltip: _followTractor
@@ -1513,7 +1566,7 @@ class _MapViewState extends State<MapView> {
                     ),
                     const SizedBox(height: 8),
 
-                    // ── Przełącznik Tryb Konfiguracji / Tryb Pracy ───────────
+                    // ── Przełącznik trybu mapy ─────────────────────────────────
                     FloatingActionButton.small(
                       heroTag: 'mapMode',
                       tooltip: _mapMode == MapLayerMode.geoportal
@@ -1537,194 +1590,83 @@ class _MapViewState extends State<MapView> {
                     ),
                     const SizedBox(height: 8),
 
+                    // ── Menu — panel z pozostałymi opcjami ─────────────────────
                     FloatingActionButton.small(
-                      heroTag: 'offline',
-                      tooltip: 'Mapy offline',
+                      heroTag: 'menu',
+                      tooltip: 'Więcej opcji',
                       backgroundColor: const Color(0xAA000000),
-                      onPressed: () => DownloadRegionSheet.show(
-                        context,
-                        center: _mapController.camera.center,
-                      ),
+                      onPressed: _showActionsPanel,
                       child: const Icon(
-                        Icons.download_for_offline_outlined,
+                        Icons.tune,
                         color: Colors.white,
                         size: 20,
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Lista zapisanych pól ──────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'fields',
-                      tooltip: 'Zapisane pola',
-                      backgroundColor: _activeField != null
-                          ? const Color(0xFF1B5E20)
-                          : const Color(0xAA000000),
-                      onPressed: () async {
-                        final selected = await FieldManagerScreen.open(context);
-                        if (selected != null && mounted) _loadField(selected);
-                        if (mounted) {
-                          setState(() =>
-                              _savedFields = FieldService.instance.getAll());
-                        }
-                      },
-                      child: Badge(
-                        isLabelVisible: _savedFields.isNotEmpty,
-                        label: Text('${_savedFields.length}'),
-                        backgroundColor: Colors.greenAccent,
-                        textColor: Colors.black,
-                        child: const Icon(Icons.agriculture,
-                            color: Colors.white, size: 20),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Nowe Zadanie ──────────────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'newTask',
-                      tooltip: _activeTask != null
-                          ? 'Zadanie aktywne — zmień'
-                          : 'Nowe zadanie',
-                      backgroundColor: _activeTask != null
-                          ? Colors.amber[800]
-                          : const Color(0xAA000000),
-                      onPressed: _showNewTaskDialog,
-                      child: const Icon(
-                        Icons.assignment_add,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Rysowanie granicy palcem ──────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'draw',
-                      tooltip: _drawingMode
-                          ? 'Anuluj rysowanie'
-                          : 'Rysuj granicę pola',
-                      backgroundColor: _drawingMode
-                          ? Colors.orange[800]
-                          : const Color(0xAA000000),
-                      onPressed: _toggleDrawingMode,
-                      child: Icon(
-                        _drawingMode ? Icons.cancel_outlined : Icons.edit,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Nagrywanie pokrycia ───────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'coverage',
-                      tooltip: _trackingCoverage
-                          ? 'Zatrzymaj nagrywanie pokrycia'
-                          : 'Nagraj pokrycie pola',
-                      backgroundColor: _trackingCoverage
-                          ? Colors.blue[700]
-                          : const Color(0xAA000000),
-                      onPressed: _toggleCoverage,
-                      child: Icon(
-                        _trackingCoverage
-                            ? Icons.stop_circle_outlined
-                            : Icons.radio_button_checked,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Wyczyść ślad ──────────────────────────────────────────
-                    if (_savedTrack.isNotEmpty || _coveredHa > 0)
-                      FloatingActionButton.small(
-                        heroTag: 'clearTrack',
-                        tooltip: 'Wyczyść ślad',
-                        backgroundColor: Colors.red[900],
-                        onPressed: _clearTrackWithConfirm,
-                        child: const Icon(
-                          Icons.layers_clear,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                    if (_savedTrack.isNotEmpty || _coveredHa > 0)
-                      const SizedBox(height: 8),
-                    // ── Generowanie ścieżek ────────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'swaths',
-                      tooltip: _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                          ? 'Parametry ścieżek (aktywne)'
-                          : 'Generuj ścieżki',
-                      backgroundColor:
-                          _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                              ? Colors.green[700]
-                              : const Color(0xAA000000),
-                      onPressed: _showSwathParamsDialog,
-                      child: Icon(
-                        _swaths.isNotEmpty || _headlandRings.isNotEmpty
-                            ? Icons.grid_on
-                            : Icons.grid_off,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // ── Ustawienia GPS ────────────────────────────────────────
-                    StreamBuilder<SimPosition>(
-                      stream: GpsLocationService.instance.positionStream,
-                      builder: (_, __) {
-                        final status = GpsLocationService.instance.fixStatus;
-                        final (color, icon) = switch (status) {
-                          GpsFixStatus.inactive => (
-                              const Color(0xAA000000),
-                              Icons.gps_off
-                            ),
-                          GpsFixStatus.searching => (
-                              Colors.orange[800]!,
-                              Icons.gps_not_fixed
-                            ),
-                          GpsFixStatus.gps => (
-                              Colors.green[700]!,
-                              Icons.gps_fixed
-                            ),
-                          GpsFixStatus.dgps => (
-                              Colors.teal[600]!,
-                              Icons.satellite_alt
-                            ),
-                        };
-                        return FloatingActionButton.small(
-                          heroTag: 'gpsSettings',
-                          tooltip: 'Ustawienia GPS',
-                          backgroundColor: color,
-                          onPressed: () => Navigator.push<void>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const GpsSettingsScreen(),
-                            ),
-                          ),
-                          child: Icon(icon, color: Colors.white, size: 20),
-                        );
-                      },
                     ),
                   ],
                 ),
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
 
-          // ── Panel dolny: odchylenie + przyciski AB ────────────────────────────
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: _NavPanel(
-              crossTrack: _crossTrack,
-              valid: _guidanceValid,
-              hasA: _pointA != null,
-              hasB: _pointB != null,
-              onSetA: _setPointA,
-              onSetB: _setPointB,
-              onReset: _resetAbLine,
-              snapInfo: _snapInfo.swathIndex >= 0 ? _snapInfo : null,
+// ═══════════════════════════════════════════════════════════════════════════════
+// Kafelek akcji w panelu bocznym
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.onPressed,
+    this.isActive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final VoidCallback onPressed;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? AppColors.success : AppColors.textSecondary;
+    return Tooltip(
+      message: tooltip,
+      child: SizedBox(
+        width: 96,
+        child: Card(
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          color: Colors.transparent,
+          elevation: 0,
+          child: InkWell(
+            onTap: onPressed,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: color, size: 24),
+                  const SizedBox(height: 4),
+                  Text(
+                    label,
+                    style: TextStyle(color: color, fontSize: 11),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1741,7 +1683,7 @@ class _WorkModeGridLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Positioned.fill(
+    return const Positioned.fill(
       child: RepaintBoundary(
         child: CustomPaint(
           painter: _GridPainter(),
@@ -1843,202 +1785,6 @@ class _TractorArrow extends CustomPainter {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Panel nawigacyjny (dolny pasek)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-class _NavPanel extends StatelessWidget {
-  const _NavPanel({
-    required this.crossTrack,
-    required this.valid,
-    required this.hasA,
-    required this.hasB,
-    required this.onSetA,
-    required this.onSetB,
-    required this.onReset,
-    this.snapInfo,
-  });
-
-  final double crossTrack;
-  final bool valid;
-  final bool hasA;
-  final bool hasB;
-  final VoidCallback onSetA;
-  final VoidCallback onSetB;
-  final VoidCallback onReset;
-  final SnapInfo? snapInfo;
-
-  Color get _ctColor {
-    if (!valid) return Colors.grey;
-    final abs = crossTrack.abs();
-    if (abs < 0.15) return const Color(0xFF00E676);
-    if (abs < 0.50) return Colors.orange;
-    return Colors.redAccent;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final abs = crossTrack.abs();
-    final side = crossTrack >= 0 ? 'prawo' : 'lewo';
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xEE000000),
-        border: Border(top: BorderSide(color: Colors.white12, width: 0.5)),
-      ),
-      padding: EdgeInsets.fromLTRB(
-        12,
-        10,
-        12,
-        12 + MediaQuery.of(context).padding.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // ── Snap-to-swath info (gdy ścieżki są wygenerowane) ────────────────
-          if (snapInfo != null) ...[
-            _SnapInfoRow(snapInfo: snapInfo!),
-            const SizedBox(height: 6)
-          ],
-
-          // ── Pasek wskaźnika odchylenia (zakres ±1.5 m) ─────────────────────
-          Row(
-            children: [
-              const Text('L',
-                  style: TextStyle(color: Colors.white38, fontSize: 10)),
-              const SizedBox(width: 4),
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(3),
-                  child: LinearProgressIndicator(
-                    value:
-                        valid ? (crossTrack.clamp(-1.5, 1.5) + 1.5) / 3.0 : 0.5,
-                    minHeight: 8,
-                    backgroundColor: Colors.white10,
-                    valueColor: AlwaysStoppedAnimation(_ctColor),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 4),
-              const Text('P',
-                  style: TextStyle(color: Colors.white38, fontSize: 10)),
-            ],
-          ),
-
-          const SizedBox(height: 4),
-
-          // ── Wartość odchylenia (numeryczna) ────────────────────────────────
-          Text(
-            valid
-                ? '${abs.toStringAsFixed(2)} m  $side'
-                : 'Linia AB nie ustawiona',
-            style: TextStyle(
-              color: _ctColor,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 0.5,
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ── Przyciski Punkt A / Punkt B / Reset ─────────────────────────────
-          Row(
-            children: [
-              Expanded(
-                  child:
-                      _AbButton(label: 'Punkt A', isSet: hasA, onTap: onSetA)),
-              const SizedBox(width: 8),
-              Expanded(
-                  child:
-                      _AbButton(label: 'Punkt B', isSet: hasB, onTap: onSetB)),
-              const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.clear, color: Colors.white38),
-                tooltip: 'Resetuj linię AB',
-                onPressed: onReset,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Wiersz informacji o snap-to-swath ────────────────────────────────────────
-
-class _SnapInfoRow extends StatelessWidget {
-  const _SnapInfoRow({required this.snapInfo});
-
-  final SnapInfo snapInfo;
-
-  @override
-  Widget build(BuildContext context) {
-    final sideStr = snapInfo.side > 0
-        ? 'prawo'
-        : snapInfo.side < 0
-            ? 'lewo'
-            : 'środek';
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.linear_scale, color: Colors.yellowAccent, size: 14),
-        const SizedBox(width: 6),
-        Text(
-          'Pas ${snapInfo.swathIndex + 1}: '
-          '${snapInfo.distanceM.toStringAsFixed(2)} m  $sideStr',
-          style: const TextStyle(
-            color: Colors.yellowAccent,
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Przycisk Punkt A/B ────────────────────────────────────────────────────────
-
-class _AbButton extends StatelessWidget {
-  const _AbButton(
-      {required this.label, required this.isSet, required this.onTap});
-
-  final String label;
-  final bool isSet;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        decoration: BoxDecoration(
-          color: isSet ? Colors.blue[800] : Colors.white10,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: isSet ? Colors.lightBlueAccent : Colors.white24,
-          ),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          isSet ? '✓  $label' : label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-            fontSize: 13,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Manual Offset Panel — kalibracja warstwy LPIS względem zdjęcia satelitarnego
 //
 // Przesuwa WSZYSTKIE działki LPIS o stały delta w stopniach (0.00001° ≈ 1.1 m).
@@ -2077,8 +1823,8 @@ class _ManualOffsetPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: hasOffset
-              ? Colors.orangeAccent.withOpacity(0.8)
-              : Colors.tealAccent.withOpacity(0.5),
+              ? Colors.orangeAccent.withValues(alpha: 0.8)
+              : Colors.tealAccent.withValues(alpha: 0.5),
           width: 1,
         ),
         boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 8)],
@@ -2164,7 +1910,7 @@ class _ManualOffsetPanel extends StatelessWidget {
           ),
 
           const SizedBox(height: 4),
-          Text(
+          const Text(
             '1 krok ≈ 1.1 m',
             style: TextStyle(color: Colors.white24, fontSize: 8.5),
           ),

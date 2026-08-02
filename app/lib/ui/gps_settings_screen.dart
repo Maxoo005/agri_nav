@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../ffi/gps_bridge.dart' show SimPosition;
 import '../services/gps_location_service.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GpsSettingsScreen — status GPS i uprawnienia
+// GpsSettingsScreen — GPS status and permission management
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class GpsSettingsScreen extends StatefulWidget {
@@ -32,14 +31,7 @@ class _GpsSettingsScreenState extends State<GpsSettingsScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
-    _syncPermissionState();
-  }
-
-  Future<void> _syncPermissionState() async {
-    final permission = await Geolocator.checkPermission();
-    final hasGps = permission == LocationPermission.always ||
-        permission == LocationPermission.whileInUse;
-    if (hasGps && mounted) setState(() {});
+    if (mounted) setState(() {});
   }
 
   @override
@@ -49,6 +41,7 @@ class _GpsSettingsScreenState extends State<GpsSettingsScreen>
       body: ListView(
         children: [
           _FixStatusTile(),
+          const Divider(),
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('Wskazówka'),
@@ -91,7 +84,7 @@ class _FixStatusTile extends StatelessWidget {
         };
         return ListTile(
           leading: Icon(icon, color: color),
-          title: Text('Status FIX'),
+          title: const Text('Status FIX'),
           subtitle: Text(label),
           trailing: snapshot.hasData
               ? Text(
