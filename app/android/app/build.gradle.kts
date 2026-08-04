@@ -7,7 +7,11 @@ plugins {
 
 android {
     namespace = "com.example.agri_nav"
-    compileSdk = flutter.compileSdkVersion
+    // Nadpisane ponad flutter.compileSdkVersion (35) — flutter_secure_storage
+    // wymaga kompilacji przeciw SDK 36. Bezpieczne: compileSdk tylko określa,
+    // z jakich API korzystamy przy kompilacji, nie wpływa na minimalną wersję
+    // Androida potrzebną do uruchomienia apki (to robi minSdk niżej).
+    compileSdk = 36
     ndkVersion = "27.0.12077973"
 
     compileOptions {
@@ -24,7 +28,10 @@ android {
         applicationId = "com.example.agri_nav"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // Nadpisane ponad flutter.minSdkVersion (21) — flutter_secure_storage
+        // wymaga minSdk 23 (Android 6.0, 2015+). Wszystkie realnie używane
+        // telefony dawno przekroczyły ten próg.
+        minSdk = 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

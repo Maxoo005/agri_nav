@@ -25,6 +25,8 @@ dependencies:
   geolocator: ^13.0.4
   # Bluetooth Classic (SPP) — odbiór NMEA z zewnętrznego odbiornika RTK
   bluetooth_classic: ^0.0.4
+  # Bezpieczne przechowywanie hasła do serwera NTRIP (Android Keystore)
+  flutter_secure_storage: ^10.3.1
   # SQLite — zapis zadań roboczych do pliku .db
   sqflite: ^2.4.0
   # Łączenie ścieżek w SQLite (getDatabasesPath + plik .db)

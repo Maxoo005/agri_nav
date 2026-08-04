@@ -7,6 +7,7 @@ import '../ffi/gps_bridge.dart' show SimPosition;
 import '../models/gnss_position.dart' show GnssFixQuality, GnssStatus;
 import '../services/bluetooth_gnss_service.dart';
 import '../services/gps_location_service.dart';
+import '../services/ntrip_client_service.dart';
 import 'widgets/fix_quality_badge.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -157,6 +158,8 @@ class _GpsSettingsScreenState extends State<GpsSettingsScreen>
             ),
             const _BtLinkStateTile(),
             const _SatelliteInfoTile(),
+            const Divider(),
+            const _NtripSection(),
           ],
           const Divider(),
           const ListTile(
@@ -320,6 +323,346 @@ class _SatelliteInfoTile extends StatelessWidget {
                     'HDOP ${status.hdop.toStringAsFixed(1)}'
                     '${status.fixQuality == GnssFixQuality.noFix ? ' — czekam na fix' : ''}',
           ),
+        );
+      },
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Konfiguracja NTRIP — formularz danych dostępowych + wybór mountpointu +
+// status połączenia. Łączy się automatycznie razem z Bluetoothem (patrz
+// GpsLocationService._startExternalRtk) — to nie jest osobny ręczny krok.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _NtripSection extends StatefulWidget {
+  const _NtripSection();
+
+  @override
+  State<_NtripSection> createState() => _NtripSectionState();
+}
+
+class _NtripSectionState extends State<_NtripSection> {
+  final _hostCtrl = TextEditingController();
+  final _portCtrl = TextEditingController(text: '2101');
+  final _companyCtrl = TextEditingController();
+  final _usernameCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
+
+  List<String> _mountpoints = [];
+  String? _selectedMountpoint;
+  bool _loadingMountpoints = false;
+  bool _obscurePassword = true;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedConfig();
+  }
+
+  Future<void> _loadSavedConfig() async {
+    final gps = GpsLocationService.instance;
+    final savedPassword = await gps.ntripPassword;
+    if (!mounted) return;
+    setState(() {
+      _hostCtrl.text = gps.ntripHost ?? '';
+      _portCtrl.text = (gps.ntripPort ?? 2101).toString();
+      _companyCtrl.text = gps.ntripCompany ?? '';
+      _usernameCtrl.text = gps.ntripUsername ?? '';
+      _passwordCtrl.text = savedPassword ?? '';
+      _selectedMountpoint = gps.ntripMountpoint;
+      if (_selectedMountpoint != null) {
+        // Pokaż zapisany mountpoint na liście, dopóki użytkownik nie
+        // odświeży source table — inaczej dropdown nie miałby co wyświetlić.
+        _mountpoints = [_selectedMountpoint!];
+      }
+      _loaded = true;
+    });
+  }
+
+  @override
+  void dispose() {
+    _hostCtrl.dispose();
+    _portCtrl.dispose();
+    _companyCtrl.dispose();
+    _usernameCtrl.dispose();
+    _passwordCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchMountpoints() async {
+    final host = _hostCtrl.text.trim();
+    final port = int.tryParse(_portCtrl.text.trim());
+    if (host.isEmpty || port == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Podaj adres i port serwera NTRIP.')),
+      );
+      return;
+    }
+
+    setState(() => _loadingMountpoints = true);
+    final mountpoints =
+        await NtripClientService.instance.fetchMountpoints(host, port);
+    if (!mounted) return;
+
+    setState(() {
+      _loadingMountpoints = false;
+      _mountpoints = mountpoints;
+      if (_selectedMountpoint != null &&
+          !mountpoints.contains(_selectedMountpoint)) {
+        // Zachowaj wcześniej zapisany wybór na liście, nawet jeśli świeże
+        // pobranie source table go nie zwróciło (np. chwilowy problem sieci).
+        _mountpoints = [_selectedMountpoint!, ...mountpoints];
+      }
+      if (_selectedMountpoint == null && mountpoints.isNotEmpty) {
+        _selectedMountpoint = mountpoints.first;
+      }
+    });
+
+    if (mountpoints.isEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            NtripClientService.instance.lastError ??
+                'Nie znaleziono mountpointów.',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _save() async {
+    final host = _hostCtrl.text.trim();
+    final port = int.tryParse(_portCtrl.text.trim());
+    final company = _companyCtrl.text.trim();
+    final username = _usernameCtrl.text.trim();
+    final password = _passwordCtrl.text;
+    final mountpoint = _selectedMountpoint;
+
+    if (host.isEmpty ||
+        port == null ||
+        company.isEmpty ||
+        username.isEmpty ||
+        password.isEmpty ||
+        mountpoint == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Uzupełnij wszystkie pola (adres, port, firma, użytkownik, '
+            'hasło) i wybierz mountpoint z listy.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await GpsLocationService.instance.saveNtripConfig(
+      host: host,
+      port: port,
+      company: company,
+      username: username,
+      password: password,
+      mountpoint: mountpoint,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Zapisano konfigurację NTRIP — łączenie nastąpi automatycznie '
+          'razem z Bluetooth.',
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) {
+      return const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Text(
+            'Poprawki NTRIP (RTK Fixed)',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            'Dane z Twojej usługi sieciowej (np. ASG-EUPOS). Login wysyłany '
+            'jest jako "Firma/Użytkownik" — tak wymaga ASG-EUPOS.',
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: TextField(
+                      controller: _hostCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Adres serwera',
+                        hintText: 'system.asgeupos.pl',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 1,
+                    child: TextField(
+                      controller: _portCtrl,
+                      decoration: const InputDecoration(labelText: 'Port'),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _companyCtrl,
+                decoration: const InputDecoration(labelText: 'Nazwa firmy'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _usernameCtrl,
+                decoration:
+                    const InputDecoration(labelText: 'Nazwa użytkownika'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _passwordCtrl,
+                obscureText: _obscurePassword,
+                decoration: InputDecoration(
+                  labelText: 'Hasło',
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscurePassword
+                        ? Icons.visibility
+                        : Icons.visibility_off),
+                    onPressed: () =>
+                        setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _mountpoints.contains(_selectedMountpoint)
+                          ? _selectedMountpoint
+                          : null,
+                      decoration:
+                          const InputDecoration(labelText: 'Mountpoint'),
+                      items: _mountpoints
+                          .map((m) => DropdownMenuItem(
+                                value: m,
+                                child:
+                                    Text(m, overflow: TextOverflow.ellipsis),
+                              ))
+                          .toList(),
+                      onChanged: (v) => setState(() => _selectedMountpoint = v),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _loadingMountpoints
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.refresh),
+                          tooltip: 'Pobierz listę mountpointów',
+                          onPressed: _fetchMountpoints,
+                        ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _save,
+                  child: const Text('Zapisz konfigurację NTRIP'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        const _NtripStateTile(),
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stan połączenia z serwerem NTRIP.
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _NtripStateTile extends StatelessWidget {
+  const _NtripStateTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<NtripState>(
+      stream: NtripClientService.instance.stateStream,
+      initialData: NtripClientService.instance.state,
+      builder: (context, snapshot) {
+        final state = snapshot.data ?? NtripState.disconnected;
+        final (icon, color, label) = switch (state) {
+          NtripState.disconnected => (
+              Icons.cloud_off,
+              Colors.grey,
+              'Rozłączony'
+            ),
+          NtripState.connecting => (
+              Icons.cloud_sync,
+              Colors.orange,
+              'Łączenie…'
+            ),
+          NtripState.connected => (
+              Icons.cloud_done,
+              Colors.green,
+              'Połączono — poprawki płyną'
+            ),
+          NtripState.reconnecting => (
+              Icons.cloud_sync,
+              Colors.orange,
+              'Rozłączono — ponawiam próbę połączenia…'
+            ),
+          NtripState.authError => (
+              Icons.error_outline,
+              Colors.red,
+              'Błąd logowania (login/hasło)'
+            ),
+          NtripState.networkError => (
+              Icons.error_outline,
+              Colors.red,
+              'Błąd połączenia / zły mountpoint'
+            ),
+        };
+
+        return ListTile(
+          leading: Icon(icon, color: color),
+          title: Text('NTRIP: $label'),
+          subtitle: NtripClientService.instance.lastError != null &&
+                  state != NtripState.connected
+              ? Text(NtripClientService.instance.lastError!)
+              : null,
         );
       },
     );
