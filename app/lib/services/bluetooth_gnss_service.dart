@@ -266,6 +266,26 @@ class BluetoothGnssService {
     if (!_linkStateController.isClosed) _linkStateController.add(state);
   }
 
+  // ── Zapis (poprawki RTCM z NTRIP → moduł) ───────────────────────────────────
+
+  /// Wysyła surowe bajty (poprawki RTCM3 z [NtripClientService]) do
+  /// odbiornika, tym samym gniazdem SPP, którym odbieramy NMEA — moduł GNSS
+  /// akceptuje RTCM3 wmieszany w ten sam strumień UART co wysyłane przez
+  /// niego NMEA (dwukierunkowa transmisja po jednym porcie szeregowym).
+  ///
+  /// Po cichu ignoruje próby zapisu gdy nie jesteśmy połączeni (typowe
+  /// podczas reconnectu) — RTCM i tak nie ma wtedy dokąd wysłać, a
+  /// `bluetooth_classic` i tak rzuciłby błąd przy próbie zapisu bez
+  /// aktywnego połączenia.
+  Future<void> writeRtcm(Uint8List bytes) async {
+    if (!_connected) return;
+    try {
+      await _bt.writeBytes(bytes);
+    } catch (e) {
+      debugPrint('[BluetoothGnssService] writeRtcm() rzuciło: $e');
+    }
+  }
+
   // ── Parsowanie strumienia bajtów ────────────────────────────────────────────
 
   /// Bufor linii nie powinien nigdy urosnąć do rozmiaru zdania NMEA razy

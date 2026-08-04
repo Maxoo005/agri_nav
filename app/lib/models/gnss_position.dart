@@ -225,13 +225,71 @@ RmcData? parseRmc(String sentence) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Budowanie $GPGGA (dla NTRIP)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Buduje zdanie `$GPGGA` z [GnssPosition] — operacja ODWROTNA do [parseGga].
+///
+/// Używane przez klienta NTRIP: usługi sieciowe/VRS wymagają, żeby klient
+/// okresowo wysyłał swoją przybliżoną pozycję, bo serwer na jej podstawie
+/// interpoluje poprawki dla najbliższej wirtualnej stacji referencyjnej.
+/// Budujemy zdanie samodzielnie (zamiast przekazać dalej surową linijkę z
+/// odbiornika) celowo — [NtripClientService] zna tylko [GnssPosition], nie
+/// zna szczegółów Bluetootha/NMEA, więc nie ma dostępu do oryginalnej linii.
+String buildGgaSentence(GnssPosition pos) {
+  final utc = pos.timestamp.toUtc();
+  final time = '${_pad(utc.hour, 2)}${_pad(utc.minute, 2)}${_pad(utc.second, 2)}.00';
+
+  final lat = _formatNmeaLatLon(pos.latitude, integerDigits: 2);
+  final latHem = pos.latitude >= 0 ? 'N' : 'S';
+  final lon = _formatNmeaLatLon(pos.longitude, integerDigits: 3);
+  final lonHem = pos.longitude >= 0 ? 'E' : 'W';
+
+  final body = 'GPGGA,$time,$lat,$latHem,$lon,$lonHem,'
+      '${_ggaValueFor(pos.fixQuality)},'
+      '${_pad(pos.satellitesCount, 2)},'
+      '${pos.hdop.toStringAsFixed(1)},'
+      '${pos.altitude.toStringAsFixed(1)},M,0.0,M,,';
+
+  int checksum = 0;
+  for (int i = 0; i < body.length; i++) {
+    checksum ^= body.codeUnitAt(i);
+  }
+  final checksumHex = checksum.toRadixString(16).padLeft(2, '0').toUpperCase();
+
+  return '\$$body*$checksumHex\r\n';
+}
+
+/// Odwraca mapowanie [GnssFixQuality.fromGgaValue] — z powrotem na liczbę
+/// pola GGA #6, zgodnie z tą samą specyfikacją NMEA (4=Fixed, 5=Float).
+int _ggaValueFor(GnssFixQuality quality) => switch (quality) {
+      GnssFixQuality.noFix => 0,
+      GnssFixQuality.gps => 1,
+      GnssFixQuality.dgps => 2,
+      GnssFixQuality.rtkFixed => 4,
+      GnssFixQuality.rtkFloat => 5,
+    };
+
+/// Formatuje stopnie dziesiętne do formatu NMEA `[d]dmm.mmmm` — odwrotność
+/// [_parseNmeaLatLon]. [integerDigits] to liczba cyfr części stopni przed
+/// minutami (2 dla szerokości, 3 dla długości geograficznej).
+String _formatNmeaLatLon(double decimalDegrees, {required int integerDigits}) {
+  final abs = decimalDegrees.abs();
+  final degrees = abs.floor();
+  final minutes = (abs - degrees) * 60.0;
+  return '${_pad(degrees, integerDigits)}${minutes.toStringAsFixed(4).padLeft(7, '0')}';
+}
+
+String _pad(int value, int width) => value.toString().padLeft(width, '0');
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Konwertuje współrzędną NMEA w formacie `ddmm.mmmm` (lub `dddmm.mmmm` dla
 /// długości geograficznej) + literę półkuli na stopnie dziesiętne.
 ///
-/// Przykład: `5213.7247,N` → 52° + 13.7247/60 = 52.229578.
+/// Przykład: `5213.7247,N` → 52° + 13.7247/60 = 52.228745.
 double? _parseNmeaLatLon(String raw, String hemisphere) {
   if (raw.isEmpty || hemisphere.isEmpty) return null;
   final value = double.tryParse(raw);

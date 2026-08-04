@@ -1,16 +1,32 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../ffi/gps_bridge.dart';
 import '../models/gnss_position.dart';
 import 'bluetooth_gnss_service.dart';
+import 'ntrip_client_service.dart';
 
 const _kGpsBox = 'gps_settings';
 const _kUseInternalGpsKey = 'useInternalGps';
 const _kRtkDeviceAddressKey = 'rtkDeviceAddress';
+const _kNtripHostKey = 'ntripHost';
+const _kNtripPortKey = 'ntripPort';
+const _kNtripCompanyKey = 'ntripCompany';
+const _kNtripUsernameKey = 'ntripUsername';
+const _kNtripMountpointKey = 'ntripMountpoint';
+
+/// Hasło NTRIP NIE trafia do Hive (niezaszyfrowane na dysku) — idzie do
+/// Android Keystore przez `flutter_secure_storage`. Pozostała konfiguracja
+/// (host/port/login/mountpoint) to dane jawne i tak widoczne przy każdym
+/// połączeniu (host/port/mountpoint w URL, login w nagłówku Basic Auth),
+/// więc trzymanie ich w zwykłym Hive to rozsądny kompromis.
+const _kNtripPasswordSecureKey = 'ntripPassword';
+const _secureStorage = FlutterSecureStorage();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // GpsLocationService — real GNSS via Geolocator
@@ -134,6 +150,99 @@ class GpsLocationService {
     }
   }
 
+  // ── Konfiguracja NTRIP ────────────────────────────────────────────────────────
+
+  String? get ntripHost => Hive.box(_kGpsBox).get(_kNtripHostKey) as String?;
+  int? get ntripPort => Hive.box(_kGpsBox).get(_kNtripPortKey) as int?;
+  String? get ntripCompany =>
+      Hive.box(_kGpsBox).get(_kNtripCompanyKey) as String?;
+  String? get ntripUsername =>
+      Hive.box(_kGpsBox).get(_kNtripUsernameKey) as String?;
+  String? get ntripMountpoint =>
+      Hive.box(_kGpsBox).get(_kNtripMountpointKey) as String?;
+
+  /// Hasło NTRIP z bezpiecznego magazynu (Android Keystore). `null` gdy
+  /// jeszcze nigdy nie zapisane.
+  Future<String?> get ntripPassword =>
+      _secureStorage.read(key: _kNtripPasswordSecureKey);
+
+  /// `true` gdy zapisano komplet danych potrzebnych do połączenia z NTRIP
+  /// (host/port/firma/użytkownik/mountpoint — hasło sprawdzane osobno w
+  /// [_loadNtripConfig], bo odczyt z bezpiecznego magazynu jest asynchroniczny).
+  bool get hasNtripBasicConfig =>
+      (ntripHost?.isNotEmpty ?? false) &&
+      ntripPort != null &&
+      (ntripCompany?.isNotEmpty ?? false) &&
+      (ntripUsername?.isNotEmpty ?? false) &&
+      (ntripMountpoint?.isNotEmpty ?? false);
+
+  /// Zapisuje pełną konfigurację NTRIP (Hive dla danych jawnych, bezpieczny
+  /// magazyn dla hasła) i — jeśli tryb zewnętrzny jest właśnie aktywny — od
+  /// razu (re)łączy się z serwerem na nowej konfiguracji.
+  Future<void> saveNtripConfig({
+    required String host,
+    required int port,
+    required String company,
+    required String username,
+    required String password,
+    required String mountpoint,
+  }) async {
+    final box = Hive.box(_kGpsBox);
+    await box.put(_kNtripHostKey, host);
+    await box.put(_kNtripPortKey, port);
+    await box.put(_kNtripCompanyKey, company);
+    await box.put(_kNtripUsernameKey, username);
+    await box.put(_kNtripMountpointKey, mountpoint);
+    await _secureStorage.write(
+        key: _kNtripPasswordSecureKey, value: password);
+
+    if (!_useInternalGps && _activeListeners > 0) {
+      await _startNtripIfConfigured();
+    }
+  }
+
+  /// Składa [NtripConfig] z zapisanych danych, albo `null` gdy konfiguracja
+  /// jest niekompletna (np. świeża instalacja, użytkownik jeszcze nic nie
+  /// wpisał) — w takim wypadku po prostu nie ma się z czym łączyć, to nie
+  /// jest błąd.
+  Future<NtripConfig?> _loadNtripConfig() async {
+    final host = ntripHost;
+    final port = ntripPort;
+    final company = ntripCompany;
+    final username = ntripUsername;
+    final mountpoint = ntripMountpoint;
+    final password = await ntripPassword;
+
+    if (host == null ||
+        host.isEmpty ||
+        port == null ||
+        company == null ||
+        company.isEmpty ||
+        username == null ||
+        username.isEmpty ||
+        mountpoint == null ||
+        mountpoint.isEmpty ||
+        password == null ||
+        password.isEmpty) {
+      return null;
+    }
+
+    return NtripConfig(
+      host: host,
+      port: port,
+      company: company,
+      username: username,
+      password: password,
+      mountpoint: mountpoint,
+    );
+  }
+
+  Future<void> _startNtripIfConfigured() async {
+    final config = await _loadNtripConfig();
+    if (config == null) return;
+    await NtripClientService.instance.connect(config);
+  }
+
   GpsFixStatus get fixStatus => _fixStatus;
   GpsFixStatus _fixStatus = GpsFixStatus.inactive;
 
@@ -163,6 +272,7 @@ class GpsLocationService {
   StreamSubscription<GnssPosition>? _gnssPosSub;
   StreamSubscription<GnssStatus>? _gnssQualitySub;
   StreamSubscription<BtLinkState>? _gnssLinkSub;
+  StreamSubscription<Uint8List>? _rtcmSub;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -325,7 +435,16 @@ class GpsLocationService {
       },
     );
 
+    // Most RTCM: NtripClientService nie zna Bluetootha, BluetoothGnssService
+    // nie zna NTRIP — to połączenie jest jedynym miejscem, które wie o obu.
+    _rtcmSub = NtripClientService.instance.rtcmStream.listen(
+      (bytes) => BluetoothGnssService.instance.writeRtcm(bytes),
+    );
+
     BluetoothGnssService.instance.connect(address);
+    // Fire-and-forget: po cichu nic nie robi, jeśli konfiguracja NTRIP jest
+    // niekompletna (użytkownik jeszcze nie wypełnił formularza).
+    _startNtripIfConfigured();
   }
 
   void _stopExternalRtk() {
@@ -335,10 +454,17 @@ class GpsLocationService {
     _gnssQualitySub = null;
     _gnssLinkSub?.cancel();
     _gnssLinkSub = null;
+    _rtcmSub?.cancel();
+    _rtcmSub = null;
     BluetoothGnssService.instance.disconnect();
+    NtripClientService.instance.disconnect();
   }
 
   void _onGnssPosition(GnssPosition pos) {
+    // Most GGA: NTRIP (usługi sieciowe/VRS) potrzebuje okresowo naszej
+    // przybliżonej pozycji, żeby interpolować poprawki — patrz
+    // NtripClientService.updatePosition.
+    NtripClientService.instance.updatePosition(pos);
     if (!_controller.isClosed) _controller.add(_fromGnss(pos));
   }
 
