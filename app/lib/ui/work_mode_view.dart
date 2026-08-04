@@ -4,13 +4,18 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
+import '../models/history_record.dart';
 import '../models/work_task.dart';
 import '../services/coverage_service.dart';
 import '../services/gps_location_service.dart';
+import '../services/history_database.dart';
 import '../services/material_monitor_service.dart';
+import '../services/work_session_service.dart';
 import '../utils/geo_utils.dart';
+import 'finish_work_dialog.dart';
 
 // ── Paleta kolorów Work Mode ──────────────────────────────────────────────────
 const _kBg = Color(0xFF0A0A0A);
@@ -45,7 +50,11 @@ class WorkModeView extends StatefulWidget {
     required this.initialHeading,
     required this.workingWidthM,
     this.fieldId,
+    this.fieldName,
     this.activeTask,
+    this.machineName,
+    this.overlapM = 0.0,
+    this.swathAngleDeg = 0.0,
   });
 
   /// Równoległe ścieżki uprawowe z C++ SwathPlanner.
@@ -68,9 +77,21 @@ class WorkModeView extends StatefulWidget {
   /// Identyfikator pola w Hive (null = brak aktywnego pola).
   final String? fieldId;
 
+  /// Nazwa pola — do zapisu historii po zakończeniu pracy.
+  final String? fieldName;
+
   /// Aktywne zadanie robocze — używane do monitorowania zużycia materiału.
   /// Null = monitorowanie wyłączone.
   final WorkTask? activeTask;
+
+  /// Nazwa maszyny (migawka) — do zapisu historii.
+  final String? machineName;
+
+  /// Zakładka (overlap) między przejściami [m] — do zapisu historii.
+  final double overlapM;
+
+  /// Kierunek ścieżek (azymut) [°] — do zapisu historii.
+  final double swathAngleDeg;
 
   @override
   State<WorkModeView> createState() => _WorkModeViewState();
@@ -96,11 +117,21 @@ class _WorkModeViewState extends State<WorkModeView> {
   int _activeHeadlandRingIndex = -1;
 
   // ── Wstrzymanie pracy ────────────────────────────────────────────────────────
-  bool _isPaused = false;
+  /// Pochodzi z [WorkSessionService] — wstrzymanie działa także w tle
+  /// (serwis przeżywa opuszczenie tego ekranu).
+  bool get _isPaused => WorkSessionService.instance.paused;
 
   /// Pozycje GPS zapisane w momencie wstrzymania — wyświetlane jako znaczniki
   /// uzupełnienia materiału na kanwie pola.
   final List<LatLng> _pauseMarkers = [];
+
+  /// Powierzchnia pola [ha] (z geometrii granicy) — do wyświetlania postępu
+  /// "zrobione / całe pole".
+  late double _fieldAreaHa;
+
+  /// Czas pracy z [WorkSessionService] — odświeżany co sekundę przez strumień.
+  Duration _workElapsed = Duration.zero;
+  StreamSubscription<Duration>? _sessionSub;
 
   late double _coveredHa;
   double _speedKmh = 0.0;
@@ -136,7 +167,21 @@ class _WorkModeViewState extends State<WorkModeView> {
     _tractorHeading = widget.initialHeading;
     _snapInfo = widget.initialSnapInfo;
     _coveredHa = widget.initialCoveredHa;
+    _fieldAreaHa = GeoUtils.polygonAreaHa(widget.fieldBoundary);
     _deviationCtrl = StreamController<_DeviationSnapshot>.broadcast();
+
+    // Sesja pracy działa w tle: wznawia/przypina istniejącą albo startuje
+    // nową. Timer biegnie w serwisie niezależnie od tego ekranu.
+    if (widget.fieldId != null) {
+      WorkSessionService.instance.start(
+        fieldId: widget.fieldId!,
+        task: widget.activeTask,
+      );
+      _workElapsed = WorkSessionService.instance.elapsed;
+      _sessionSub = WorkSessionService.instance.stream.listen((d) {
+        if (mounted) setState(() => _workElapsed = d);
+      });
+    }
 
     // Start material monitor if task has rate/tank data
     if (widget.activeTask != null) {
@@ -178,7 +223,12 @@ class _WorkModeViewState extends State<WorkModeView> {
   @override
   void dispose() {
     _monitorSub?.cancel();
-    MaterialMonitorService.instance.stop();
+    _sessionSub?.cancel();
+    // Gdy praca trwa w tle (nie zakończona), monitor materiału działa dalej —
+    // zużycie nalicza MapView po powrocie na mapę.
+    if (!WorkSessionService.instance.isActive) {
+      MaterialMonitorService.instance.stop();
+    }
     _gpsSub?.cancel();
     _fixStatusSub?.cancel();
     _deviationCtrl.close();
@@ -204,28 +254,31 @@ class _WorkModeViewState extends State<WorkModeView> {
       return;
     }
 
-    // Use hardware heading when available (speed-gated by GpsLocationService),
-    // else compute from positions.
     double heading = pos.heading >= 0 ? pos.heading : _tractorHeading;
-    // Use hardware speed when available (real GPS in m/s → km/h), else compute.
-    double speedKmh = pos.speed >= 0 ? pos.speed * 3.6 : _speedKmh;
-
-    if (_prevPos != null) {
+    // Gdy brak sprzętowego kursu, licz z przyrostu pozycji.
+    if (pos.heading < 0 && _prevPos != null) {
       final dlat = (newPos.latitude - _prevPos!.latitude).abs();
       final dlon = (newPos.longitude - _prevPos!.longitude).abs();
-      if (pos.heading < 0 && dlat + dlon > 1e-7) {
+      if (dlat + dlon > 1e-7) {
         heading = _bearing(_prevPos!, newPos);
       }
-
-      if (pos.speed < 0 && _prevTime != null) {
-        final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
-        if (dt > 0.01) {
-          final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
-          final de =
-              (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
-          final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
-          speedKmh = math.sqrt(de * de + dn * dn) / dt * 3.6;
-        }
+    }
+    // Prędkość: preferuj sprzętowy odczyt (m/s → km/h). Gdy niedostępny LUB
+    // zgłasza 0 mimo ruchu (znany problem części telefonów), licz z przyrostu
+    // pozycji z wygładzaniem EMA i martwą strefą na szum pozycji.
+    double speedKmh = _speedKmh;
+    if (pos.speed > 0) {
+      speedKmh = pos.speed * 3.6;
+    } else if (_prevPos != null && _prevTime != null) {
+      final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
+      if (dt > 0.01) {
+        final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
+        final de =
+            (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
+        final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
+        final raw = math.sqrt(de * de + dn * dn) / dt * 3.6;
+        speedKmh = _speedKmh + (raw - _speedKmh) * 0.45;
+        if (speedKmh < 0.8) speedKmh = 0.0;
       }
     }
 
@@ -314,23 +367,66 @@ class _WorkModeViewState extends State<WorkModeView> {
   static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
 
   /// Przełącza stan wstrzymania pracy.
-  /// Przy wstrzymaniu: zatrzymuje rejestrację pokrycia i zapisuje pozycję GPS
-  /// jako znacznik miejsca uzupełnienia materiału.
+  /// Przy wstrzymaniu: zatrzymuje rejestrację pokrycia i licznik czasu
+  /// (stan trzyma [WorkSessionService] — działa też po opuszczeniu ekranu)
+  /// oraz zapisuje pozycję GPS jako znacznik miejsca uzupełnienia materiału.
   void _togglePause() {
-    setState(() {
-      _isPaused = !_isPaused;
-      if (_isPaused) {
+    final service = WorkSessionService.instance;
+    if (service.paused) {
+      service.resume();
+    } else {
+      service.pause();
+      setState(() {
         // Cap pause-marker list at 50 to prevent unbounded memory growth
         if (_pauseMarkers.length < 50) {
           _pauseMarkers.add(_tractorPos);
         }
-      }
-    });
+      });
+    }
   }
 
-  void _exitWorkMode() {
+  /// Zatrzymuje pracę: zapisuje zadanie w historii, zamraża licznik czasu,
+  /// kończy monitor materiału i rejestrację pokrycia, po czym wraca na mapę.
+  Future<void> _finishWorkMode() async {
+    final session = WorkSessionService.instance;
+    final info = FinishWorkInfo(
+      fieldName: widget.fieldName ?? '',
+      machineName: widget.machineName ?? '',
+      taskTypeLabel: widget.activeTask?.taskType.label ?? 'Inne',
+      workingWidthM: widget.workingWidthM,
+      overlapM: widget.overlapM,
+      swathAngleDeg: widget.swathAngleDeg,
+      workDuration: session.elapsed,
+      coveredHa: _coveredHa,
+      speedKmh: _speedKmh,
+    );
+    final note = await showFinishWorkDialog(context, info);
+    if (note == null || !mounted) return;
+
+    // Zapis do bazy historii (każde zakończenie pracy = jeden rekord).
+    try {
+      await HistoryDatabase.instance.save(HistoryRecord(
+        id: const Uuid().v4(),
+        fieldId: widget.fieldId ?? '',
+        fieldName: widget.fieldName ?? '',
+        machineName: widget.machineName,
+        taskType: widget.activeTask?.taskType ?? TaskType.other,
+        workingWidthM: widget.workingWidthM,
+        overlapM: widget.overlapM,
+        swathAngleDeg: widget.swathAngleDeg,
+        workDuration: session.elapsed,
+        coveredHa: _coveredHa,
+        note: note,
+        completedAt: DateTime.now(),
+      ));
+    } catch (e) {
+      debugPrint('HistoryDatabase save error: $e');
+    }
+
+    session.finish();
+    MaterialMonitorService.instance.stop();
     CoverageService.instance.stopTracking();
-    Navigator.of(context).pop();
+    if (mounted) Navigator.of(context).pop();
   }
 
   Future<void> _showRefillDialog() async {
@@ -482,6 +578,9 @@ class _WorkModeViewState extends State<WorkModeView> {
               child: _StatsPanel(
                 speedKmh: _speedKmh,
                 coveredHa: _coveredHa,
+                fieldAreaHa: _fieldAreaHa,
+                workElapsed: _workElapsed,
+                workingWidthM: widget.workingWidthM,
                 snapInfo: _snapInfo,
                 overlapFraction: _overlapFraction,
                 newAreaHaLastStrip: _newAreaHaLastStrip,
@@ -525,7 +624,7 @@ class _WorkModeViewState extends State<WorkModeView> {
                       tag: 'workModeHero',
                       child: Material(
                         color: Colors.transparent,
-                        child: _ExitButton(onPressed: _exitWorkMode),
+                        child: _ExitButton(onPressed: _finishWorkMode),
                       ),
                     ),
                   ),
@@ -1023,6 +1122,9 @@ class _StatsPanel extends StatelessWidget {
   const _StatsPanel({
     required this.speedKmh,
     required this.coveredHa,
+    required this.fieldAreaHa,
+    required this.workElapsed,
+    required this.workingWidthM,
     required this.snapInfo,
     required this.overlapFraction,
     required this.newAreaHaLastStrip,
@@ -1031,6 +1133,9 @@ class _StatsPanel extends StatelessWidget {
 
   final double speedKmh;
   final double coveredHa;
+  final double fieldAreaHa;
+  final Duration workElapsed;
+  final double workingWidthM;
   final SnapInfo snapInfo;
   final double overlapFraction;
   final double newAreaHaLastStrip;
@@ -1050,9 +1155,14 @@ class _StatsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (fixValue, fixDot) = _fixVisual(fixStatus);
+    // "Zrobione / całe pole" — gdy znana powierzchnia pola.
+    final coveredValue = fieldAreaHa > 0
+        ? '${coveredHa.toStringAsFixed(2)} / '
+            '${fieldAreaHa.toStringAsFixed(2)} ha'
+        : '${coveredHa.toStringAsFixed(2)} ha';
 
     return Container(
-      width: 152,
+      width: 168,
       decoration: BoxDecoration(
         color: const Color(0xCC0D0D0D),
         borderRadius: BorderRadius.circular(12),
@@ -1068,11 +1178,27 @@ class _StatsPanel extends StatelessWidget {
             value: '${speedKmh.toStringAsFixed(1)} km/h',
           ),
           const _TileDivider(),
+          // Wydajność [ha/h] — przeliczenie uzależnione od prędkości:
+          // prędkość [km/h] × szerokość robocza [m] / 10.
+          _StatTile(
+            icon: Icons.speed_outlined,
+            color: Colors.tealAccent,
+            label: 'Wydajność',
+            value: '${(speedKmh * workingWidthM / 10.0).toStringAsFixed(2)} ha/h',
+          ),
+          const _TileDivider(),
           _StatTile(
             icon: Icons.crop_square_rounded,
             color: Colors.greenAccent,
             label: 'Zrobione',
-            value: '${coveredHa.toStringAsFixed(2)} ha',
+            value: coveredValue,
+          ),
+          const _TileDivider(),
+          _StatTile(
+            icon: Icons.timer_outlined,
+            color: Colors.purpleAccent,
+            label: 'Czas pracy',
+            value: formatWorkDuration(workElapsed),
           ),
           const _TileDivider(),
           _StatTile(
@@ -1153,12 +1279,18 @@ class _StatTile extends StatelessWidget {
                 ),
                 Row(
                   children: [
-                    Text(
-                      value,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                    Flexible(
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          value,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ),
                     if (dot != null) ...[

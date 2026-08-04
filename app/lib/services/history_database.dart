@@ -1,0 +1,145 @@
+import 'dart:developer' as dev;
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
+
+import '../models/history_record.dart';
+
+/// SQLite storage for completed-work history (`agrinav_history.db`).
+///
+/// Każde zakończenie pracy ("Zakończ pracę") zapisuje jeden rekord —
+/// migawkę pola, maszyny, zadania, parametrów ścieżek, czasu pracy,
+/// powierzchni i notatki operatora.
+class HistoryDatabase {
+  HistoryDatabase._();
+  static final instance = HistoryDatabase._();
+
+  static const _dbName = 'agrinav_history.db';
+  static const _table = 'history';
+
+  Database? _db;
+
+  /// Ustawia domyślny silnik SQLite dla bieżącej platformy (patrz
+  /// [TaskDatabase.configureFactory] — ten sam mechanizm).
+  static void configureFactory() {
+    if (kIsWeb) return;
+    if (Platform.isAndroid || Platform.isIOS) {
+      databaseFactoryOrNull ??= databaseFactorySqflitePlugin;
+    } else {
+      ffi.sqfliteFfiInit();
+      databaseFactoryOrNull ??= ffi.databaseFactoryFfi;
+    }
+  }
+
+  Future<Database> get _database async {
+    _db ??= await _open();
+    return _db!;
+  }
+
+  Future<Database> _open() async {
+    final path = await getDatabasePath();
+    return openDatabase(
+      path,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE $_table (
+            id               TEXT PRIMARY KEY,
+            field_id         TEXT,
+            field_name       TEXT,
+            machine          TEXT,
+            task_type        TEXT,
+            working_width_m  REAL,
+            overlap_m        REAL,
+            swath_angle_deg  REAL,
+            work_duration_ms INTEGER,
+            covered_ha       REAL,
+            note             TEXT,
+            completed_at     TEXT
+          )
+        ''');
+        await db.execute(
+            'CREATE INDEX idx_history_field ON $_table (field_id, completed_at)');
+      },
+    );
+  }
+
+  /// Absolute path of the .db file (useful to show in the UI).
+  Future<String> getDatabasePath() async {
+    final dir = await getDatabasesPath();
+    return p.join(dir, _dbName);
+  }
+
+  /// Otwiera bazę przy starcie. Błąd nie zatrzymuje aplikacji — ponowna
+  /// próba nastąpi przy pierwszym zapisie (błąd jest tylko logowany).
+  Future<void> init() async {
+    try {
+      await _database;
+    } catch (e) {
+      dev.log('HistoryDatabase init error: $e', name: 'HistoryDatabase');
+    }
+  }
+
+  Future<void> save(HistoryRecord record) async {
+    final db = await _database;
+    await db.insert(
+      _table,
+      record.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Unikalne pola (posortowane po ostatniej pracy) + liczba zakończonych
+  /// prac na pole.
+  Future<List<HistoryFieldSummary>> getFields() async {
+    final db = await _database;
+    final rows = await db.rawQuery('''
+      SELECT field_id,
+             field_name,
+             COUNT(*)            AS count,
+             MAX(completed_at)   AS last_completed
+      FROM $_table
+      GROUP BY field_id
+      ORDER BY MAX(completed_at) DESC
+    ''');
+    return rows.map(HistoryFieldSummary.fromMap).toList();
+  }
+
+  /// Lata, w których pole miało zakończone prace — malejąco (z liczbą prac).
+  Future<List<HistoryYearSummary>> getYears(String fieldId) async {
+    final db = await _database;
+    final rows = await db.rawQuery('''
+      SELECT strftime('%Y', completed_at) AS year, COUNT(*) AS count
+      FROM $_table
+      WHERE field_id = ?
+      GROUP BY year
+      ORDER BY year DESC
+    ''', [fieldId]);
+    return rows.map(HistoryYearSummary.fromMap).toList();
+  }
+
+  /// Wszystkie zakończone prace pola w danym roku — od najnowszej.
+  Future<List<HistoryRecord>> getRecords(String fieldId, int year) async {
+    final db = await _database;
+    final rows = await db.query(
+      _table,
+      where: "field_id = ? AND strftime('%Y', completed_at) = ?",
+      whereArgs: [fieldId, '$year'],
+      orderBy: 'completed_at DESC',
+    );
+    return rows.map(HistoryRecord.fromMap).toList();
+  }
+
+  Future<void> delete(String id) async {
+    final db = await _database;
+    await db.delete(_table, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> clear() async {
+    final db = await _database;
+    await db.delete(_table);
+  }
+}
