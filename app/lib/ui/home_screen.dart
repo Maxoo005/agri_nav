@@ -4,6 +4,7 @@ import 'app_theme.dart';
 import 'arimr_import_sheet.dart';
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
+import 'history_screen.dart';
 import 'machine_manager_screen.dart';
 import 'map_view.dart';
 import 'new_task_screen.dart';
@@ -107,6 +108,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           builder: (_) => const GpsSettingsScreen(),
                         ),
                       ),
+                    ),
+                    _MenuTile(
+                      icon: Icons.history_rounded,
+                      label: 'Historia',
+                      onTap: () => HistoryScreen.open(context),
                     ),
                   ],
                 ),

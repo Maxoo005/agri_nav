@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../ffi/nav_bridge.dart';
 import 'app_theme.dart';
 import '../models/field_model.dart';
+import '../models/history_record.dart';
 import '../models/machine_model.dart';
 import '../models/task_plan.dart';
 import '../models/work_task.dart';
@@ -19,6 +20,9 @@ import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
 import '../services/gps_location_service.dart';
+import '../services/history_database.dart';
+import '../services/material_monitor_service.dart';
+import '../services/work_session_service.dart';
 import '../services/work_task_service.dart';
 import '../models/arimr_parcel.dart';
 import '../services/arimr_service.dart';
@@ -26,6 +30,7 @@ import '../services/geoportal_service.dart';
 import 'arimr_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
+import 'finish_work_dialog.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
@@ -118,6 +123,11 @@ class _MapViewState extends State<MapView> {
       _activeMachine?.workingWidthM ?? _activeField?.workingWidthM ?? 3.0;
 
   LatLng? _prevPos;
+  DateTime? _prevTime;
+
+  /// Ostatnia obliczona prędkość [km/h] — używana w podsumowaniu
+  /// "Zakończ pracę" z bannera (wydajność ha/h).
+  double _speedKmh = 0.0;
 
   /// GPS stream subscription — drives position updates from real or simulated GPS.
   StreamSubscription<SimPosition>? _gpsSub;
@@ -185,6 +195,25 @@ class _MapViewState extends State<MapView> {
       }
     }
 
+    // Prędkość: preferuj sprzętowy odczyt (m/s → km/h), inaczej licz z
+    // przyrostu pozycji z wygładzaniem EMA i martwą strefą na szum.
+    final now = DateTime.now();
+    double speedKmh = _speedKmh;
+    if (pos.speed > 0) {
+      speedKmh = pos.speed * 3.6;
+    } else if (_prevPos != null && _prevTime != null) {
+      final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
+      if (dt > 0.01) {
+        final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
+        final de =
+            (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
+        final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
+        final raw = math.sqrt(de * de + dn * dn) / dt * 3.6;
+        speedKmh = _speedKmh + (raw - _speedKmh) * 0.45;
+        if (speedKmh < 0.8) speedKmh = 0.0;
+      }
+    }
+
     // Wyślij do silnika C++ i odbierz wynik prowadzenia
     final result = NavBridge.instance.update(
       lat: pos.latitude,
@@ -203,15 +232,26 @@ class _MapViewState extends State<MapView> {
     // Coverage tracking + section control
     double coveredHa = _coveredHa;
     if (_trackingCoverage) {
-      CoverageService.instance.addPoint(newPos);
-      if (_activeField != null) {
-        SectionControlBridge.instance.addStrip(
-          pos.latitude,
-          pos.longitude,
-          heading,
-          _activeWorkingWidth,
-        );
-        coveredHa = SectionControlBridge.instance.coveredAreaHa();
+      // Praca aktywna ale WSTRZYMANA (np. uzupełnianie zbiornika) → pokrycie
+      // i zużycie materiału stoją, dopóki operator nie wznowi.
+      final session = WorkSessionService.instance;
+      final sessionPaused = session.isActive && session.paused;
+      if (!sessionPaused) {
+        CoverageService.instance.addPoint(newPos);
+        if (_activeField != null) {
+          SectionControlBridge.instance.addStrip(
+            pos.latitude,
+            pos.longitude,
+            heading,
+            _activeWorkingWidth,
+          );
+          coveredHa = SectionControlBridge.instance.coveredAreaHa();
+          // Praca w tle: zużycie materiału naliczane także po wyjściu z
+          // Trybu Pracy, dopóki sesja nie jest zakończona.
+          if (session.isActive) {
+            MaterialMonitorService.instance.updateArea(coveredHa);
+          }
+        }
       }
     }
 
@@ -222,9 +262,11 @@ class _MapViewState extends State<MapView> {
       _guidanceValid = result.valid;
       _snapInfo = snapInfo;
       _coveredHa = coveredHa;
+      _speedKmh = speedKmh;
     });
 
     _prevPos = newPos;
+    _prevTime = now;
 
     // Przesuń mapę za ciągnikiem (jeśli tryb follow aktywny)
     if (_followTractor) {
@@ -717,7 +759,11 @@ class _MapViewState extends State<MapView> {
             initialHeading: _tractorHeading,
             workingWidthM: _activeWorkingWidth,
             fieldId: _activeField?.id,
+            fieldName: _activeField?.name,
             activeTask: _activeTask,
+            machineName: _activeMachine?.name,
+            overlapM: _overlapM,
+            swathAngleDeg: _swathAngleDeg,
           ),
           transitionsBuilder: (_, anim, __, child) => SlideTransition(
             position: Tween<Offset>(
@@ -736,16 +782,63 @@ class _MapViewState extends State<MapView> {
 
     if (!mounted) return;
 
-    // Odśwież statystyki pokrycia po powrocie z trybu pracy
+    // Odśwież statystyki pokrycia po powrocie z trybu pracy.
     final saved = _activeTask != null
         ? CoverageService.instance
             .loadForTask(_activeField?.id ?? '', _activeTask!.id)
         : CoverageService.instance.loadForField(_activeField?.id ?? '');
+    // Praca działa W TLE: dopóki sesja nie została zakończona, pokrycie
+    // rejestruje się dalej na mapie (użytkownik może wrócić do Trybu Pracy).
+    final sessionActive = WorkSessionService.instance.isActive;
     setState(() {
       _savedTrack = saved;
       _coveredHa = SectionControlBridge.instance.coveredAreaHa();
-      _trackingCoverage = false; // WorkModeView wywołał stopTracking
+      _trackingCoverage = sessionActive;
     });
+  }
+
+  /// Zakończenie aktywnej sesji z bannera "Praca w toku" (mapa).
+  /// Tak samo jak "Zakończ pracę" w Trybie Pracy — zapisuje zadanie w
+  /// historii (z notatką), zamraża czas i kończy rejestrację pokrycia.
+  Future<void> _finishActiveSession() async {
+    final session = WorkSessionService.instance;
+    final info = FinishWorkInfo(
+      fieldName: _activeField?.name ?? '',
+      machineName: _activeMachine?.name ?? '',
+      taskTypeLabel: _activeTask?.taskType.label ?? 'Inne',
+      workingWidthM: _activeWorkingWidth,
+      overlapM: _overlapM,
+      swathAngleDeg: _swathAngleDeg,
+      workDuration: session.elapsed,
+      coveredHa: SectionControlBridge.instance.coveredAreaHa(),
+      speedKmh: _speedKmh,
+    );
+    final note = await showFinishWorkDialog(context, info);
+    if (note == null || !mounted) return;
+
+    try {
+      await HistoryDatabase.instance.save(HistoryRecord(
+        id: const Uuid().v4(),
+        fieldId: _activeField?.id ?? '',
+        fieldName: _activeField?.name ?? '',
+        machineName: _activeMachine?.name,
+        taskType: _activeTask?.taskType ?? TaskType.other,
+        workingWidthM: _activeWorkingWidth,
+        overlapM: _overlapM,
+        swathAngleDeg: _swathAngleDeg,
+        workDuration: session.elapsed,
+        coveredHa: SectionControlBridge.instance.coveredAreaHa(),
+        note: note,
+        completedAt: DateTime.now(),
+      ));
+    } catch (e) {
+      debugPrint('HistoryDatabase save error: $e');
+    }
+
+    session.finish();
+    MaterialMonitorService.instance.stop();
+    CoverageService.instance.stopTracking();
+    setState(() => _trackingCoverage = false);
   }
 
   // ── Nudge — korekta przesunięcia granicy ───────────────────────────────────────────
@@ -1520,6 +1613,20 @@ class _MapViewState extends State<MapView> {
               ),
             ),
 
+          // ── Praca w toku (banner w tle) ─────────────────────────────────────
+          if (_activeField != null &&
+              _activeField!.id == WorkSessionService.instance.fieldId)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 24,
+              child: _ActiveWorkBanner(
+                fieldName: _activeField!.name,
+                onResume: _launchWorkMode,
+                onFinish: _finishActiveSession,
+              ),
+            ),
+
           // ── Przyciski top-right ──────────────────────────────────────────────
           SafeArea(
             child: Align(
@@ -1674,9 +1781,129 @@ class _ActionTile extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Siatka Trybu Pracy — CustomPainter renderowany zamiast warstwy kafelkowej
+// Banner "Praca w toku" — praca działa w tle aż do jawnego zakończenia
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Dolny banner widoczny na mapie, dopóki sesja [WorkSessionService] nie jest
+/// zakończona. Pozwala wrócić do Trybu Pracy albo zakończyć pracę bez
+/// wchodzenia na ekran prowadzenia.
+class _ActiveWorkBanner extends StatelessWidget {
+  const _ActiveWorkBanner({
+    required this.fieldName,
+    required this.onResume,
+    required this.onFinish,
+  });
+
+  final String fieldName;
+  final VoidCallback onResume;
+  final VoidCallback onFinish;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<Duration>(
+      stream: WorkSessionService.instance.stream,
+      initialData: WorkSessionService.instance.elapsed,
+      builder: (context, snap) {
+        final service = WorkSessionService.instance;
+        if (!service.isActive) return const SizedBox.shrink();
+        final paused = service.paused;
+        final elapsed = snap.data ?? service.elapsed;
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: paused
+                ? const Color(0xEE3A2A00)
+                : const Color(0xEE0A3A1E),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: paused
+                  ? Colors.orangeAccent.withValues(alpha: 0.7)
+                  : Colors.greenAccent.withValues(alpha: 0.7),
+            ),
+            boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
+          ),
+          child: Row(
+            children: [
+              Icon(
+                paused
+                    ? Icons.pause_circle_filled_rounded
+                    : Icons.play_circle_fill_rounded,
+                color: paused ? Colors.orangeAccent : Colors.greenAccent,
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'PRACA W TOKU',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 9,
+                        letterSpacing: 1.0,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 1),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            fieldName,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          formatWorkDuration(elapsed),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            fontFeatures: [
+                              ui.FontFeature.tabularFigures()
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Wróć do pracy',
+                visualDensity: VisualDensity.compact,
+                color: Colors.greenAccent,
+                onPressed: onResume,
+                icon: const Icon(Icons.open_in_full_rounded, size: 20),
+              ),
+              IconButton(
+                tooltip: 'Zakończ pracę',
+                visualDensity: VisualDensity.compact,
+                color: Colors.redAccent,
+                onPressed: onFinish,
+                icon: const Icon(Icons.stop_circle_outlined, size: 20),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Siatka Trybu Pracy — CustomPainter renderowany zamiast warstwy kafelkowej
+// ═══════════════════════════════════════════════════════════════════════════════
 /// Ciemne tło z delikatną ortogonalną siatką pomocniczą (co ~80 px w ekranie).
 /// Nie wymaga danych geograficznych — jest czysto "ekranowa" i niezmiennicza.
 class _WorkModeGridLayer extends StatelessWidget {

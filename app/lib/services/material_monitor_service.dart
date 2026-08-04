@@ -90,10 +90,19 @@ class MaterialMonitorService {
   ///
   /// [currentAreaHa] is the covered area at the moment the task begins (so
   /// that tasks resumed mid-session start from the correct delta).
+  ///
+  /// Idempotent per task: re-entering Work Mode for the same [WorkTask] must
+  /// NOT reset the tank to full — the tank level and the area baseline are
+  /// preserved until the task changes (or a refill happens).  Otherwise the
+  /// "work runs in the background" flow would silently top the tank up on
+  /// every screen re-entry.
   void start(WorkTask task, {double currentAreaHa = 0.0}) {
+    final sameTask = _task?.id == task.id;
     _task = task;
-    _baseAreaHa = currentAreaHa;
-    _tankAtBase = task.initialTankVolume ?? 0.0;
+    if (!sameTask) {
+      _baseAreaHa = currentAreaHa;
+      _tankAtBase = task.initialTankVolume ?? 0.0;
+    }
     _volUnit = _stripPerHa(task.unit ?? 'l/ha');
     _recalculate(currentAreaHa);
   }
