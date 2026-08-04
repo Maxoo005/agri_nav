@@ -120,6 +120,12 @@ class _WorkModeViewState extends State<WorkModeView> {
   /// Subscription to the unified GPS stream.
   StreamSubscription<SimPosition>? _gpsSub;
 
+  /// Jakość fixa do kafelka GPS w [_StatsPanel] — aktualizowana niezależnie
+  /// od pozycji (patrz [GpsLocationService.fixStatusStream]), więc badge
+  /// pokazuje np. "Szukanie…" nawet gdy chwilowo brak nowych współrzędnych.
+  GpsFixStatus _fixStatus = GpsLocationService.instance.fixStatus;
+  StreamSubscription<GpsFixStatus>? _fixStatusSub;
+
   /// Skala widoku: pikseli na metr (zarządzana gestem pinch-to-zoom).
   double _pixelsPerMeter = 5.0;
 
@@ -164,6 +170,9 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     // Subskrypcja do zunifikowanego strumienia GPS (real lub symulator)
     _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
+    _fixStatusSub = GpsLocationService.instance.fixStatusStream.listen((status) {
+      if (mounted) setState(() => _fixStatus = status);
+    });
   }
 
   @override
@@ -171,6 +180,7 @@ class _WorkModeViewState extends State<WorkModeView> {
     _monitorSub?.cancel();
     MaterialMonitorService.instance.stop();
     _gpsSub?.cancel();
+    _fixStatusSub?.cancel();
     _deviationCtrl.close();
     super.dispose();
   }
@@ -475,6 +485,7 @@ class _WorkModeViewState extends State<WorkModeView> {
                 snapInfo: _snapInfo,
                 overlapFraction: _overlapFraction,
                 newAreaHaLastStrip: _newAreaHaLastStrip,
+                fixStatus: _fixStatus,
               ),
             ),
 
@@ -668,8 +679,9 @@ class _FieldCanvasPainter extends CustomPainter {
             ..color = _kCoverage
             ..style = PaintingStyle.stroke
             ..strokeWidth = sw
-            ..strokeCap = StrokeCap.round
-            ..strokeJoin = StrokeJoin.round);
+            ..strokeCap = StrokeCap.butt
+            ..strokeJoin = StrokeJoin.miter
+            ..strokeMiterLimit = 4.0);
     }
 
     // ── Ścieżki uprawowe ──────────────────────────────────────────────────────
@@ -1014,6 +1026,7 @@ class _StatsPanel extends StatelessWidget {
     required this.snapInfo,
     required this.overlapFraction,
     required this.newAreaHaLastStrip,
+    required this.fixStatus,
   });
 
   final double speedKmh;
@@ -1021,9 +1034,23 @@ class _StatsPanel extends StatelessWidget {
   final SnapInfo snapInfo;
   final double overlapFraction;
   final double newAreaHaLastStrip;
+  final GpsFixStatus fixStatus;
+
+  /// Etykieta + kolor kropki dla kafelka GPS — czerwony/szary = za mało
+  /// dokładne do prowadzenia, żółty = RTK Float, zielony = RTK Fixed.
+  static (String, Color) _fixVisual(GpsFixStatus status) => switch (status) {
+        GpsFixStatus.inactive => ('Nieaktywny', Colors.grey),
+        GpsFixStatus.searching => ('Szukanie…', Colors.grey),
+        GpsFixStatus.gps => ('GPS', Colors.redAccent),
+        GpsFixStatus.dgps => ('DGPS', Colors.orangeAccent),
+        GpsFixStatus.rtkFloat => ('RTK Float', Colors.amber),
+        GpsFixStatus.rtkFixed => ('RTK Fixed', Colors.greenAccent),
+      };
 
   @override
   Widget build(BuildContext context) {
+    final (fixValue, fixDot) = _fixVisual(fixStatus);
+
     return Container(
       width: 152,
       decoration: BoxDecoration(
@@ -1048,12 +1075,12 @@ class _StatsPanel extends StatelessWidget {
             value: '${coveredHa.toStringAsFixed(2)} ha',
           ),
           const _TileDivider(),
-          const _StatTile(
+          _StatTile(
             icon: Icons.gps_fixed_rounded,
             color: Colors.lightBlueAccent,
             label: 'GPS',
-            value: 'RTK Fix',
-            dot: Colors.greenAccent,
+            value: fixValue,
+            dot: fixDot,
           ),
           if (snapInfo.swathIndex >= 0) ...[
             const _TileDivider(),

@@ -14,6 +14,16 @@
          CPU przy życiu gdy ekran jest wygaszony podczas nawigacji GPS. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!-- ── Bluetooth Classic (SPP) — zewnętrzny odbiornik RTK ──────────────────── -->
+    <!-- Pakiet `bluetooth_classic` prosi zbiorczo o wszystkie uprawnienia BT
+         (initPermissions()), łącznie z lokalizacją — to wymóg samego pakietu,
+         nie naszej logiki (łączymy się tylko z już sparowanym urządzeniem). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+    <!-- legacy — wymagane na Android 11 (API 30) i niżej -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+
     <application
         android:label="agri_nav"
         android:name="${applicationName}"

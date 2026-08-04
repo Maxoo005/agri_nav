@@ -3,6 +3,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/field_model.dart';
 import '../services/field_service.dart';
+import '../utils/geo_utils.dart';
 import 'field_tasks_screen.dart';
 
 /// Ekran listy zapisanych pól.
@@ -27,6 +28,11 @@ class FieldManagerScreen extends StatelessWidget {
         foregroundColor: Colors.white,
         title: const Text('Zarządzanie polami'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.download_for_offline_outlined),
+            tooltip: 'Pobierz powierzchnie',
+            onPressed: () => _populateAreas(context),
+          ),
           IconButton(
             icon: const Icon(Icons.delete_sweep_outlined),
             tooltip: 'Usuń wszystkie pola',
@@ -57,20 +63,80 @@ class FieldManagerScreen extends StatelessWidget {
             );
           }
 
-          return ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: fields.length,
-            separatorBuilder: (_, __) =>
-                const Divider(height: 1, color: Colors.white10),
-            itemBuilder: (context, i) => _FieldTile(
-              field: fields[i],
-              onTap: () => Navigator.pop(context, fields[i]),
-              onTasks: () => FieldTasksScreen.open(context, fields[i]),
-              onDelete: () => _delete(context, fields[i]),
-              onEdit: () => _editName(context, fields[i]),
-            ),
+          return Column(
+            children: [
+              _buildSummary(fields),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: fields.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, color: Colors.white10),
+                  itemBuilder: (context, i) => _FieldTile(
+                    field: fields[i],
+                    onTap: () => Navigator.pop(context, fields[i]),
+                    onTasks: () => FieldTasksScreen.open(context, fields[i]),
+                    onDelete: () => _delete(context, fields[i]),
+                    onEdit: () => _editName(context, fields[i]),
+                  ),
+                ),
+              ),
+            ],
           );
         },
+      ),
+    );
+  }
+
+  /// Podsumowanie na górze listy pól — łączna powierzchnia wszystkich pól [ha].
+  Widget _buildSummary(List<FieldModel> fields) {
+    var totalHa = 0.0;
+    for (final f in fields) {
+      totalHa += f.areaHa ?? GeoUtils.polygonAreaHa(f.boundary);
+    }
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A2A1A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.green.shade900),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.landscape, color: Colors.greenAccent, size: 28),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'SUMA POWIERZCHNI',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 10,
+                    letterSpacing: 0.8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${totalHa.toStringAsFixed(2)} ha',
+                  style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            '${fields.length} pól',
+            style: const TextStyle(color: Colors.white54, fontSize: 13),
+          ),
+        ],
       ),
     );
   }
@@ -133,6 +199,18 @@ class FieldManagerScreen extends StatelessWidget {
     }
   }
 
+  Future<void> _populateAreas(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final count = await FieldService.instance.populateAreas();
+    messenger.showSnackBar(SnackBar(
+      content: Text(count > 0
+          ? 'Zapisano powierzchnię dla $count pól'
+          : 'Powierzchnie pól są już aktualne'),
+      backgroundColor: count > 0 ? Colors.green[700] : Colors.blueGrey[800],
+      duration: const Duration(seconds: 2),
+    ));
+  }
+
   Future<void> _confirmDeleteAll(BuildContext context) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -178,6 +256,7 @@ class _FieldTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final pts = field.boundaryLats.length;
     final hasAb = field.lineA != null && field.lineB != null;
+    final areaHa = field.areaHa ?? GeoUtils.polygonAreaHa(field.boundary);
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -194,6 +273,7 @@ class _FieldTile extends StatelessWidget {
           style: const TextStyle(
               color: Colors.white, fontWeight: FontWeight.w600)),
       subtitle: Text(
+        '${areaHa > 0 ? '${areaHa.toStringAsFixed(2)} ha  •  ' : ''}'
         '$pts wierzchołków'
         '${hasAb ? '  •  linia AB ✓' : ''}',
         style: const TextStyle(color: Colors.white54, fontSize: 12),

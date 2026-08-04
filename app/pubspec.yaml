@@ -23,6 +23,8 @@ dependencies:
   http: ^1.2.0
   # Real GPS — permissions + position stream
   geolocator: ^13.0.4
+  # Bluetooth Classic (SPP) — odbiór NMEA z zewnętrznego odbiornika RTK
+  bluetooth_classic: ^0.0.4
   # SQLite — zapis zadań roboczych do pliku .db
   sqflite: ^2.4.0
   # Łączenie ścieżek w SQLite (getDatabasesPath + plik .db)

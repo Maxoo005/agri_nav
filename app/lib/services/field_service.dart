@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../models/field_model.dart';
+import '../utils/geo_utils.dart';
 
 /// Nazwa boxa Hive.
 const _kFieldBox = 'fields';
@@ -39,4 +40,25 @@ class FieldService {
   Future<void> delete(String id) => _box.delete(id);
 
   Future<void> deleteAll() => _box.clear();
+
+  // ── Powierzchnia ──────────────────────────────────────────────────────────────
+
+  /// Oblicza powierzchnię [ha] z geometrii i zapisuje ją dla WSZYSTKICH pól.
+  ///
+  /// Uzupełnia brakujące dane w istniejących (poprawionych) polach.
+  /// Zwraca liczbę zaktualizowanych pól.
+  Future<int> populateAreas() async {
+    var updated = 0;
+    for (final field in getAll()) {
+      final area = GeoUtils.polygonAreaHa(field.boundary);
+      if (area <= 0) continue;
+      final current = field.areaHa;
+      if (current == null || (current - area).abs() > 0.0005) {
+        field.areaHa = area;
+        await save(field);
+        updated++;
+      }
+    }
+    return updated;
+  }
 }
