@@ -5,9 +5,12 @@ import 'package:geolocator/geolocator.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import '../ffi/gps_bridge.dart';
+import '../models/gnss_position.dart';
+import 'bluetooth_gnss_service.dart';
 
 const _kGpsBox = 'gps_settings';
 const _kUseInternalGpsKey = 'useInternalGps';
+const _kRtkDeviceAddressKey = 'rtkDeviceAddress';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // GpsLocationService — real GNSS via Geolocator
@@ -26,11 +29,25 @@ enum GpsFixStatus {
 
   /// DGPS-grade fix (accuracy < 5 m).
   dgps,
+
+  /// RTK Float — external RTK receiver only, decimeter-level accuracy
+  /// (correction stream not fully resolved yet).
+  rtkFloat,
+
+  /// RTK Fixed — external RTK receiver only, centimeter-level accuracy.
+  rtkFixed,
 }
 
-/// Singleton that wraps the real-device GNSS receiver via `geolocator`.
+/// Singleton — unified position source for the whole app.
 ///
-/// ### Filtering applied to real GPS positions:
+/// Wraps EITHER the phone's built-in GNSS (via `geolocator`) OR an external
+/// Bluetooth RTK receiver (via [BluetoothGnssService]), selected by
+/// [useInternalGps]. Both paths converge on the same [positionStream] /
+/// [fixStatus], so callers (map view, work mode, FFI via `NavBridge`) never
+/// need to know which source is active — see [_fromGnss] for the RTK→
+/// SimPosition mapping that makes this possible.
+///
+/// ### Filtering applied to real GPS positions (phone GPS only):
 /// 1. **EMA position smoothing** (α = [_kEmaAlpha]) — applied only to
 ///    *accurate* samples so that large blips don't contaminate the filter.
 /// 2. **Accuracy gate** — positions with `accuracy > kMaxAccuracyM` are emitted
@@ -39,6 +56,10 @@ enum GpsFixStatus {
 /// 3. **Heading speed gate** — hardware heading is only forwarded when
 ///    `speed ≥ kMinHeadingSpeedMs`.  At standstill the phone compass/GPS
 ///    bearing is noisy and would spin the field view.
+///
+/// RTK positions are NOT EMA-smoothed: an RTK Fixed sample is already
+/// accurate to 1-3 cm, so smoothing would only add lag that hurts precision
+/// guidance instead of helping it.
 ///
 /// Usage:
 /// ```dart
@@ -73,33 +94,75 @@ class GpsLocationService {
   bool get useInternalGps => _useInternalGps;
   set useInternalGps(bool value) {
     if (_useInternalGps == value) return;
+    final wasActive = _activeListeners > 0;
+    if (wasActive) {
+      _useInternalGps ? _stopRealGps() : _stopExternalRtk();
+    }
+
     _useInternalGps = value;
     Hive.box(_kGpsBox).put(_kUseInternalGpsKey, value);
+
+    if (wasActive) {
+      _updateFixStatus(GpsFixStatus.searching);
+      if (value) {
+        // Uwaga: przełączenie na GPS telefonu w locie nie prosi ponownie o
+        // uprawnienia (nie mamy tu BuildContext) — zakładamy, że zostały już
+        // przyznane przy pierwszym starcie (domyślny tryb to internal GPS).
+        // Jeśli użytkownik nigdy nie uruchomił GPS telefonu i cofnął
+        // uprawnienia, geolocator po prostu zwróci błąd przez onError.
+        _startRealGps();
+      } else {
+        _startExternalRtk();
+      }
+    }
   }
 
   bool _useInternalGps = true;
 
+  /// Adres MAC ostatnio wybranego odbiornika RTK (zapamiętany w Hive).
+  /// `null` gdy użytkownik jeszcze nigdy nie wybrał urządzenia.
+  String? get rtkDeviceAddress =>
+      Hive.box(_kGpsBox).get(_kRtkDeviceAddressKey) as String?;
+
+  /// Zapisuje wybrane urządzenie RTK i — jeśli tryb zewnętrzny jest właśnie
+  /// aktywny — od razu się z nim łączy (przełącza z poprzedniego, jeśli był).
+  Future<void> setRtkDevice(String address) async {
+    await Hive.box(_kGpsBox).put(_kRtkDeviceAddressKey, address);
+    if (!_useInternalGps && _activeListeners > 0) {
+      _updateFixStatus(GpsFixStatus.searching);
+      await BluetoothGnssService.instance.connect(address);
+    }
+  }
+
   GpsFixStatus get fixStatus => _fixStatus;
   GpsFixStatus _fixStatus = GpsFixStatus.inactive;
+
+  final _fixStatusController = StreamController<GpsFixStatus>.broadcast();
+
+  /// Emituje przy KAŻDEJ zmianie [fixStatus] — w odróżnieniu od
+  /// [positionStream] robi to również gdy zewnętrzny odbiornik jest
+  /// połączony, ale jeszcze nie ma fixa (wtedy nie ma współrzędnych do
+  /// wyemitowania jako [SimPosition]). Widgety pokazujące sam wskaźnik
+  /// jakości (bez pozycji na mapie) powinny słuchać tego strumienia.
+  Stream<GpsFixStatus> get fixStatusStream => _fixStatusController.stream;
+
+  void _updateFixStatus(GpsFixStatus status) {
+    _fixStatus = status;
+    if (!_fixStatusController.isClosed) _fixStatusController.add(status);
+  }
 
   // ── Stream infrastructure ────────────────────────────────────────────────────
 
   final _controller = StreamController<SimPosition>.broadcast();
 
-  Stream<SimPosition> get positionStream {
-    return _controller.stream.transform(
-      StreamTransformer.fromHandlers(
-        handleData: (pos, sink) {
-          _fixStatus = _computeFixStatus(pos.accuracy, pos.isAccurate);
-          sink.add(pos);
-        },
-        handleDone: (sink) => sink.close(),
-      ),
-    );
-  }
+  Stream<SimPosition> get positionStream => _controller.stream;
 
   int _activeListeners = 0;
   StreamSubscription<Position>? _geolocatorSub;
+
+  StreamSubscription<GnssPosition>? _gnssPosSub;
+  StreamSubscription<GnssStatus>? _gnssQualitySub;
+  StreamSubscription<BtLinkState>? _gnssLinkSub;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -110,15 +173,17 @@ class GpsLocationService {
   Future<void> start(BuildContext context) async {
     _activeListeners++;
     if (_activeListeners == 1) {
-      _fixStatus = GpsFixStatus.searching;
+      _updateFixStatus(GpsFixStatus.searching);
 
       if (_useInternalGps) {
         final granted = await requestPermissions(context);
         if (granted) {
           _startRealGps();
         } else {
-          _fixStatus = GpsFixStatus.inactive;
+          _updateFixStatus(GpsFixStatus.inactive);
         }
+      } else {
+        _startExternalRtk();
       }
     }
   }
@@ -129,7 +194,8 @@ class GpsLocationService {
     _activeListeners--;
     if (_activeListeners == 0) {
       _stopRealGps();
-      _fixStatus = GpsFixStatus.inactive;
+      _stopExternalRtk();
+      _updateFixStatus(GpsFixStatus.inactive);
     }
   }
 
@@ -172,7 +238,7 @@ class GpsLocationService {
       _onGeolocatorPosition,
       onError: (Object e) {
         debugPrint('[GpsLocationService] Geolocator error: $e');
-        _fixStatus = GpsFixStatus.searching;
+        _updateFixStatus(GpsFixStatus.searching);
       },
     );
   }
@@ -220,8 +286,102 @@ class GpsLocationService {
       isAccurate: isAccurate,
     );
 
+    _updateFixStatus(_computeFixStatus(pos.accuracy, isAccurate));
     if (!_controller.isClosed) _controller.add(simPos);
   }
+
+  // ── External RTK (Bluetooth) ────────────────────────────────────────────────
+
+  /// Uruchamia odbiór z [BluetoothGnssService] i podpina go pod ten sam
+  /// [positionStream]/[fixStatus], co GPS telefonu — reszta aplikacji
+  /// (map_view, work_mode_view, FFI przez NavBridge) nie widzi różnicy.
+  void _startExternalRtk() {
+    final address = rtkDeviceAddress;
+    if (address == null) {
+      // Użytkownik nie wybrał jeszcze urządzenia — ekran ustawień GPS musi
+      // pokazać wybór urządzenia; nie ma tu nic do połączenia.
+      _updateFixStatus(GpsFixStatus.inactive);
+      return;
+    }
+
+    _gnssPosSub =
+        BluetoothGnssService.instance.positionStream.listen(_onGnssPosition);
+
+    // statusStream (nie positionStream!) napędza fixStatus, bo emituje też
+    // przy braku fixa (quality=0), kiedy nie ma jeszcze współrzędnych do
+    // wyemitowania jako SimPosition — patrz dokumentacja tego streamu.
+    _gnssQualitySub = BluetoothGnssService.instance.statusStream.listen(
+      (status) => _updateFixStatus(_mapGnssFixQuality(status.fixQuality)),
+    );
+
+    // Gdy łącze BT padnie/ponawia próbę, ostatni znany fixStatus (np.
+    // "rtkFixed") byłby mylący — cofamy do "searching", dopóki nie
+    // przyjdzie nowe GGA po odzyskaniu połączenia.
+    _gnssLinkSub = BluetoothGnssService.instance.linkStateStream.listen(
+      (state) {
+        if (state != BtLinkState.connected) {
+          _updateFixStatus(GpsFixStatus.searching);
+        }
+      },
+    );
+
+    BluetoothGnssService.instance.connect(address);
+  }
+
+  void _stopExternalRtk() {
+    _gnssPosSub?.cancel();
+    _gnssPosSub = null;
+    _gnssQualitySub?.cancel();
+    _gnssQualitySub = null;
+    _gnssLinkSub?.cancel();
+    _gnssLinkSub = null;
+    BluetoothGnssService.instance.disconnect();
+  }
+
+  void _onGnssPosition(GnssPosition pos) {
+    if (!_controller.isClosed) _controller.add(_fromGnss(pos));
+  }
+
+  /// Mapuje [GnssPosition] (parsowana NMEA) na [SimPosition] — DOKŁADNIE ten
+  /// sam typ, który emituje ścieżka GPS telefonu. To jest cały "klej"
+  /// pozwalający reszcie aplikacji (włącznie z FFI/NavBridge) działać bez
+  /// zmian niezależnie od źródła pozycji.
+  ///
+  /// NMEA nie podaje dokładności w metrach wprost — [accuracy] jest więc
+  /// szacowana z [GnssFixQuality] (typowe wartości dla ZED-F9P). Dzięki temu
+  /// istniejący próg [kMaxAccuracyM] i gate `isAccurate` w map_view/
+  /// work_mode_view działają bez żadnych zmian również dla RTK.
+  SimPosition _fromGnss(GnssPosition pos) {
+    final isAccurate = pos.fixQuality == GnssFixQuality.rtkFixed ||
+        pos.fixQuality == GnssFixQuality.rtkFloat ||
+        pos.fixQuality == GnssFixQuality.dgps;
+
+    final double accuracy = switch (pos.fixQuality) {
+      GnssFixQuality.rtkFixed => 0.02,
+      GnssFixQuality.rtkFloat => 0.4,
+      GnssFixQuality.dgps => 2.0,
+      GnssFixQuality.gps => 8.0,
+      GnssFixQuality.noFix => 9999.0,
+    };
+
+    return SimPosition(
+      latitude: pos.latitude,
+      longitude: pos.longitude,
+      altitude: pos.altitude,
+      accuracy: accuracy,
+      heading: pos.heading,
+      speed: pos.speed,
+      isAccurate: isAccurate,
+    );
+  }
+
+  GpsFixStatus _mapGnssFixQuality(GnssFixQuality quality) => switch (quality) {
+        GnssFixQuality.noFix => GpsFixStatus.searching,
+        GnssFixQuality.gps => GpsFixStatus.gps,
+        GnssFixQuality.dgps => GpsFixStatus.dgps,
+        GnssFixQuality.rtkFloat => GpsFixStatus.rtkFloat,
+        GnssFixQuality.rtkFixed => GpsFixStatus.rtkFixed,
+      };
 
   // ── Permissions ──────────────────────────────────────────────────────────────
 

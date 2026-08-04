@@ -20,6 +20,35 @@ abstract final class GeoUtils {
     return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
   }
 
+  /// Computes the area of a closed polygon [pts] in hectares (1 ha = 10 000 m²).
+  ///
+  /// Uses a local equirectangular projection centred at the polygon's mean
+  /// latitude, then the shoelace formula. Accurate for field-scale polygons.
+  /// Returns 0.0 when there are fewer than 3 vertices.
+  static double polygonAreaHa(List<LatLng> pts) {
+    if (pts.length < 3) return 0.0;
+    var latSum = 0.0;
+    for (final p in pts) {
+      latSum += p.latitude;
+    }
+    final lat0 = latSum / pts.length * math.pi / 180.0;
+    const earthRadiusM = 6371008.8; // średni promień Ziemi
+    const k = earthRadiusM * math.pi / 180.0; // metry na stopień
+    final cosLat = math.cos(lat0);
+
+    var sum2 = 0.0;
+    for (int i = 0; i < pts.length; i++) {
+      final a = pts[i];
+      final b = pts[(i + 1) % pts.length];
+      final xA = a.longitude * k * cosLat;
+      final yA = a.latitude * k;
+      final xB = b.longitude * k * cosLat;
+      final yB = b.latitude * k;
+      sum2 += xA * yB - xB * yA;
+    }
+    return sum2.abs() / 20000.0;
+  }
+
   /// Finds the swath bearing [0, 180) that minimises the number of passes.
   ///
   /// Strategy: sweep every 1° in [0°, 179°] and for each candidate angle

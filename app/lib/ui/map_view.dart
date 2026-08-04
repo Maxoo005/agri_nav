@@ -343,6 +343,7 @@ class _MapViewState extends State<MapView> {
       lineALon: _pointA?.longitude,
       lineBLat: _pointB?.latitude,
       lineBLon: _pointB?.longitude,
+      areaHa: GeoUtils.polygonAreaHa(_fieldBoundary),
     );
 
     await FieldService.instance.save(field);

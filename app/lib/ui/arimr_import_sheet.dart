@@ -9,6 +9,7 @@ import '../models/arimr_parcel.dart';
 import '../models/field_model.dart';
 import '../services/arimr_service.dart';
 import '../services/field_service.dart';
+import '../utils/geo_utils.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Enum kroków importu
@@ -275,6 +276,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       boundaryLons: boundary.map((e) => e.longitude).toList(),
       source: FieldSource.arimr,
       arimrParcelIds: selectedParcels.map((p) => p.objectId).toList(),
+      areaHa: GeoUtils.polygonAreaHa(boundary),
     );
 
     await FieldService.instance.save(field);

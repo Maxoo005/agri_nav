@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 import '../models/field_model.dart';
 import 'field_service.dart';
 import 'wkt_parser.dart';
+import '../utils/geo_utils.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wyjątki
@@ -328,6 +329,7 @@ class GeoportalService {
       terytCode: terytCode?.isNotEmpty == true ? terytCode : null,
       lastSyncDate: DateTime.now(),
       source: FieldSource.uldk,
+      areaHa: GeoUtils.polygonAreaHa(boundary),
     );
 
     dev.log('ULDK: zapisano nową działkę "${field.name}"',

@@ -58,6 +58,10 @@ class FieldModel {
   double offsetLat;
   double offsetLon;
 
+  /// Powierzchnia pola [ha] z rejestru ARiMR (dane LPIS), przeliczona
+  /// z geometrii granicy. Null gdy jeszcze nie obliczono.
+  double? areaHa;
+
   FieldModel({
     required this.id,
     required this.name,
@@ -76,6 +80,7 @@ class FieldModel {
     this.source = FieldSource.manual,
     this.offsetLat = 0.0,
     this.offsetLon = 0.0,
+    this.areaHa,
   })  : sourceParcelIds = sourceParcelIds ?? [],
         arimrParcelIds = arimrParcelIds ?? [];
 
@@ -122,6 +127,7 @@ class FieldModel {
         'source': source.name,
         'offsetLat': offsetLat,
         'offsetLon': offsetLon,
+        if (areaHa != null) 'areaHa': areaHa,
       };
 
   factory FieldModel.fromJson(Map<dynamic, dynamic> map) => FieldModel(
@@ -147,5 +153,6 @@ class FieldModel {
         ),
         offsetLat: (map['offsetLat'] as num?)?.toDouble() ?? 0.0,
         offsetLon: (map['offsetLon'] as num?)?.toDouble() ?? 0.0,
+        areaHa: (map['areaHa'] as num?)?.toDouble(),
       );
 }
