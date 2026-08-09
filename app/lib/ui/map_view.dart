@@ -4,7 +4,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:uuid/uuid.dart';
 
@@ -15,8 +14,6 @@ import '../models/history_record.dart';
 import '../models/machine_model.dart';
 import '../models/task_plan.dart';
 import '../models/work_task.dart';
-import '../offline/download_region_sheet.dart';
-import '../offline/offline_map_manager.dart';
 import '../services/coverage_service.dart';
 import '../services/field_service.dart';
 import '../services/gps_location_service.dart';
@@ -24,10 +21,10 @@ import '../services/history_database.dart';
 import '../services/material_monitor_service.dart';
 import '../services/work_session_service.dart';
 import '../services/work_task_service.dart';
-import '../models/arimr_parcel.dart';
-import '../services/arimr_service.dart';
+import '../models/lpis_parcel.dart';
+import '../services/lpis_service.dart';
 import '../services/geoportal_service.dart';
-import 'arimr_import_sheet.dart';
+import 'lpis_import_sheet.dart';
 import 'cadastral_widgets.dart';
 
 import 'finish_work_dialog.dart';
@@ -38,6 +35,99 @@ import '../utils/geo_utils.dart';
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapView — główny ekran nawigacji rolniczej
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// URL bazowy serwisu WMS — Ortofotomapa HighResolution GUGiK (Polska).
+///
+/// GetCapabilities:
+///   $kGeoportalWmsUrl?SERVICE=WMS&REQUEST=GetCapabilities
+/// Pokrycie: obszar Polski (≈ lat 49–55, lon 14–24.5).
+/// GetCapabilities deklaruje tylko EPSG:4326/EPSG:2180, ale serwer w
+/// praktyce poprawnie obsługuje też EPSG:3857 (zweryfikowane realnym
+/// zapytaniem GetMap — patrz historia zmian). Używamy EPSG:3857, bo to
+/// natywna siatka kafelków flutter_map (MapOptions.crs domyślnie
+/// Epsg3857()) — patrz przestroga przy [Epsg4326] w [_WmsGeographicCrs].
+///
+/// WAŻNE: bazowy adres musi kończyć się '?' — WMSTileLayerOptions dokleja
+/// własne parametry ('&service=WMS&request=GetMap...') bezpośrednio po nim.
+const String kGeoportalWmsUrl =
+    'https://mapy.geoportal.gov.pl/wss/service/PZGIK/ORTO/WMS/HighResolution?';
+
+/// URL bazowy serwisu WMS — LPIS ARiMR (referencyjne działki rolne, GUGiK).
+///
+/// GetCapabilities: $kArimrLpisWmsUrl?SERVICE=WMS&REQUEST=GetCapabilities
+/// Wyłącznie warstwa wizualna — WFS wyłączony, GetFeatureInfo nie zwraca
+/// geometrii, więc NIE nadaje się do importu granic (tylko podgląd/nakładka).
+/// Warstwy podzielone wg województwa (nazwa = kod TERYT województwa);
+/// '30' = wielkopolskie (zweryfikowane przez GetCapabilities).
+/// Serwer odrzuca EPSG:3857 (ServiceException code="InvalidSRS") —
+/// akceptuje wyłącznie EPSG:4326/2176-2180 → patrz [_WmsGeographicCrs].
+/// MaxScaleDenominator ograniczone przez serwer — warstwa renderuje się
+/// (nie jest pusta) dopiero po przybliżeniu do poziomu pojedynczego pola.
+const String kArimrLpisWmsUrl = 'https://mapy.geoportal.gov.pl/wss/ext/arimr_lpis?';
+
+/// Nazwa warstwy LPIS ARiMR dla województwa wielkopolskiego.
+const String kArimrLpisLayerWielkopolska = '30';
+
+/// CRS pomocnicza dla warstw WMS wymagających SRS=EPSG:4326 (np. LPIS ARiMR),
+/// gdy siatka kafelków mapy pozostaje standardową Web Mercator — czyli
+/// zawsze w flutter_map, bo [MapOptions.crs] domyślnie to [Epsg3857] i
+/// niczego innego flutter_map nie obsługuje dla właściwego przesuwania/
+/// zoomowania mapy.
+///
+/// PUŁAPKA: wbudowana klasa [Epsg4326] zakłada LINIOWĄ siatkę stopni przy
+/// odwracaniu współrzędnych piksela kafelka na LatLng
+/// ([WMSTileLayerOptions.getUrl] wywołuje `crs.pointToLatLng` na pikselach
+/// policzonych w NIELINIOWEJ przestrzeni Merkatora kamery mapy) — daje to
+/// przesunięcie rzędu tysięcy km (zweryfikowane: kafelek z okolic Czermina
+/// przy zoom 17 przeliczał się na bbox w okolicach Florydy, USA), a serwer
+/// LPIS w odpowiedzi na bbox poza zasięgiem danych zwraca puste białe tło
+/// (HTTP 200, prawidłowy PNG, brak treści).
+///
+/// Ta klasa poprawnie odwraca projekcję Merkatora (deleguje do [Epsg3857]
+/// dla przeliczeń piksel↔LatLng — to ta sama siatka, którą realnie
+/// generuje kamera mapy), ale zwraca bbox w stopniach (tożsamość lon/lat,
+/// jak [Epsg4326]) — dokładnie to, czego oczekuje serwer WMS z SRS=EPSG:4326.
+class _WmsGeographicCrs extends Crs {
+  const _WmsGeographicCrs()
+      : super(code: 'EPSG:4326', infinite: false, wrapLng: const (-180, 180));
+
+  static const _tileGrid = Epsg3857();
+  static const _degrees = Epsg4326();
+
+  @override
+  Projection get projection => _degrees.projection;
+
+  @override
+  (double, double) transform(double x, double y, double scale) =>
+      _tileGrid.transform(x, y, scale);
+
+  @override
+  (double, double) untransform(double x, double y, double scale) =>
+      _tileGrid.untransform(x, y, scale);
+
+  @override
+  (double, double) latLngToXY(LatLng latlng, double scale) =>
+      _tileGrid.latLngToXY(latlng, scale);
+
+  @override
+  LatLng pointToLatLng(math.Point point, double zoom) =>
+      _tileGrid.pointToLatLng(point, zoom);
+
+  @override
+  getProjectedBounds(double zoom) => _tileGrid.getProjectedBounds(zoom);
+}
+
+/// Tryby podkładu mapowego dostępne w MapView.
+enum MapLayerMode {
+  /// Tryb konfiguracji — warstwy rastrowe (ortofoto / LPIS ARiMR) włączane
+  /// niezależnie przełącznikami w panelu "Warstwy mapy". Umożliwia
+  /// weryfikację granic działek względem rzeczywistości.
+  geoportal,
+
+  /// Tryb pracy — brak kafelków mapowych, ciemne tło #1A1A1A + siatka pomocnicza.
+  /// Oszczędza transfer danych i zasoby GPU podczas rzeczywistej pracy w polu.
+  work,
+}
 
 class MapView extends StatefulWidget {
   final FieldModel? initialField;
@@ -91,9 +181,17 @@ class _MapViewState extends State<MapView> {
   /// Czy użytkownik aktywnie rysuje granicę palcem.
   bool _drawingMode = false;
 
-  // ── Warstwa LPIS ARiMR ──────────────────────────────────────────────────────
-  bool _arimrLayerVisible = false;
-  List<ArimrParcel> _arimrParcels = [];
+  // ── Warstwa LPIS (dane z ULDK GUGiK, wektor — do importu granic) ─────────────
+  bool _lpisLayerVisible = false;
+  List<LpisParcel> _lpisParcels = [];
+
+  // ── Warstwy rastrowe WMS (niezależnie przełączalne, patrz "Warstwy mapy") ───
+  /// Ortofotomapa GUGiK jako tło.
+  bool _orthophotoVisible = true;
+
+  /// LPIS ARiMR (referencyjny obrys działek rolnych) jako nakładka.
+  /// Wyłącznie wizualna — serwer nie eksportuje wektora (WFS wyłączony).
+  bool _arimrLpisVisible = false;
 
   // ── Korekta przesunięcia (Nudge) ─────────────────────────────────────────────
   bool _nudgePanelVisible = false;
@@ -105,6 +203,14 @@ class _MapViewState extends State<MapView> {
 
   // ── Tryb podkładu mapowego ────────────────────────────────────────────────────
   MapLayerMode _mapMode = MapLayerMode.geoportal;
+
+  // ── Odporność warstwy WMS na zimny start aplikacji ──────────────────────────
+  /// Zwiększany, by wymusić przebudowę [TileLayer] (nowy klucz → nowy cache
+  /// kafelków). flutter_map domyślnie NIE ponawia kafelków, które zawiodły
+  /// (evictErrorTileStrategy.none) — jeśli sieć/DNS jeszcze się "rozgrzewa"
+  /// tuż po starcie programu, ortofotomapa zostaje pusta na stałe aż do
+  /// ręcznej interakcji. Jedno opóźnione odświeżenie naprawia ten przypadek.
+  int _tileReloadKey = 0;
 
   // ── Zapisane pola (Hive) ────────────────────────────────────────────
   List<FieldModel> _savedFields = [];
@@ -144,6 +250,13 @@ class _MapViewState extends State<MapView> {
     });
 
     _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
+
+    // Ponów kafelki WMS raz, gdy sieć zdąży się "rozgrzać" po zimnym starcie
+    // — bez tego kafelki, które zawiodły w pierwszej chwili po uruchomieniu
+    // programu, zostają puste do końca życia tego ekranu (patrz _tileReloadKey).
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _tileReloadKey++);
+    });
 
     // Załaduj zapisane pola z Hive
     _savedFields = FieldService.instance.getAll();
@@ -930,33 +1043,33 @@ class _MapViewState extends State<MapView> {
 
   // ── Akcje panelu ──────────────────────────────────────────────────────────
 
-  void _toggleArimrLayer() {
-    final show = !_arimrLayerVisible;
-    if (show && _arimrParcels.isEmpty) {
-      final cached = ArimrService.instance.getCachedParcels();
+  void _toggleLpisLayer() {
+    final show = !_lpisLayerVisible;
+    if (show && _lpisParcels.isEmpty) {
+      final cached = LpisService.instance.getCachedParcels();
       if (cached.isNotEmpty) {
         setState(() {
-          _arimrParcels = cached;
-          _arimrLayerVisible = true;
+          _lpisParcels = cached;
+          _lpisLayerVisible = true;
         });
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-              'Brak danych LPIS — użyj przycisku importu ARiMR ▼'),
+              'Brak danych LPIS — użyj przycisku importu działek ▼'),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 3),
         ),
       );
       return;
     }
-    setState(() => _arimrLayerVisible = show);
+    setState(() => _lpisLayerVisible = show);
   }
 
-  Future<void> _importArimr() async {
+  Future<void> _importLpis() async {
     final bounds = _mapController.camera.visibleBounds;
-    final field = await ArimrImportSheet.show(
+    final field = await LpisImportSheet.show(
       context,
       mapBounds: bounds,
     );
@@ -964,17 +1077,10 @@ class _MapViewState extends State<MapView> {
       _loadField(field);
       setState(() {
         _savedFields = FieldService.instance.getAll();
-        _arimrParcels = ArimrService.instance.getCachedParcels();
-        _arimrLayerVisible = true;
+        _lpisParcels = LpisService.instance.getCachedParcels();
+        _lpisLayerVisible = true;
       });
     }
-  }
-
-  void _downloadOffline() {
-    DownloadRegionSheet.show(
-      context,
-      center: _mapController.camera.center,
-    );
   }
 
   void _showActionsPanel() {
@@ -1019,13 +1125,30 @@ class _MapViewState extends State<MapView> {
             spacing: 8, runSpacing: 8,
             children: [
               _ActionTile(
+                icon: Icons.satellite_alt,
+                label: 'Ortofotomapa',
+                tooltip: 'Pokaż/ukryj zdjęcie lotnicze GUGiK (tło)',
+                isActive: _orthophotoVisible,
+                onPressed: () => setState(
+                    () => _orthophotoVisible = !_orthophotoVisible),
+              ),
+              _ActionTile(
+                icon: Icons.layers,
+                label: 'LPIS ARiMR',
+                tooltip:
+                    'Pokaż/ukryj referencyjny obrys działek ARiMR (nakładka, tylko podgląd)',
+                isActive: _arimrLpisVisible,
+                onPressed: () => setState(
+                    () => _arimrLpisVisible = !_arimrLpisVisible),
+              ),
+              _ActionTile(
                 icon: Icons.grass,
                 label: 'Działki LPIS',
-                tooltip: 'Pokaż/ukryj działki LPIS (ARiMR)',
-                isActive: _arimrLayerVisible,
-                onPressed: _toggleArimrLayer,
+                tooltip: 'Pokaż/ukryj działki LPIS (dane z ULDK GUGiK)',
+                isActive: _lpisLayerVisible,
+                onPressed: _toggleLpisLayer,
               ),
-              if (_arimrLayerVisible)
+              if (_lpisLayerVisible)
                 _ActionTile(
                   icon: Icons.tune,
                   label: 'Manual Offset',
@@ -1117,10 +1240,10 @@ class _MapViewState extends State<MapView> {
             children: [
               _ActionTile(
                 icon: Icons.agriculture,
-                label: 'Import ARiMR',
-                tooltip: 'Importuj działki LPIS z ARiMR',
+                label: 'Import działek',
+                tooltip: 'Importuj działki LPIS z ULDK GUGiK',
                 isActive: false,
-                onPressed: _importArimr,
+                onPressed: _importLpis,
               ),
               _ActionTile(
                 icon: Icons.assignment_add,
@@ -1130,13 +1253,6 @@ class _MapViewState extends State<MapView> {
                     : 'Nowe zadanie',
                 isActive: _activeTask != null,
                 onPressed: _showNewTaskDialog,
-              ),
-              _ActionTile(
-                icon: Icons.download_for_offline_outlined,
-                label: 'Mapy offline',
-                tooltip: 'Pobierz mapy offline',
-                isActive: false,
-                onPressed: _downloadOffline,
               ),
             ],
           ),
@@ -1347,47 +1463,78 @@ class _MapViewState extends State<MapView> {
     }
   }
 
-  // ── Warstwa podkładowa ────────────────────────────────────────────────────────
+  // ── Warstwy podkładowe / rastrowe WMS ──────────────────────────────────────────
 
-  /// Buduje warstwę podkładową na podstawie [_mapMode].
+  /// Buduje warstwy rastrowe na podstawie [_mapMode] oraz niezależnych
+  /// przełączników [_orthophotoVisible] / [_arimrLpisVisible] (panel
+  /// "Warstwy mapy") — obie mogą być włączone naraz, ortofoto jako tło,
+  /// LPIS ARiMR jako półprzezroczysta nakładka nad nim.
   ///
   /// Optymalizacje płynności:
   ///   • [keepBuffer] = 4   — buforuje kafelki otaczające viewport;
   ///                          eliminuje migotanie przy szybkim pan/zoom.
   ///   • [maxNativeZoom]     — zatrzymuje fetch powyżej natywnej rozdzielczości;
   ///                          przy wyższych zoomach kafelki są skalowane lokalnie.
-  ///   • WMS [Epsg4326]      — żądania w EPSG:4326 (lon/lat); flutter_map
-  ///                          przelicza bbox każdego kafelka z Mercatora na
-  ///                          WGS-84 i przekazuje do serwera WMS jako SRS.
-  Widget _buildBaseLayer() {
-    switch (_mapMode) {
-      case MapLayerMode.geoportal:
-        // WMS Geoportal GUGiK — Ortofotomapa HighResolution (Tryb Konfiguracji).
-        // Warstwa 'Raster' = zdjęcia lotnicze do weryfikacji granic ARiMR.
-        // WMS 1.1.1 + SRS=EPSG:4326: bbox w kolejności lon_min,lat_min,lon_max,lat_max
-        return TileLayer(
-          wmsOptions: WMSTileLayerOptions(
-            baseUrl: kGeoportalWmsUrl,
-            layers: const ['Raster'],
-            format: 'image/png',
-            transparent: false,
-            version: '1.1.1',
-            crs: const Epsg4326(),
-          ),
-          userAgentPackageName: 'com.example.agri_nav',
-          keepBuffer: 4,
-          maxNativeZoom: 18,
-          tileProvider: const FMTCStore(kGeoportalTileStore).getTileProvider(
-            settings: FMTCTileProviderSettings(
-              behavior: CacheBehavior.cacheFirst,
-            ),
-          ),
-        );
-
-      case MapLayerMode.work:
-        // Tryb Pracy — brak kafelków, ciemne tło + subtelna siatka 10 m.
-        return const _WorkModeGridLayer();
+  List<Widget> _buildRasterLayers() {
+    if (_mapMode == MapLayerMode.work) {
+      // Tryb Pracy — brak kafelków, ciemne tło + subtelna siatka 10 m.
+      return const [_WorkModeGridLayer()];
     }
+    return [
+      if (_orthophotoVisible) _buildOrthophotoLayer(),
+      if (_arimrLpisVisible) _buildArimrLpisLayer(),
+    ];
+  }
+
+  /// WMS Geoportal GUGiK — Ortofotomapa HighResolution, jako tło.
+  /// SRS=EPSG:3857 — natywna siatka kafelków flutter_map (patrz [kGeoportalWmsUrl]),
+  /// więc bbox każdego kafelka wychodzi geograficznie poprawny bez żadnych
+  /// przeliczeń pośrednich. Urządzenie ma stały dostęp do internetu —
+  /// kafelki streamowane na żywo (bez cache offline).
+  Widget _buildOrthophotoLayer() {
+    return TileLayer(
+      // Klucz zmienia się po opóźnionym odświeżeniu (patrz initState) —
+      // wymusza nowy TileImageManager i ponowienie kafelków, które
+      // zawiodły przy zimnym starcie programu.
+      key: ValueKey('geoportal-wms-$_tileReloadKey'),
+      wmsOptions: WMSTileLayerOptions(
+        baseUrl: kGeoportalWmsUrl,
+        layers: const ['Raster'],
+        format: 'image/png',
+        transparent: false,
+        version: '1.1.1',
+        crs: const Epsg3857(),
+      ),
+      userAgentPackageName: 'com.example.agri_nav',
+      keepBuffer: 4,
+      maxNativeZoom: 18,
+      // Kafelki, które zawiodły, są ponawiane gdy wypadną poza widoczny
+      // obszar (pan/zoom) zamiast zostać puste na stałe (domyślnie
+      // flutter_map nigdy ich nie ponawia — EvictErrorTileStrategy.none).
+      evictErrorTileStrategy: EvictErrorTileStrategy.notVisibleRespectMargin,
+    );
+  }
+
+  /// WMS LPIS ARiMR — referencyjny obrys działek rolnych, jako nakładka
+  /// (transparent=true) nad tłem. Wyłącznie warstwa wizualna — WFS
+  /// wyłączony na serwerze, brak eksportu wektora (patrz [kArimrLpisWmsUrl]).
+  /// SRS=EPSG:4326 wymagany przez serwer → [_WmsGeographicCrs] (patrz
+  /// dokumentacja tej klasy — wbudowany [Epsg4326] tu nie zadziała).
+  Widget _buildArimrLpisLayer() {
+    return TileLayer(
+      key: ValueKey('arimr-lpis-wms-$_tileReloadKey'),
+      wmsOptions: WMSTileLayerOptions(
+        baseUrl: kArimrLpisWmsUrl,
+        layers: const [kArimrLpisLayerWielkopolska],
+        format: 'image/png',
+        transparent: true,
+        version: '1.1.1',
+        crs: const _WmsGeographicCrs(),
+      ),
+      userAgentPackageName: 'com.example.agri_nav',
+      keepBuffer: 4,
+      evictErrorTileStrategy: EvictErrorTileStrategy.notVisibleRespectMargin,
+    );
   }
 
   // ── Azymuty ──────────────────────────────────────────────────────────────────
@@ -1416,18 +1563,18 @@ class _MapViewState extends State<MapView> {
               },
             ),
             children: [
-              // ── Warstwa podkładowa (tryb wybierany przez FAB) ──────────────
-              _buildBaseLayer(),
+              // ── Warstwy rastrowe (tło + nakładki, patrz "Warstwy mapy") ────
+              ..._buildRasterLayers(),
 
-              // ── Warstwa LPIS ARiMR (zielone półprzezroczyste) ─────────────
+              // ── Warstwa LPIS (zielone półprzezroczyste) ─────────────────────
               // Wyświetlaj parcele które NIE są aktywnym polem (brak duplikatu warstw)
-              if (_arimrLayerVisible && _arimrParcels.isNotEmpty)
+              if (_lpisLayerVisible && _lpisParcels.isNotEmpty)
                 PolygonLayer(
-                  polygons: _arimrParcels
+                  polygons: _lpisParcels
                       .where((p) =>
                           p.boundary.length >= 3 &&
                           (_activeField == null ||
-                              !_activeField!.arimrParcelIds
+                              !_activeField!.lpisParcelIds
                                   .contains(p.objectId)))
                       .map((p) => Polygon(
                             points: p.boundary
@@ -1552,7 +1699,7 @@ class _MapViewState extends State<MapView> {
             ),
 
           // ── Manual Offset — kalibracja warstwy LPIS względem satelity ────────
-          if (_offsetPanelVisible && _arimrLayerVisible)
+          if (_offsetPanelVisible && _lpisLayerVisible)
             Positioned(
               left: 12,
               bottom: 220,
@@ -1679,7 +1826,7 @@ class _MapViewState extends State<MapView> {
                       heroTag: 'mapMode',
                       tooltip: _mapMode == MapLayerMode.geoportal
                           ? 'Przełącz na Tryb Pracy (brak kafelków)'
-                          : 'Przełącz na Tryb Konfiguracji (ortofoto)',
+                          : 'Przełącz na Tryb Konfiguracji (warstwy mapy)',
                       backgroundColor: _mapMode == MapLayerMode.work
                           ? const Color(0xFF1B5E20)
                           : Colors.teal[700],
