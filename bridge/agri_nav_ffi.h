@@ -223,7 +223,7 @@ FfiMergeResult* agrinav_merge_parcels(
 /// Zwalnia pamięć przydzieloną przez agrinav_merge_parcels().
 void agrinav_free_merge_result(FfiMergeResult* result);
 
-// ── Przetwarzanie geometrii LPIS (ARiMR) — union + simplify + buffer ─────────
+// ── Przetwarzanie geometrii LPIS — union + simplify + buffer ────────────────
 
 /// Opcje przetwarzania geometrii LPIS.
 /// Przekazywane jako struct by value (packed: bez paddingu inter-field na 64-bit).
@@ -234,7 +234,7 @@ typedef struct {
     int32_t _pad;               ///< Wyrównanie do 8 bajtów — zawsze 0
 } FfiLpisOptions;
 
-/// Scala, upraszcza i buforuje wielokąty LPIS pobranych z ARiMR.
+/// Scala, upraszcza i buforuje wielokąty LPIS (dane z ULDK GUGiK).
 ///
 /// Używa GeometryProcessor::processLpis() z Clipper2:
 ///   1. Outward buffer +buffer_m.

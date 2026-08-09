@@ -325,7 +325,7 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
           return const _EmptyState(
             icon: Icons.landscape_outlined,
             message: 'Brak zapisanych pól.\n'
-                'Dodaj pole przez Import ARiMR albo rysując granicę na mapie.',
+                'Dodaj pole przez Import działek albo rysując granicę na mapie.',
           );
         }
         return ListView.separated(

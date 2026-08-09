@@ -9,21 +9,21 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
-import '../models/arimr_parcel.dart';
+import '../models/lpis_parcel.dart';
 import 'wkt_parser.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wyjątki
 // ─────────────────────────────────────────────────────────────────────────────
 
-class ArimrNoNetworkException implements Exception {
-  const ArimrNoNetworkException();
+class LpisNoNetworkException implements Exception {
+  const LpisNoNetworkException();
   @override
   String toString() => 'Brak zasięgu — użyj danych z cache';
 }
 
-class ArimrServiceException implements Exception {
-  const ArimrServiceException(this.message);
+class LpisServiceException implements Exception {
+  const LpisServiceException(this.message);
   final String message;
   @override
   String toString() => message;
@@ -39,29 +39,28 @@ class LpisFetchResult {
     required this.fromCache,
     this.totalCount,
   });
-  final List<ArimrParcel> parcels;
+  final List<LpisParcel> parcels;
   final bool fromCache;
   final int? totalCount;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArimrService — backend: ULDK GUGiK (publicznie dostępny)
+// LpisService — backend: ULDK GUGiK (publicznie dostępny)
 //
-// ARiMR FeatureServer (geoportal.arimr.gov.pl/arcgis) wymaga autoryzacji
-// i nie jest publicznie dostępny. Używamy ULDK GUGiK zamiast niego.
+// Dane działek rolnych LPIS pobieramy z publicznego API ULDK GUGiK
+// (GetParcelById) — bez formularzy i bez autoryzacji.
 //
 // Metody:
-//   fetchAgriculturalParcels(bounds) — siatkowe próbkowanie obszaru przez ULDK
 //   fetchByFarmId(id)               — pobierz działkę po numerze TERYT
 //   getCachedParcels([bounds])      — odczyt z cache Hive
 //   clearCache()                    — wyczyść Hive
 // ─────────────────────────────────────────────────────────────────────────────
 
-const _kArimrBox = 'arimr_lpis';
+const _kLpisBox = 'lpis_cache';
 
-class ArimrService {
-  ArimrService._();
-  static final instance = ArimrService._();
+class LpisService {
+  LpisService._();
+  static final instance = LpisService._();
 
   static const _uldkBase = 'https://uldk.gugik.gov.pl/';
   static const _timeout = Duration(seconds: 45);
@@ -72,16 +71,16 @@ class ArimrService {
 
   final _http = http.Client();
 
-  static Future<void> init() async => Hive.openBox(_kArimrBox);
-  Box get _box => Hive.box(_kArimrBox);
+  static Future<void> init() async => Hive.openBox(_kLpisBox);
+  Box get _box => Hive.box(_kLpisBox);
 
   // ── Pobieranie działki po ID TERYT ──────────────────────────────────────────
 
   Future<LpisFetchResult> fetchByFarmId(String parcelId) async {
-    if (!await _checkNetwork()) throw const ArimrNoNetworkException();
+    if (!await _checkNetwork()) throw const LpisNoNetworkException();
     final parcel = await _fetchById(parcelId.trim());
     if (parcel == null) {
-      throw ArimrServiceException('Nie znaleziono działki: $parcelId\n'
+      throw LpisServiceException('Nie znaleziono działki: $parcelId\n'
           'Użyj formatu TERYT, np. 141201_1.0001.AR_1.1');
     }
     await _cacheParcels([parcel]);
@@ -92,8 +91,8 @@ class ArimrService {
 
   // ── Cache Hive ────────────────────────────────────────────────────────────────
 
-  List<ArimrParcel> getCachedParcels([LatLngBounds? bounds]) {
-    final all = _box.values.map((e) => ArimrParcel.fromJson(e as Map)).toList();
+  List<LpisParcel> getCachedParcels([LatLngBounds? bounds]) {
+    final all = _box.values.map((e) => LpisParcel.fromJson(e as Map)).toList();
     if (bounds == null) return all;
     return all.where((p) {
       if (p.boundaryLats.isEmpty) return false;
@@ -103,7 +102,7 @@ class ArimrService {
 
   // ── ULDK: GetParcelById ───────────────────────────────────────────────────────
 
-  Future<ArimrParcel?> _fetchById(String id) async {
+  Future<LpisParcel?> _fetchById(String id) async {
     final uri = Uri.parse(_uldkBase).replace(queryParameters: {
       'request': 'GetParcelById',
       'id': id,
@@ -111,7 +110,7 @@ class ArimrService {
       'srid':
           '4326', // Wymuszenie re-projekcji do EPSG:4326 (WGS-84) po stronie serwera
     });
-    dev.log('ULDK ID $id', name: 'ArimrService');
+    dev.log('ULDK ID $id', name: 'LpisService');
     final resp = await _get(uri);
     return _parseUldkResponse(resp.body);
   }
@@ -127,7 +126,7 @@ class ArimrService {
   //   -1
   //   komunikat
 
-  ArimrParcel? _parseUldkResponse(String body) {
+  LpisParcel? _parseUldkResponse(String body) {
     final lines = body.trim().split('\n');
     if (lines.isEmpty) return null;
     if (lines[0].trim().startsWith('-')) return null;
@@ -166,7 +165,7 @@ class ArimrService {
       }
     } catch (e) {
       dev.log('ULDK WKT parse error: $e  srid=$detectedSrid  wkt=$wkt',
-          name: 'ArimrService');
+          name: 'LpisService');
       return null;
     }
     if (boundary.length < 3) return null;
@@ -179,7 +178,7 @@ class ArimrService {
       opis = meta.skip(1).where((s) => s.trim().isNotEmpty).join(', ');
     }
 
-    return ArimrParcel(
+    return LpisParcel(
       objectId: teryt.isNotEmpty
           ? teryt
           : 'uldk_${DateTime.now().millisecondsSinceEpoch}',
@@ -266,7 +265,7 @@ class ArimrService {
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
 
-  Future<void> _cacheParcels(List<ArimrParcel> parcels) async {
+  Future<void> _cacheParcels(List<LpisParcel> parcels) async {
     await _box.putAll({for (final p in parcels) p.objectId: p.toJson()});
   }
 
@@ -278,22 +277,22 @@ class ArimrService {
   Future<http.Response> _get(Uri uri, {int attempt = 1}) async {
     try {
       final resp = await _http.get(uri, headers: _headers).timeout(_timeout);
-      dev.log('ULDK → ${resp.statusCode}', name: 'ArimrService');
+      dev.log('ULDK → ${resp.statusCode}', name: 'LpisService');
       return resp;
     } on SocketException catch (e) {
-      throw ArimrServiceException('Błąd połączenia: ${e.message}');
+      throw LpisServiceException('Błąd połączenia: ${e.message}');
     } on http.ClientException catch (e) {
-      throw ArimrServiceException('Błąd HTTP: ${e.message}');
+      throw LpisServiceException('Błąd HTTP: ${e.message}');
     } on TimeoutException {
       if (attempt < 2) {
-        dev.log('ULDK timeout, retry $attempt/2…', name: 'ArimrService');
+        dev.log('ULDK timeout, retry $attempt/2…', name: 'LpisService');
         await Future<void>.delayed(const Duration(seconds: 3));
         return _get(uri, attempt: attempt + 1);
       }
-      throw const ArimrServiceException(
+      throw const LpisServiceException(
           'Serwer ULDK nie odpowiedział (45 s × 2 próby). Sprawdź sieć lub spróbuj ponownie później.');
     } catch (e) {
-      throw ArimrServiceException('$e');
+      throw LpisServiceException('$e');
     }
   }
 }

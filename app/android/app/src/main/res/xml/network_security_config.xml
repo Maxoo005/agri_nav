@@ -8,16 +8,7 @@
         </trust-anchors>
     </base-config>
 
-    <!-- Jawne zaufanie dla geoportalu ARiMR -->
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">geoportal.arimr.gov.pl</domain>
-        <trust-anchors>
-            <certificates src="system"/>
-            <certificates src="user"/>
-        </trust-anchors>
-    </domain-config>
-
-    <!-- ULDK GUGiK — działki katastralne (TERYT) -->
+    <!-- ULDK GUGiK — działki katastralne i LPIS (TERYT) -->
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">uldk.gugik.gov.pl</domain>
         <trust-anchors>

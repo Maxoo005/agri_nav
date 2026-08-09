@@ -1,14 +1,16 @@
 import 'package:latlong2/latlong.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArimrParcel — działka rolna LPIS z rejestru ARiMR
+// LpisParcel — działka rolna LPIS (dane z ULDK GUGiK)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Model działki rolnej z rejestru LPIS (ARiMR).
+/// Model działki rolnej z rejestru LPIS.
 ///
-/// Serializacja ręczna do JSON (brak generatora kodu, jak w [FieldModel]).
-class ArimrParcel {
-  /// OBJECTID z warstwy ArcGIS FeatureServer.
+/// Dane pobierane są z publicznego API ULDK (GUGiK) — ten sam rejestr
+/// katastralny co działki ewidencyjne. Serializacja ręczna do JSON
+/// (brak generatora kodu, jak w [FieldModel]).
+class LpisParcel {
+  /// Identifikator działki (numer ewidencyjny / TERYT).
   final String objectId;
 
   /// Wierzchołki granicy działki rolnej (WGS-84, EPSG:4326).
@@ -25,16 +27,16 @@ class ArimrParcel {
   /// Numer identyfikacyjny gospodarstwa (FARM_ID / Nr gosp.).
   final String? farmId;
 
-  /// Powierzchnia działki rolnej [ha], podana przez ARiMR.
+  /// Powierzchnia działki rolnej [ha].
   final double? areaHa;
 
-  /// Rok kampanii (np. 2025) — ARiMR publikuje dane roczne.
+  /// Rok kampanii (np. 2025).
   final int? campaignYear;
 
-  /// Data i godzina pobrania z serwisu ARiMR.
+  /// Data i godzina pobrania z serwisu ULDK.
   final DateTime fetchedAt;
 
-  const ArimrParcel({
+  const LpisParcel({
     required this.objectId,
     required this.boundaryLats,
     required this.boundaryLons,
@@ -60,9 +62,9 @@ class ArimrParcel {
     return LatLng(lat, lon);
   }
 
-  // ── Factory: parsowanie cechy ArcGIS GeoJSON ─────────────────────────────────
+  // ── Factory: parsowanie cechy GeoJSON ─────────────────────────────────────
 
-  /// Buduje [ArimrParcel] z jednej cechy GeoJSON zwracanej przez ArcGIS REST API.
+  /// Buduje [LpisParcel] z jednej cechy GeoJSON zwracanej przez API.
   ///
   /// Oczekiwana struktura:
   /// ```json
@@ -71,12 +73,12 @@ class ArimrParcel {
   ///   "geometry":   { "rings": [[lon, lat], ...] }
   /// }
   /// ```
-  factory ArimrParcel.fromArcGisFeature(Map<String, dynamic> feature) {
+  factory LpisParcel.fromArcGisFeature(Map<String, dynamic> feature) {
     final attrs = (feature['attributes'] as Map<String, dynamic>?) ?? {};
     final geom = (feature['geometry'] as Map<String, dynamic>?) ?? {};
 
     // ── Parsuj geometrię ─────────────────────────────────────────────────────
-    // ArcGIS REST zwraca geometry.rings jako listę pierścieni.
+    // API zwraca geometry.rings jako listę pierścieni.
     // Weź pierwszy (zewnętrzny) pierścień.
     final List<double> lats = [];
     final List<double> lons = [];
@@ -87,7 +89,7 @@ class ArimrParcel {
       for (final coord in ring) {
         final pair = coord as List<dynamic>;
         if (pair.length >= 2) {
-          lons.add((pair[0] as num).toDouble()); // ArcGIS: [lon, lat]
+          lons.add((pair[0] as num).toDouble()); // [lon, lat]
           lats.add((pair[1] as num).toDouble());
         }
       }
@@ -109,7 +111,7 @@ class ArimrParcel {
     final yearRaw =
         attrs['CAMPAIGN_YEAR'] ?? attrs['campaign_year'] ?? attrs['ROK'];
 
-    return ArimrParcel(
+    return LpisParcel(
       objectId: objectId,
       boundaryLats: lats,
       boundaryLons: lons,
@@ -136,7 +138,7 @@ class ArimrParcel {
         'fetchedAt': fetchedAt.toIso8601String(),
       };
 
-  factory ArimrParcel.fromJson(Map<dynamic, dynamic> map) => ArimrParcel(
+  factory LpisParcel.fromJson(Map<dynamic, dynamic> map) => LpisParcel(
         objectId: map['objectId'] as String,
         boundaryLats: (map['boundaryLats'] as List).cast<double>(),
         boundaryLons: (map['boundaryLons'] as List).cast<double>(),

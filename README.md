@@ -165,8 +165,7 @@ flutter build apk    # release APK
 | Linia AB (punkt A i punkt B) | ✅ |
 | Odchylenie poprzeczne (cross-track) w C++ | ✅ |
 | Symulator GNSS (wątek C++, 100 ms) | ✅ |
-| Mapa satelitarna Esri (offline-first FMTC) | ✅ |
-| Pobieranie map offline przez Wi-Fi | ✅ |
+| Ortofotomapa Geoportal GUGiK (WMS, stream online) | ✅ |
 | Planowanie ścieżek uprawowych (swath planning) | ✅ |
 | Nagrywanie granic pola (długie naciśnięcie) | ✅ |
 | Ikona ciągnika obracająca się wg kursu GPS | ✅ |
@@ -180,11 +179,11 @@ flutter build apk    # release APK
 | Parser WKT (POLYGON / MULTIPOLYGON, EPSG:4326) | ✅ |
 | Scalanie działek katastralnych (C++ Clipper2 Union + ENU buffer) | ✅ |
 | Kreator pola geodezyjnego (multi-step: ULDK → scalenie → Hive) | ✅ |
-| Integracja z ARiMR/LPIS — pobieranie upraw po obszarze lub nr gosp. | ✅ |
+| Integracja z LPIS/ULDK GUGiK — pobieranie działek rolnych po nr ewidencyjnym | ✅ |
 | Przetwarzanie geometrii LPIS (C++ union + RDP simplify + buffer 2 cm) | ✅ |
-| Bulk import działek ARiMR — BottomSheet z kreatorem wielokrokowym | ✅ |
+| Bulk import działek LPIS — BottomSheet z kreatorem wielokrokowym | ✅ |
 | Warstwa LPIS na mapie — zielone p.-przezroczyste wielokąty | ✅ |
-| Cache offline ARiMR (Hive `arimr_lpis`) | ✅ |
+| Cache offline LPIS (Hive `lpis_cache`) | ✅ |
 | Zarządzanie maszynami rolniczymi (CRUD, typ, marka, szerokość robocza) | ✅ |
 | Selektor aktywnej maszyny z poziomu mapy | ✅ |
 | Zadania robocze WorkTask (dawka docelowa, objętość zbiornika, jednostka) | ✅ |
@@ -236,25 +235,22 @@ agri_nav/
 └── app/                        # Flutter
     ├── pubspec.yaml
     └── lib/
-        ├── main.dart           # Inicjalizacja FMTC ObjectBox + Hive coverage box
+        ├── main.dart           # Inicjalizacja Hive coverage box
         ├── ffi/
         │   └── nav_bridge.dart # Dart: NavBridge, GnssSimulatorBridge,
         │                       #   SwathPlannerBridge, SwathGuidanceBridge,
         │                       #   SectionControlBridge, ParcelMergerBridge,
         │                       #   HeadlandGuidanceBridge
-        ├── offline/
-        │   ├── offline_map_manager.dart  # FMTC: downloadRegion, stats, clearAll
-        │   └── download_region_sheet.dart # BottomSheet: pobieranie map offline
         ├── models/
         │   ├── field_model.dart          # FieldModel: granica, linia AB, swaths (bez szerokości roboczej)
-        │   ├── arimr_parcel.dart         # ArimrParcel: model działki LPIS z ARiMR (JSON/Hive)
+        │   ├── lpis_parcel.dart         # LpisParcel: model działki LPIS (dane z ULDK GUGiK)
         │   ├── machine_model.dart        # MachineModel: typ, marka, szerokość robocza (Hive)
         │   └── work_task.dart            # WorkTask: dawka targetRate, objętość zbiornika, jednostka
         ├── services/
         │   ├── field_service.dart        # Hive CRUD: save/get/delete pól uprawowych
         │   ├── coverage_service.dart     # Hive: zapis/odczyt śladu GPS per zadanie (fieldId_taskId)
         │   ├── geoportal_service.dart    # ULDK/GUGiK: fetch wg XY / TERYT, nudge
-        │   ├── arimr_service.dart        # ARiMR ArcGIS REST: LPIS pagination, filtr, Hive cache
+        │   ├── lpis_service.dart        # ULDK GUGiK: działki LPIS (GetParcelById), Hive cache
         │   ├── wkt_parser.dart           # WKT → List<LatLng> (POLYGON + MULTIPOLYGON)
         │   ├── machine_service.dart      # Hive CRUD: maszyny rolnicze
         │   ├── work_task_service.dart    # Aktywne zadanie robocze (singleton)
@@ -263,7 +259,7 @@ agri_nav/
             ├── map_view.dart            # Główny ekran: mapa, AB, swaths, ciągnik, snap-guidance
             ├── field_manager_screen.dart # Ekran listy i zarządzania polami
             ├── field_builder_screen.dart # Kreator pola: ULDK → scalenie → zapis
-            ├── arimr_import_sheet.dart  # Import LPIS: obszar → ARiMR → C++ → Hive
+            ├── lpis_import_sheet.dart  # Import LPIS: TERYT → ULDK GUGiK → C++ → Hive
             ├── cadastral_widgets.dart   # TerytSearchSheet — wyszukiwanie po nr ewidencyjnym
             ├── machine_manager_screen.dart  # CRUD: lista i edycja maszyn
             ├── machine_selector_screen.dart # BottomSheet: wybór aktywnej maszyny
@@ -280,7 +276,7 @@ agri_nav/
 |---|---|---|
 | `core` | C++17, CMake 3.21 | GNSS, ENU cross-track, swath + headland, snap-guidance, coverage grid, parcel union, LPIS processing |
 | `bridge` | C ABI | Czyste C API eksponowane przez `dart:ffi` (malloc/free, brak C++) |
-| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, offline cache, zapis śladu GPS, kreator pola ULDK, bulk import ARiMR |
+| `app` | Flutter 3, Dart ≥3.3 | Mapa, UI nawigacji, stream ortofotomapy online, zapis śladu GPS, kreator pola ULDK, bulk import LPIS |
 | `third_party` | Clipper2 1.4.0 (vendored) | Operacje boolowskie na wielokątach 2D (Union, Buffer, SimplifyPaths RDP) |
 
 ---
@@ -432,7 +428,6 @@ FfiHeadlandResult agrinav_headland_query(
 
 ```yaml
 flutter_map: ^7.0.0
-flutter_map_tile_caching: ^9.1.0   # ObjectBox backend, offline-first
 latlong2: ^0.9.0
 ffi: ^2.1.0
 connectivity_plus: ^6.0.0
@@ -473,24 +468,23 @@ Kreator pola geodezyjnego — przepływ wieloetapowy:
 
 ---
 
-## ArimrService (`app/lib/services/arimr_service.dart`)
+## LpisService (`app/lib/services/lpis_service.dart`)
 
-Serwis integrujący **ULDK (GUGiK)** jako źródło danych LPIS (zamiast bezpośredniego ArcGIS REST ARiMR, który wymaga autoryzacji).
+Serwis pobierający działki rolne **LPIS przez publiczne API ULDK (GUGiK)** — bez formularzy i bez autoryzacji.
 
 | Metoda | Opis |
 |---|---|
-| `fetchAgriculturalParcels(bounds)` | Siatka 5×5 próbkowań XY → unikalne działki w obszarze mapy |
 | `fetchByFarmId(parcelId)` | Pobiera działkę po numerze ewidencyjnym TERYT |
 | `getCachedParcels([bounds])` | Zwraca działki z lokalnego cache Hive (bbox filter) |
-| `clearCache()` | Czyści skrzynkę Hive `arimr_lpis` |
+| `clearCache()` | Czyści skrzynkę Hive `lpis_cache` |
 
-Wyjątki: `ArimrNoNetworkException` (brak sieci → fallback do cache), `ArimrServiceException` (błąd parsowania).
+Wyjątki: `LpisNoNetworkException` (brak sieci → fallback do cache), `LpisServiceException` (błąd parsowania).
 
 ### Android Network Security (`res/xml/network_security_config.xml`)
 
 Plik definiuje politykę TLS aplikacji:
 - ruch cleartext globalnie **wyłączony** (`usesCleartextTraffic="false"`),
-- jawne zaufanie dla `geoportal.arimr.gov.pl` (system CA + user CA),
+- jawne zaufanie dla `uldk.gugik.gov.pl` i `mapy.geoportal.gov.pl` (system CA + user CA),
 - odwołanie w `AndroidManifest.xml` przez `android:networkSecurityConfig`.
 
 ---
@@ -588,7 +582,7 @@ CMake jest uruchamiane automatycznie przez Gradle — nie trzeba własnoręcznie
 | Przycisk `crop_free` | Start/stop nagrywania granicy |
 | Przycisk `grid` | Generuje ścieżki uprawowe (3 m) |
 | Przycisk `gps_fixed` | Włącza/wyłącza śledzenie ciągnika |
-| Przycisk satelita | Pobieranie map offline |
+| Przycisk satelita | Przełącza na ortofotomapę Geoportal GUGiK (online) |
 | Przycisk `add_location` | Otwiera kreator pola geodezyjnego (ULDK) |
 | Snap-guidance HUD | Wyświetla odległość i kierunek do nearest swath |
 

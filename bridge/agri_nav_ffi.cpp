@@ -329,7 +329,7 @@ void agrinav_free_merge_result(FfiMergeResult* result) {
     delete result;
 }
 
-// ── Przetwarzanie geometrii LPIS (ARiMR) ─────────────────────────────────────
+// ── Przetwarzanie geometrii LPIS ─────────────────────────────────────────────
 
 /// Pomocnicza funkcja do budowania FfiMergeResult z MergeResult.
 static FfiMergeResult* buildFfiMergeResult(const agrinav::MergeResult& mr) {
