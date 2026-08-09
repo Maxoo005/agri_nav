@@ -8,8 +8,8 @@ enum FieldSource {
   /// Pobrane z ULDK/GUGiK.
   uldk,
 
-  /// Pobrane z rejestru LPIS (ARiMR).
-  arimr,
+  /// Pobrane z rejestru LPIS (dane z ULDK/GUGiK).
+  lpis,
 }
 
 /// Model pola uprawowego przechowywany w Hive jako zwykła mapa JSON.
@@ -46,9 +46,9 @@ class FieldModel {
   /// lub pobrane jako pojedyncza działka.
   List<String> sourceParcelIds;
 
-  /// Identyfikatory działek LPIS (ARiMR OBJECTID) użytych do budowy tego pola.
-  /// Puste gdy pole pochodzi ze źródła innego niż [FieldSource.arimr].
-  List<String> arimrParcelIds;
+  /// Identyfikatory działek LPIS użytych do budowy tego pola.
+  /// Puste gdy pole pochodzi ze źródła innego niż [FieldSource.lpis].
+  List<String> lpisParcelIds;
 
   /// Źródło danych granicy.
   FieldSource source;
@@ -58,7 +58,7 @@ class FieldModel {
   double offsetLat;
   double offsetLon;
 
-  /// Powierzchnia pola [ha] z rejestru ARiMR (dane LPIS), przeliczona
+  /// Powierzchnia pola [ha] (dane LPIS), przeliczona
   /// z geometrii granicy. Null gdy jeszcze nie obliczono.
   double? areaHa;
 
@@ -76,13 +76,13 @@ class FieldModel {
     this.terytCode,
     this.lastSyncDate,
     List<String>? sourceParcelIds,
-    List<String>? arimrParcelIds,
+    List<String>? lpisParcelIds,
     this.source = FieldSource.manual,
     this.offsetLat = 0.0,
     this.offsetLon = 0.0,
     this.areaHa,
   })  : sourceParcelIds = sourceParcelIds ?? [],
-        arimrParcelIds = arimrParcelIds ?? [];
+        lpisParcelIds = lpisParcelIds ?? [];
 
   // ── Wygoda ──────────────────────────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ class FieldModel {
         if (lastSyncDate != null)
           'lastSyncDate': lastSyncDate!.toIso8601String(),
         if (sourceParcelIds.isNotEmpty) 'sourceParcelIds': sourceParcelIds,
-        if (arimrParcelIds.isNotEmpty) 'arimrParcelIds': arimrParcelIds,
+        if (lpisParcelIds.isNotEmpty) 'lpisParcelIds': lpisParcelIds,
         'source': source.name,
         'offsetLat': offsetLat,
         'offsetLon': offsetLon,
@@ -146,9 +146,14 @@ class FieldModel {
             ? DateTime.tryParse(map['lastSyncDate'] as String)
             : null,
         sourceParcelIds: (map['sourceParcelIds'] as List?)?.cast<String>(),
-        arimrParcelIds: (map['arimrParcelIds'] as List?)?.cast<String>(),
+        // Wsteczna kompatybilność: starsze zapisy używały klucza 'arimrParcelIds'.
+        lpisParcelIds: ((map['lpisParcelIds'] ?? map['arimrParcelIds'])
+                as List?)
+            ?.cast<String>(),
+        // Wsteczna kompatybilność: starsze zapisy używały nazwy 'arimr'.
         source: FieldSource.values.firstWhere(
-          (e) => e.name == (map['source'] as String?),
+          (e) => e.name == (map['source'] as String?) ||
+              ((map['source'] == 'arimr') && e == FieldSource.lpis),
           orElse: () => FieldSource.manual,
         ),
         offsetLat: (map['offsetLat'] as num?)?.toDouble() ?? 0.0,

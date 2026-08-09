@@ -5,9 +5,9 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:uuid/uuid.dart';
 
 import '../ffi/nav_bridge.dart';
-import '../models/arimr_parcel.dart';
+import '../models/lpis_parcel.dart';
 import '../models/field_model.dart';
-import '../services/arimr_service.dart';
+import '../services/lpis_service.dart';
 import '../services/field_service.dart';
 import '../utils/geo_utils.dart';
 
@@ -19,7 +19,7 @@ enum _ImportStep {
   /// Użytkownik konfiguruje obszar i filtry.
   configure,
 
-  /// Trwa pobieranie działek z ARiMR.
+  /// Trwa pobieranie działek z ULDK (GUGiK).
   fetching,
 
   /// Podgląd pobranych działek + opcja kasowania.
@@ -33,19 +33,19 @@ enum _ImportStep {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ArimrImportSheet
+// LpisImportSheet
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// BottomSheet do importu obszarowego działek LPIS z rejestru ARiMR.
+/// BottomSheet do importu działek LPIS (dane z ULDK GUGiK).
 ///
 /// Przepływ:
-///   1. Konfiguracja: opcjonalny filtr farmId / kodu grupy upraw.
-///   2. Fetching: pobieranie działek widocznego obszaru mapy (lub wpisanego farmId).
+///   1. Konfiguracja: wpisz numery ewidencyjne działek (TERYT).
+///   2. Fetching: pobieranie działek z ULDK (GetParcelById).
 ///   3. Preview: lista działek + checkboxy + wyświetlenie minimapy.
 ///   4. Processing: C++ GeometryProcessor (union + simplify + buffer 2 cm).
 ///   5. Done: nazwa pola → zapis do Hive → return [FieldModel].
-class ArimrImportSheet extends StatefulWidget {
-  const ArimrImportSheet({
+class LpisImportSheet extends StatefulWidget {
+  const LpisImportSheet({
     super.key,
     this.mapBounds,
     this.onFieldCreated,
@@ -72,7 +72,7 @@ class ArimrImportSheet extends StatefulWidget {
       return Navigator.push<FieldModel>(
         context,
         MaterialPageRoute(
-          builder: (_) => ArimrImportSheet(
+          builder: (_) => LpisImportSheet(
             mapBounds: mapBounds,
             fullScreen: true,
           ),
@@ -83,15 +83,15 @@ class ArimrImportSheet extends StatefulWidget {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => ArimrImportSheet(mapBounds: mapBounds),
+      builder: (_) => LpisImportSheet(mapBounds: mapBounds),
     );
   }
 
   @override
-  State<ArimrImportSheet> createState() => _ArimrImportSheetState();
+  State<LpisImportSheet> createState() => _LpisImportSheetState();
 }
 
-class _ArimrImportSheetState extends State<ArimrImportSheet> {
+class _LpisImportSheetState extends State<LpisImportSheet> {
   // ── Kontrolery ────────────────────────────────────────────────────────────────
   final List<TextEditingController> _terytCtrls = [TextEditingController()];
   final _nameCtrl = TextEditingController();
@@ -99,7 +99,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   // ── Stan ─────────────────────────────────────────────────────────────────────
   _ImportStep _step = _ImportStep.configure;
-  List<ArimrParcel> _parcels = [];
+  List<LpisParcel> _parcels = [];
   final Set<String> _selected = {};
   String? _cropGroupFilter;
   List<String> _availableCropGroups = [];
@@ -132,7 +132,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
   Future<void> _loadCropGroups() async {
     setState(() => _loadingGroups = true);
     try {
-      final codes = await ArimrService.instance.fetchCropGroupCodes();
+      final codes = await LpisService.instance.fetchCropGroupCodes();
       if (mounted) setState(() => _availableCropGroups = codes);
     } catch (_) {
       // Metadane niedostępne offline — pomijamy
@@ -162,21 +162,21 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       _selected.clear();
     });
 
-    final allParcels = <ArimrParcel>[];
+    final allParcels = <LpisParcel>[];
     final errors = <String>[];
 
     for (final id in ids) {
       try {
-        final result = await ArimrService.instance.fetchByFarmId(id);
+        final result = await LpisService.instance.fetchByFarmId(id);
         allParcels.addAll(result.parcels);
-      } on ArimrNoNetworkException {
+      } on LpisNoNetworkException {
         if (!mounted) return;
         setState(() {
           _error = 'Brak połączenia. Sprawdź Wi-Fi lub użyj danych z cache.';
           _step = _ImportStep.configure;
         });
         return;
-      } on ArimrServiceException catch (e) {
+      } on LpisServiceException catch (e) {
         errors.add('[$id]: ${e.message}');
       } catch (e) {
         errors.add('[$id]: $e');
@@ -244,11 +244,11 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
       _mergeResult = result;
       _nameCtrl.text =
-          'Pole ARiMR ${FieldService.instance.getAll().length + 1}';
+          'Pole LPIS ${FieldService.instance.getAll().length + 1}';
 
       setState(() => _step = _ImportStep.done);
     } catch (e, st) {
-      dev.log('LpisProcessor error: $e', stackTrace: st, name: 'ArimrImport');
+      dev.log('LpisProcessor error: $e', stackTrace: st, name: 'LpisImport');
       if (!mounted) return;
       setState(() {
         _error = 'Błąd przetwarzania geometrii: $e';
@@ -264,7 +264,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
     if (boundary.isEmpty) return;
 
     final name =
-        _nameCtrl.text.trim().isEmpty ? 'Pole ARiMR' : _nameCtrl.text.trim();
+        _nameCtrl.text.trim().isEmpty ? 'Pole LPIS' : _nameCtrl.text.trim();
 
     final selectedParcels =
         _parcels.where((p) => _selected.contains(p.objectId)).toList();
@@ -274,8 +274,8 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
       name: name,
       boundaryLats: boundary.map((e) => e.latitude).toList(),
       boundaryLons: boundary.map((e) => e.longitude).toList(),
-      source: FieldSource.arimr,
-      arimrParcelIds: selectedParcels.map((p) => p.objectId).toList(),
+      source: FieldSource.lpis,
+      lpisParcelIds: selectedParcels.map((p) => p.objectId).toList(),
       areaHa: GeoUtils.polygonAreaHa(boundary),
     );
 
@@ -336,7 +336,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   Widget _buildHeader() {
     final titles = {
-      _ImportStep.configure: 'Import LPIS (ARiMR)',
+      _ImportStep.configure: 'Import działek LPIS (ULDK GUGiK)',
       _ImportStep.fetching: 'Pobieranie działek…',
       _ImportStep.preview: 'Wybierz działki (${_parcels.length})',
       _ImportStep.processing: 'Przetwarzanie geometrii…',
@@ -380,7 +380,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
             ),
           Expanded(
             child: Text(
-              titles[_step] ?? 'ARiMR',
+              titles[_step] ?? 'LPIS',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 17,
@@ -459,8 +459,8 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
                 Expanded(
                   child: Text(
                     'Wpisz numery ewidencyjne działek (TERYT), aby pobrać '
-                    'granice z rejestru ARiMR. Pole zostanie pokazane na mapie '
-                    'po zapisaniu.',
+                    'granice z rejestru LPIS (ULDK GUGiK). Pole zostanie '
+                    'pokazane na mapie po zapisaniu.',
                     style: TextStyle(color: Colors.white60, fontSize: 12),
                   ),
                 ),
@@ -535,7 +535,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
             label: const Text('Użyj danych z cache (offline)'),
             onPressed: () {
               final cached =
-                  ArimrService.instance.getCachedParcels(widget.mapBounds);
+                  LpisService.instance.getCachedParcels(widget.mapBounds);
               if (cached.isEmpty) {
                 setState(() => _error = widget.mapBounds != null
                     ? 'Brak danych w cache dla tego obszaru.'
@@ -709,7 +709,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
 
   Widget _buildLoading() {
     final msg = _step == _ImportStep.fetching
-        ? 'Pobieranie działek z geoportal.arimr.gov.pl…'
+        ? 'Pobieranie działek z ULDK GUGiK…'
         : 'Przetwarzanie geometrii (C++ Clipper2)…';
     return Center(
       child: Column(
@@ -764,7 +764,7 @@ class _ArimrImportSheetState extends State<ArimrImportSheet> {
     );
   }
 
-  Widget _buildParcelTile(ArimrParcel parcel) {
+  Widget _buildParcelTile(LpisParcel parcel) {
     final isSelected = _selected.contains(parcel.objectId);
     return CheckboxListTile(
       value: isSelected,

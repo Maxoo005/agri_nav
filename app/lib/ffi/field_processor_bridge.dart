@@ -283,7 +283,7 @@ class ParcelMergerBridge {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// LpisProcessor — union + simplify + buffer for ARiMR LPIS parcels
+// LpisProcessor — union + simplify + buffer for LPIS parcels (ULDK GUGiK)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Native struct _FfiLpisOptions (32 bytes, identical to C).
@@ -329,7 +329,7 @@ class LpisProcessorBridge {
 
   /// Merges and simplifies a list of LPIS polygons.
   ///
-  /// [polygons]         — ARiMR agricultural parcels (WGS-84).
+  /// [polygons]         — LPIS parcels (WGS-84, from ULDK GUGiK).
   /// [bufferM]          — outward buffer [m], default 2 cm.
   /// [simplifyEpsilonM] — RDP epsilon [m], default 0.3 m.
   ///

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
-import 'arimr_import_sheet.dart';
+import 'lpis_import_sheet.dart';
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
 import 'history_screen.dart';
@@ -85,9 +85,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     _MenuTile(
                       icon: Icons.satellite_alt,
-                      label: 'Import ARiMR',
+                      label: 'Import działek',
                       onTap: () async {
-                        final field = await ArimrImportSheet.show(context,
+                        final field = await LpisImportSheet.show(context,
                             mapBounds: null, fullScreen: true);
                         if (field != null && context.mounted) {
                           Navigator.push(

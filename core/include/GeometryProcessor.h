@@ -8,7 +8,7 @@ namespace agrinav {
 struct LpisProcessOptions {
     /// Outward buffer [m] eliminujący mikroszczelin między działkami.
     /// Domyślnie 0.02 m (2 cm) — mniejszy niż dla danych katastralnych (5 cm),
-    /// bo granice ARiMR są z natury nieco luźniejsze.
+    /// bo granice LPIS są z natury nieco luźniejsze.
     double bufferM = 0.02;
 
     /// Epsilon uproszczenia Ramer-Douglas-Peucker [m] w układzie ENU.
@@ -22,7 +22,7 @@ struct LpisProcessOptions {
     int32_t minRingVertices = 3;
 };
 
-/// Procesor geometrii LPIS — używany przez ArimrImportSheet w Flutterze.
+/// Procesor geometrii LPIS — używany przez LpisImportSheet w Flutterze.
 ///
 /// Algorytm (wszystkie operacje w lokalnym ENU [m]):
 ///   1. Centroida wejściowych wielokątów → radam ENU.
