@@ -8,6 +8,7 @@ import 'services/gps_location_service.dart';
 import 'services/history_database.dart';
 import 'services/machine_service.dart';
 import 'services/task_database.dart';
+import 'services/work_mode_settings_service.dart';
 import 'services/work_session_service.dart';
 import 'services/work_task_service.dart';
 import 'ui/home_screen.dart';
@@ -25,6 +26,7 @@ void main() async {
   await MachineService.init();
   await WorkTaskService.init();
   await WorkSessionService.init();
+  await WorkModeSettingsService.init();
 
   // SQLite — baza zapisanych zadań roboczych (agrinav.db).
   // Najpierw ustawiamy silnik dla platformy, potem otwieramy bazę.

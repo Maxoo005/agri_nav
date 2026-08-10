@@ -4,7 +4,8 @@ import '../models/history_record.dart';
 import '../services/history_database.dart';
 import '../services/work_session_service.dart';
 
-/// Ekran Historii: pola → lata → zakończone zadania z datą i notatką.
+/// Ekran Historii: pola → wszystkie zakończone zadania danego pola w jednym
+/// miejscu (bez podziału na lata czy typ zadania).
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
 
@@ -83,7 +84,8 @@ class HistoryScreen extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Lata — wybór roku dla danego pola
+// Zadania — wszystkie zakończone prace danego pola w jednym miejscu,
+// niezależnie od roku i typu zadania.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _HistoryFieldScreen extends StatelessWidget {
@@ -101,83 +103,8 @@ class _HistoryFieldScreen extends StatelessWidget {
         foregroundColor: Colors.white,
         title: Text(fieldName),
       ),
-      body: FutureBuilder<List<HistoryYearSummary>>(
-        future: HistoryDatabase.instance.getYears(fieldId),
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(
-                child: CircularProgressIndicator(color: Colors.greenAccent));
-          }
-          final years = snap.data ?? const <HistoryYearSummary>[];
-          if (years.isEmpty) {
-            return const Center(
-              child: Text(
-                'Brak prac w historii.',
-                style: TextStyle(color: Colors.white38, fontSize: 14),
-              ),
-            );
-          }
-          return ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            itemCount: years.length,
-            separatorBuilder: (_, __) =>
-                const Divider(height: 1, color: Colors.white10),
-            itemBuilder: (context, i) {
-              final y = years[i];
-              return ListTile(
-                leading: const Icon(Icons.calendar_month_rounded,
-                    color: Colors.tealAccent),
-                title: Text('Rok ${y.year}',
-                    style: const TextStyle(color: Colors.white)),
-                subtitle: Text('${y.recordCount} prac',
-                    style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                trailing: const Icon(Icons.chevron_right_rounded,
-                    color: Colors.white38),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => _HistoryYearScreen(
-                      fieldId: fieldId,
-                      fieldName: fieldName,
-                      year: y.year,
-                    ),
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Zadania — lista zakończonych prac pola w wybranym roku
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _HistoryYearScreen extends StatelessWidget {
-  const _HistoryYearScreen({
-    required this.fieldId,
-    required this.fieldName,
-    required this.year,
-  });
-
-  final String fieldId;
-  final String fieldName;
-  final int year;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1E1E1E),
-        foregroundColor: Colors.white,
-        title: Text('$fieldName — $year'),
-      ),
       body: FutureBuilder<List<HistoryRecord>>(
-        future: HistoryDatabase.instance.getRecords(fieldId, year),
+        future: HistoryDatabase.instance.getFieldRecords(fieldId),
         builder: (context, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(
@@ -187,7 +114,7 @@ class _HistoryYearScreen extends StatelessWidget {
           if (records.isEmpty) {
             return const Center(
               child: Text(
-                'Brak prac w tym roku.',
+                'Brak prac w historii.',
                 style: TextStyle(color: Colors.white38, fontSize: 14),
               ),
             );
@@ -196,8 +123,7 @@ class _HistoryYearScreen extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             itemCount: records.length,
             separatorBuilder: (_, __) => const SizedBox(height: 8),
-            itemBuilder: (context, i) =>
-                _HistoryCard(record: records[i]),
+            itemBuilder: (context, i) => _HistoryCard(record: records[i]),
           );
         },
       ),

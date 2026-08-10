@@ -13,6 +13,7 @@ import '../services/coverage_service.dart';
 import '../services/gps_location_service.dart';
 import '../services/history_database.dart';
 import '../services/material_monitor_service.dart';
+import '../services/work_mode_settings_service.dart';
 import '../services/work_session_service.dart';
 import '../utils/geo_utils.dart';
 import 'finish_work_dialog.dart';
@@ -98,9 +99,40 @@ class WorkModeView extends StatefulWidget {
 }
 
 class _WorkModeViewState extends State<WorkModeView> {
+  // ── Obrót mapy (Work Mode) ───────────────────────────────────────────────────
+  /// Próg prędkości do odblokowania obrotu CAŁEJ MAPY — wyższy niż
+  /// [GpsLocationService.kMinHeadingSpeedMs], które bramkuje sam heading
+  /// używany przez prowadzenie/cross-track ([_tractorHeading] poniżej).
+  /// Obrót pełnego ekranu wzmacnia szum headingu wizualnie dużo bardziej niż
+  /// drganie samego wskaźnika (efekt geometryczny — im dalej od środka
+  /// obrotu, tym większe przesunięcie piksela przy tym samym błędzie kąta),
+  /// więc mapa zamraża się "wcześniej", dopiero przy jednoznacznym ruchu
+  /// (~3.6 km/h, żwawy chód) zamiast przy progu prowadzenia (~1.8 km/h).
+  static const double kMinMapRotationSpeedMs = 1.0;
+
+  /// Współczynnik EMA (kołowego — na wektorze jednostkowym (cos θ, sin θ),
+  /// bo heading zawija się na 0°/360°, co psuje zwykły EMA na stopniach) dla
+  /// kąta obrotu mapy. Mocniejsze wygładzanie niż EMA pozycji w
+  /// [GpsLocationService] (α=0.3) i nieskończenie mocniejsze niż dzisiejszy
+  /// surowy heading (zero wygładzania). Przy ~100 ms tickach strumienia GPS
+  /// daje to stałą czasową ~0.8 s — zauważalnie spokojniej niż dziś, ale
+  /// realny, trwały skręt maszyny nadal "dogania" mapę w ok. sekundę.
+  static const double _kMapRotationEmaAlpha = 0.12;
+
   // ── Dynamic state ────────────────────────────────────────────────────────────
   late LatLng _tractorPos;
   late double _tractorHeading;
+
+  /// Kąt faktycznie przekazywany do [_FieldCanvasPainter] jako obrót kanwy —
+  /// CELOWO osobny od [_tractorHeading] (który zasila prowadzenie/cross-track
+  /// i pozostaje nietknięty). Aktualizowany własnym, mocniejszym EMA i własną
+  /// (wyższą) bramką prędkości — patrz stałe wyżej.
+  double _mapRotationDeg = 0.0;
+  double? _mapRotationEmaX;
+  double? _mapRotationEmaY;
+
+  /// Tryb orientacji mapy — zapamiętany w Hive przez [WorkModeSettingsService].
+  MapOrientationMode _orientationMode = MapOrientationMode.headingUp;
   // Not part of setState — updated directly in _onSimPosition.
   // Used only as the one-time `initial` value for Lightbar; live updates
   // are delivered via _deviationCtrl stream, so no rebuild is needed here.
@@ -165,6 +197,11 @@ class _WorkModeViewState extends State<WorkModeView> {
     super.initState();
     _tractorPos = widget.initialPos;
     _tractorHeading = widget.initialHeading;
+    _mapRotationDeg = widget.initialHeading;
+    final initRad = widget.initialHeading * math.pi / 180.0;
+    _mapRotationEmaX = math.cos(initRad);
+    _mapRotationEmaY = math.sin(initRad);
+    _orientationMode = WorkModeSettingsService.instance.orientationMode;
     _snapInfo = widget.initialSnapInfo;
     _coveredHa = widget.initialCoveredHa;
     _fieldAreaHa = GeoUtils.polygonAreaHa(widget.fieldBoundary);
@@ -215,7 +252,8 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     // Subskrypcja do zunifikowanego strumienia GPS (real lub symulator)
     _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
-    _fixStatusSub = GpsLocationService.instance.fixStatusStream.listen((status) {
+    _fixStatusSub =
+        GpsLocationService.instance.fixStatusStream.listen((status) {
       if (mounted) setState(() => _fixStatus = status);
     });
   }
@@ -273,13 +311,36 @@ class _WorkModeViewState extends State<WorkModeView> {
       final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
       if (dt > 0.01) {
         final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
-        final de =
-            (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
+        final de = (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
         final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
         final raw = math.sqrt(de * de + dn * dn) / dt * 3.6;
         speedKmh = _speedKmh + (raw - _speedKmh) * 0.45;
         if (speedKmh < 0.8) speedKmh = 0.0;
       }
+    }
+
+    // ── Obrót mapy: OSOBNA bramka prędkości + OSOBNY EMA (patrz stałe u góry
+    // klasy) — nie modyfikuje `heading`/`_tractorHeading` powyżej, więc
+    // prowadzenie i cross-track pozostają dokładnie tak wygładzone/bramkowane
+    // jak dotychczas. Poniżej progu kąt po prostu zamraża się na ostatniej
+    // wartości (bez dryfu), więc wznowienie ruchu nie daje skoku mapy.
+    final double speedMsForRotation =
+        pos.speed > 0 ? pos.speed : speedKmh / 3.6;
+    if (speedMsForRotation >= kMinMapRotationSpeedMs) {
+      final rad = heading * math.pi / 180.0;
+      final x = math.cos(rad);
+      final y = math.sin(rad);
+      if (_mapRotationEmaX == null || _mapRotationEmaY == null) {
+        _mapRotationEmaX = x;
+        _mapRotationEmaY = y;
+      } else {
+        _mapRotationEmaX = _kMapRotationEmaAlpha * x +
+            (1.0 - _kMapRotationEmaAlpha) * _mapRotationEmaX!;
+        _mapRotationEmaY = _kMapRotationEmaAlpha * y +
+            (1.0 - _kMapRotationEmaAlpha) * _mapRotationEmaY!;
+      }
+      _mapRotationDeg =
+          math.atan2(_mapRotationEmaY!, _mapRotationEmaX!) * 180.0 / math.pi;
     }
 
     final guidance = NavBridge.instance.update(
@@ -445,8 +506,7 @@ class _WorkModeViewState extends State<WorkModeView> {
           backgroundColor: const Color(0xFF1E1E1E),
           title: const Row(
             children: [
-              Icon(Icons.local_gas_station_rounded,
-                  color: Colors.greenAccent),
+              Icon(Icons.local_gas_station_rounded, color: Colors.greenAccent),
               SizedBox(width: 10),
               Text('Tankowanie', style: TextStyle(color: Colors.white)),
             ],
@@ -542,7 +602,10 @@ class _WorkModeViewState extends State<WorkModeView> {
                 child: CustomPaint(
                   painter: _FieldCanvasPainter(
                     tractorPos: _tractorPos,
-                    tractorHeading: _tractorHeading,
+                    mapRotationDeg:
+                        _orientationMode == MapOrientationMode.headingUp
+                            ? _mapRotationDeg
+                            : 0.0,
                     swaths: widget.swaths,
                     headlandRings: widget.headlandRings,
                     fieldBoundary: widget.fieldBoundary,
@@ -588,24 +651,43 @@ class _WorkModeViewState extends State<WorkModeView> {
               ),
             ),
 
-            // ── 4b. Przełącznik trybu prowadzenia (lewy bok, pod lightbarem)
-            if (widget.headlandRings.isNotEmpty)
-              Positioned(
-                left: 12,
-                top: padding.top + 8 + 82,
-                child: _GuidanceModeButton(
-                  mode: _guidanceMode,
-                  onToggle: () => setState(() {
-                    _guidanceMode = _guidanceMode == _GuidanceMode.swath
-                        ? _GuidanceMode.headland
-                        : _GuidanceMode.swath;
-                    // Reset active ring highlight when switching modes
-                    if (_guidanceMode == _GuidanceMode.swath) {
-                      _activeHeadlandRingIndex = -1;
-                    }
-                  }),
-                ),
+            // ── 4b. Przełączniki: tryb prowadzenia (jeśli są uwrocia) +
+            //       orientacja mapy (lewy bok, pod lightbarem)
+            Positioned(
+              left: 12,
+              top: padding.top + 8 + 82,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (widget.headlandRings.isNotEmpty) ...[
+                    _GuidanceModeButton(
+                      mode: _guidanceMode,
+                      onToggle: () => setState(() {
+                        _guidanceMode = _guidanceMode == _GuidanceMode.swath
+                            ? _GuidanceMode.headland
+                            : _GuidanceMode.swath;
+                        // Reset active ring highlight when switching modes
+                        if (_guidanceMode == _GuidanceMode.swath) {
+                          _activeHeadlandRingIndex = -1;
+                        }
+                      }),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  _OrientationModeButton(
+                    mode: _orientationMode,
+                    onToggle: () => setState(() {
+                      _orientationMode =
+                          _orientationMode == MapOrientationMode.headingUp
+                              ? MapOrientationMode.northUp
+                              : MapOrientationMode.headingUp;
+                      WorkModeSettingsService.instance.orientationMode =
+                          _orientationMode;
+                    }),
+                  ),
+                ],
               ),
+            ),
 
             // ── 5. Przyciski dołu: Wstrzymaj / Zakończ pracę ─────────────────
             Positioned(
@@ -657,7 +739,7 @@ class _WorkModeViewState extends State<WorkModeView> {
 class _FieldCanvasPainter extends CustomPainter {
   const _FieldCanvasPainter({
     required this.tractorPos,
-    required this.tractorHeading,
+    required this.mapRotationDeg,
     required this.swaths,
     required this.headlandRings,
     required this.fieldBoundary,
@@ -670,7 +752,11 @@ class _FieldCanvasPainter extends CustomPainter {
   });
 
   final LatLng tractorPos;
-  final double tractorHeading;
+
+  /// Kąt obrotu kanwy (mode-dependent: kąt jazdy wygładzony EMA w trybie
+  /// "kierunek jazdy do góry", zawsze 0 w trybie "północ do góry" — patrz
+  /// [MapOrientationMode]). NIE jest to bezpośrednio heading GPS.
+  final double mapRotationDeg;
   final List<Swath> swaths;
   final List<List<LatLng>> headlandRings;
   final List<LatLng> fieldBoundary;
@@ -698,7 +784,7 @@ class _FieldCanvasPainter extends CustomPainter {
     // ── Cały świat obrócony tak, by kierunek jazdy = góra ekranu ─────────────
     canvas.save();
     canvas.translate(cx, cy);
-    canvas.rotate(-tractorHeading * math.pi / 180.0);
+    canvas.rotate(-mapRotationDeg * math.pi / 180.0);
 
     // ── Siatka pomocnicza co 10 m ─────────────────────────────────────────────
     final gridStep = 10.0 * pixelsPerMeter;
@@ -876,7 +962,7 @@ class _FieldCanvasPainter extends CustomPainter {
   @override
   bool shouldRepaint(_FieldCanvasPainter old) =>
       old.tractorPos != tractorPos ||
-      old.tractorHeading != tractorHeading ||
+      old.mapRotationDeg != mapRotationDeg ||
       old.activeSwathIndex != activeSwathIndex ||
       old.activeHeadlandRingIndex != activeHeadlandRingIndex ||
       old.pixelsPerMeter != pixelsPerMeter ||
@@ -1184,7 +1270,8 @@ class _StatsPanel extends StatelessWidget {
             icon: Icons.speed_outlined,
             color: Colors.tealAccent,
             label: 'Wydajność',
-            value: '${(speedKmh * workingWidthM / 10.0).toStringAsFixed(2)} ha/h',
+            value:
+                '${(speedKmh * workingWidthM / 10.0).toStringAsFixed(2)} ha/h',
           ),
           const _TileDivider(),
           _StatTile(
@@ -1544,6 +1631,57 @@ class _GuidanceModeButton extends StatelessWidget {
           color: const Color(0xCC0D0D0D),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: borderColor, width: isHeadland ? 1.5 : 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: fgColor, size: 15),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: fgColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Przełącznik orientacji mapy: kierunek jazdy do góry ↔ północ do góry
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _OrientationModeButton extends StatelessWidget {
+  const _OrientationModeButton({
+    required this.mode,
+    required this.onToggle,
+  });
+
+  final MapOrientationMode mode;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final isNorthUp = mode == MapOrientationMode.northUp;
+    final label = isNorthUp ? 'Północ' : 'Jazda';
+    final icon = isNorthUp ? Icons.explore_rounded : Icons.navigation_rounded;
+    final fgColor = isNorthUp ? Colors.lightBlueAccent : Colors.white70;
+    final borderColor = isNorthUp ? Colors.lightBlueAccent : Colors.white24;
+
+    return GestureDetector(
+      onTap: onToggle,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xCC0D0D0D),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: borderColor, width: isNorthUp ? 1.5 : 0.8),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,

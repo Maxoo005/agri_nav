@@ -90,20 +90,6 @@ class HistoryRecord {
       );
 }
 
-/// Zagregowany widok roku na liście Historii pola (rok + liczba prac).
-class HistoryYearSummary {
-  final int year;
-  final int recordCount;
-
-  HistoryYearSummary({required this.year, required this.recordCount});
-
-  factory HistoryYearSummary.fromMap(Map<String, Object?> map) =>
-      HistoryYearSummary(
-        year: int.tryParse((map['year'] as String?) ?? '') ?? 0,
-        recordCount: (map['count'] as num?)?.toInt() ?? 0,
-      );
-}
-
 /// Zagregowany widok pola na liście Historii (jedno pole + liczba prac).
 class HistoryFieldSummary {
   final String fieldId;
