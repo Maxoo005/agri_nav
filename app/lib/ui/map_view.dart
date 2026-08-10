@@ -31,6 +31,7 @@ import 'finish_work_dialog.dart';
 import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
+import '../utils/elastic_warp.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapView — główny ekran nawigacji rolniczej
@@ -154,6 +155,18 @@ class _MapViewState extends State<MapView> {
   // ── Linia AB ────────────────────────────────────────────────────────────────
   LatLng? _pointA;
   LatLng? _pointB;
+
+  // ── Wyznaczanie AB: tryb "2 punkty" (stuknięcia na mapie) ───────────────────
+  bool _abTapMode = false;
+
+  /// Pierwsze stuknięcie (kandydat na A), dopóki drugie nie zatwierdzi linii.
+  /// Osobne od [_pointA], żeby anulowanie w trakcie wyznaczania nie
+  /// nadpisywało już zatwierdzonej, poprzedniej linii AB.
+  LatLng? _abTapPending;
+
+  // ── Wyznaczanie AB: tryb "przejazd" (nagrywanie RTK + dopasowanie) ──────────
+  bool _abRecording = false;
+  final List<LatLng> _abRecordedPoints = [];
 
   // ── Granice pola (PolygonLayer — gotowe do podpięcia) ───────────────────────
   final List<LatLng> _fieldBoundary = [];
@@ -301,6 +314,16 @@ class _MapViewState extends State<MapView> {
       return;
     }
 
+    // ── Nagrywanie linii AB przez przejazd ──────────────────────────────────
+    // Filtr jakości fixa MUSI być na fixStatus (rtkFixed), nie na
+    // pos.isAccurate — to drugie przepuszcza też zwykły GPS telefonu i DGPS
+    // (patrz GpsLocationService._fromGnss), a błąd kąta z takich punktów
+    // zaprzepaściłby cały sens tego trybu.
+    if (_abRecording &&
+        GpsLocationService.instance.fixStatus == GpsFixStatus.rtkFixed) {
+      _abRecordedPoints.add(newPos); // rebuild via setState() poniżej
+    }
+
     // Kurs: używaj heading z GPS jeśli dostępny (speed-gated by service),
     // inaczej oblicz z kolejnych pozycji
     double heading = _tractorHeading;
@@ -400,10 +423,26 @@ class _MapViewState extends State<MapView> {
   // ── Granica pola (DrawingMode) ────────────────────────────────────────────
 
   void _toggleDrawingMode() {
+    if (!_drawingMode && _abRecording) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Zatrzymaj nagrywanie linii AB przed rysowaniem granicy'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
     setState(() {
       _drawingMode = !_drawingMode;
       if (_drawingMode) {
         _clearControlPointsState();
+        _abTapMode = false;
+        // Nowo rysowana granica nie powinna dziedziczyć linii AB z
+        // poprzednio wczytanego/aktywnego pola.
+        _pointA = null;
+        _pointB = null;
+        NavBridge.instance.resetAbLine();
         _fieldBoundary.clear();
         _swaths = [];
         _headlandRings = [];
@@ -583,8 +622,10 @@ class _MapViewState extends State<MapView> {
       _headlandLaps = plan?.headlandLaps ?? 0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
-      if (field.lineA != null) _pointA = field.lineA;
-      if (field.lineB != null) _pointB = field.lineB;
+      // Zawsze przypisz (również gdy null) — inaczej linia AB poprzednio
+      // wczytanego pola "przecieka" do pola, które żadnej linii nie ma.
+      _pointA = field.lineA;
+      _pointB = field.lineB;
     });
     if (_pointA != null && _pointB != null) {
       NavBridge.instance.setAbLine(
@@ -593,6 +634,14 @@ class _MapViewState extends State<MapView> {
         _pointB!.latitude,
         _pointB!.longitude,
       );
+    } else {
+      NavBridge.instance.resetAbLine();
+    }
+    // Ścieżki od razu gotowe (z zapisanej linii AB, jeśli jest, inaczej z
+    // autokąta) — bez tego Tryb Pracy startowałby z pustą siatką, dopóki
+    // użytkownik ręcznie nie tapnie "Generuj".
+    if (_fieldBoundary.length >= 3) {
+      await _planSwaths(workingWidthM: _activeWorkingWidth);
     }
     // Dopasuj kamerę do granic pola z marginesem 40px
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -631,7 +680,10 @@ class _MapViewState extends State<MapView> {
         ..clear();
       setState(() => _trackingCoverage = true);
     }
-    await _planSwaths(workingWidthM: plan.workingWidthM);
+    // _loadField już wygenerowało ścieżki (patrz komentarz tam) — z tą samą
+    // szerokością, bo _activeMachine (ustawione z planu) determinuje
+    // _activeWorkingWidth == plan.workingWidthM. Drugie wywołanie tu
+    // powtórzyłoby ten sam koszt (~20-200 ms) bez żadnej korzyści.
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -652,6 +704,10 @@ class _MapViewState extends State<MapView> {
     double overlap = _overlapM;
     int laps = _headlandLaps;
     double angle = _swathAngleDeg;
+    // Gdy linia AB jest wyznaczona (stuknięciami lub przejazdem), kierunek
+    // pochodzi z niej — suwak staje się tylko podglądem, żeby przypadkowe
+    // przeciągnięcie nie zgubiło precyzyjnie wyznaczonego kąta po cichu.
+    final hasAbLine = _pointA != null && _pointB != null;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -722,7 +778,10 @@ class _MapViewState extends State<MapView> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Kierunek ścieżek: ${angle.toStringAsFixed(0)}°',
+                hasAbLine
+                    ? 'Kierunek ścieżek: ${angle.toStringAsFixed(0)}° '
+                        '(z linii AB — użyj "Wyczyść AB", aby ustawić ręcznie)'
+                    : 'Kierunek ścieżek: ${angle.toStringAsFixed(0)}°',
                 style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
               Slider(
@@ -731,7 +790,7 @@ class _MapViewState extends State<MapView> {
                 divisions: 179,
                 value: angle,
                 activeColor: Colors.tealAccent,
-                onChanged: (v) => setDlg(() => angle = v),
+                onChanged: hasAbLine ? null : (v) => setDlg(() => angle = v),
               ),
             ],
           ),
@@ -772,7 +831,12 @@ class _MapViewState extends State<MapView> {
     final polygon =
         _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
 
-    final (a, b) = _abFromAngle(_swathAngleDeg);
+    // Preferuj rzeczywistą linię AB (stuknięcia / przejazd) — dostarcza
+    // dokładny kierunek. Bez niej, dotychczasowy syntetyczny punkt A/B
+    // wokół centroidu granicy, tylko z kąta suwaka.
+    final (a, b) = (_pointA != null && _pointB != null)
+        ? (_pointA!, _pointB!)
+        : _abFromAngle(_swathAngleDeg);
     final ax = a.latitude, ay = a.longitude;
     final bx = b.latitude, by = b.longitude;
     final overlapM = _overlapM;
@@ -847,6 +911,17 @@ class _MapViewState extends State<MapView> {
   // ── Widok Pracy (WorkMode) ──────────────────────────────────────────────────
 
   Future<void> _launchWorkMode() async {
+    if (_abRecording) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Zakończ nagrywanie linii AB przed wejściem w Tryb Pracy'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     // Upewnij się, że coverage jest aktywne przed wejściem w tryb pracy
     if (!_trackingCoverage && _activeField != null) {
       CoverageService.instance
@@ -998,6 +1073,16 @@ class _MapViewState extends State<MapView> {
   }
 
   void _toggleControlPointsMode() {
+    if (!_controlPointsMode && _abRecording) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Zatrzymaj nagrywanie linii AB przed korektą punktami kontrolnymi'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
     setState(() {
       final turningOn = !_controlPointsMode;
       _clearControlPointsState();
@@ -1005,28 +1090,60 @@ class _MapViewState extends State<MapView> {
         _controlPointsMode = true;
         _drawingMode = false;
         _nudgePanelVisible = false;
+        _abTapMode = false;
+        _abTapPending = null;
       }
     });
   }
 
-  /// Najbliższy surowy wierzchołek granicy katastralnej (przed CP i offsetem)
+  /// Najbliższy punkt na surowej granicy katastralnej (przed CP i offsetem)
   /// w promieniu ~40px ekranu od [tapped], albo `null` gdy brak trafienia.
-  LatLng? _nearestRawVertex(LatLng tapped) {
+  ///
+  /// Szuka wzdłuż CAŁEJ granicy (każdej krawędzi między kolejnymi
+  /// wierzchołkami), nie tylko w samych wierzchołkach — dla korekty
+  /// elastycznej (4+ par) punkty kontrolne trzeba móc rozłożyć równomiernie
+  /// po całym obwodzie, nie tylko w narożnikach (patrz
+  /// [ElasticWarp.densifyRing], który odkształca właśnie te
+  /// "międzywierzchołkowe" odcinki). Zwraca punkt
+  /// interpolowany liniowo między dwoma najbliższymi wierzchołkami — przy
+  /// trafieniu dokładnie w narożnik to po prostu ten wierzchołek (zachowanie
+  /// jak dawniej).
+  LatLng? _nearestBoundaryPoint(LatLng tapped) {
     final field = _activeField;
-    if (field == null) return null;
+    if (field == null || field.boundaryLats.length < 2) return null;
     const thresholdPx = 40.0;
     final tappedPt = _mapController.camera.latLngToScreenPoint(tapped);
     LatLng? best;
     var bestDist = thresholdPx;
-    for (var i = 0; i < field.boundaryLats.length; i++) {
-      final vertex = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
-      final vertexPt = _mapController.camera.latLngToScreenPoint(vertex);
-      final dx = vertexPt.x - tappedPt.x;
-      final dy = vertexPt.y - tappedPt.y;
+    final n = field.boundaryLats.length;
+    for (var i = 0; i < n; i++) {
+      final a = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
+      final b = LatLng(
+        field.boundaryLats[(i + 1) % n],
+        field.boundaryLons[(i + 1) % n],
+      );
+      final aPt = _mapController.camera.latLngToScreenPoint(a);
+      final bPt = _mapController.camera.latLngToScreenPoint(b);
+      final abx = bPt.x - aPt.x;
+      final aby = bPt.y - aPt.y;
+      final abLenSq = abx * abx + aby * aby;
+      var t = 0.0;
+      if (abLenSq > 1e-9) {
+        t = ((tappedPt.x - aPt.x) * abx + (tappedPt.y - aPt.y) * aby) /
+            abLenSq;
+        t = t.clamp(0.0, 1.0);
+      }
+      final projX = aPt.x + t * abx;
+      final projY = aPt.y + t * aby;
+      final dx = tappedPt.x - projX;
+      final dy = tappedPt.y - projY;
       final dist = math.sqrt(dx * dx + dy * dy);
       if (dist < bestDist) {
         bestDist = dist;
-        best = vertex;
+        best = LatLng(
+          a.latitude + t * (b.latitude - a.latitude),
+          a.longitude + t * (b.longitude - a.longitude),
+        );
       }
     }
     return best;
@@ -1035,12 +1152,12 @@ class _MapViewState extends State<MapView> {
   void _handleControlPointTap(LatLng latLng) {
     if (_activeField == null) return;
     if (_cpPendingSource == null) {
-      final snapped = _nearestRawVertex(latLng);
+      final snapped = _nearestBoundaryPoint(latLng);
       if (snapped == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content:
-                Text('Stuknij bliżej wierzchołka granicy (czerwony punkt)'),
+            content: Text(
+                'Stuknij bliżej granicy pola (przerywana pomarańczowa linia)'),
           ),
         );
         return;
@@ -1056,7 +1173,11 @@ class _MapViewState extends State<MapView> {
   }
 
   /// Przelicza podgląd na żywo (niezatwierdzony fit) z aktualnych par.
-  /// Wymaga wywołania wewnątrz `setState`.
+  /// Metoda dopasowania jest funkcją samej liczby par — bez ręcznego wyboru
+  /// trybu: 2-3 pary → transformacja podobieństwa (jak dotychczas), od
+  /// [ElasticWarp.minControlPoints] par → automatyczne przejście na
+  /// dopasowanie elastyczne (patrz [ControlPointsPanel] — etykieta metody
+  /// aktualizuje się na żywo). Wymaga wywołania wewnątrz `setState`.
   void _updateCpPreview() {
     final field = _activeField;
     if (field == null || _cpPairs.length < 2) {
@@ -1064,24 +1185,49 @@ class _MapViewState extends State<MapView> {
       return;
     }
     final origin = field.center;
-    final src = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
-    final tgt = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
-    final fit = GeoUtils.fitSimilarity2D(src, tgt);
-    _cpPreviewBoundary = List.generate(field.boundaryLats.length, (i) {
-      final raw = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
-      final corrected = GeoUtils.applySimilarity2D(
-        origin,
-        raw,
-        rotationRad: fit.rotationRad,
-        scale: fit.scale,
-        txM: fit.txM,
-        tyM: fit.tyM,
-      );
+    if (_cpPairs.length < ElasticWarp.minControlPoints) {
+      final src =
+          _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
+      final tgt =
+          _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
+      final fit = GeoUtils.fitSimilarity2D(src, tgt);
+      _cpPreviewBoundary = List.generate(field.boundaryLats.length, (i) {
+        final raw = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
+        final corrected = GeoUtils.applySimilarity2D(
+          origin,
+          raw,
+          rotationRad: fit.rotationRad,
+          scale: fit.scale,
+          txM: fit.txM,
+          tyM: fit.tyM,
+        );
+        return LatLng(
+          corrected.latitude + field.offsetLat,
+          corrected.longitude + field.offsetLon,
+        );
+      });
+      return;
+    }
+    final src =
+        _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
+    final tgt =
+        _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
+    final warp = ElasticWarp.fit(src, tgt);
+    // Zagęść surowe krawędzie przed transformacją, tak samo jak
+    // FieldModel.boundary — inaczej podgląd (proste odcinki między
+    // narożnikami) wyglądałby inaczej niż zapisany wynik.
+    final rawEnu = ElasticWarp.densifyRing(List.generate(
+        field.boundaryLats.length,
+        (i) => GeoUtils.toEnu(
+            origin, LatLng(field.boundaryLats[i], field.boundaryLons[i]))));
+    _cpPreviewBoundary = rawEnu.map((p) {
+      final t = warp.transform(p);
+      final corrected = GeoUtils.fromEnu(origin, t.e, t.n);
       return LatLng(
         corrected.latitude + field.offsetLat,
         corrected.longitude + field.offsetLon,
       );
-    });
+    }).toList();
   }
 
   void _undoLastCpPair() {
@@ -1103,6 +1249,16 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  /// Usuwa pojedynczą parę o indeksie [index] — pozwala poprawić jedną
+  /// konkretną parę (np. przy korekcie elastycznej z wieloma parami) bez
+  /// cofania wszystkich dodanych po niej.
+  void _removeCpPair(int index) {
+    setState(() {
+      _cpPairs.removeAt(index);
+      _updateCpPreview();
+    });
+  }
+
   void _cancelControlPoints() {
     setState(_clearControlPointsState);
   }
@@ -1119,8 +1275,11 @@ class _MapViewState extends State<MapView> {
       );
       return;
     }
-    final updated = await GeoportalService.instance
-        .applyControlPoints(_activeField!, _cpPairs);
+    final updated = _cpPairs.length >= ElasticWarp.minControlPoints
+        ? await GeoportalService.instance
+            .applyControlPointsElastic(_activeField!, _cpPairs)
+        : await GeoportalService.instance
+            .applyControlPoints(_activeField!, _cpPairs);
     setState(() {
       _activeField = updated;
       _fieldBoundary
@@ -1140,6 +1299,310 @@ class _MapViewState extends State<MapView> {
         ..clear()
         ..addAll(updated.boundary);
     });
+  }
+
+  // ── Wyznaczanie linii AB ─────────────────────────────────────────────────────
+
+  static const double _kMinAbTapDistanceM = 2.0;
+  static const int _kMinAbRecordedPoints = 5;
+  static const double _kMinAbLineLengthM = 20.0;
+
+  // ── Tryb "2 punkty" ──────────────────────────────────────────────────────────
+
+  void _toggleAbTapMode() {
+    if (!_abTapMode) {
+      if (_abRecording) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Zatrzymaj nagrywanie linii AB przed wyznaczaniem stuknięciami'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+      setState(() {
+        _abTapMode = true;
+        _abTapPending = null;
+        _controlPointsMode = false;
+        _clearControlPointsState();
+        _drawingMode = false;
+        _nudgePanelVisible = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Dotknij mapy: punkt A (początek linii)')),
+      );
+    } else {
+      setState(() {
+        _abTapMode = false;
+        _abTapPending = null;
+      });
+    }
+  }
+
+  void _handleAbTap(LatLng latLng) {
+    final pending = _abTapPending;
+    if (pending == null) {
+      setState(() => _abTapPending = latLng);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Dotknij mapy: punkt B (koniec linii)')),
+      );
+      return;
+    }
+
+    final enu = GeoUtils.toEnu(pending, latLng);
+    final distanceM = math.sqrt(enu.e * enu.e + enu.n * enu.n);
+    if (distanceM < _kMinAbTapDistanceM) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Punkty zbyt blisko siebie — dotknij dalszego miejsca dla punktu B'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return; // zostań w oczekiwaniu na punkt B
+    }
+
+    final headingDeg = GeoUtils.bearing(pending, latLng) % 180.0;
+    setState(() {
+      _abTapMode = false;
+      _abTapPending = null;
+    });
+    _commitAbLine(pending, latLng, headingDeg, AbSource.manual2Points);
+  }
+
+  // ── Tryb "przejazd" ──────────────────────────────────────────────────────────
+
+  void _toggleAbRecording() {
+    if (_abRecording) {
+      _finalizeAbRecording();
+      return;
+    }
+    if (_drawingMode || _controlPointsMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Zakończ rysowanie/korektę granicy przed nagrywaniem linii AB'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _abRecording = true;
+      _abTapMode = false;
+      _abTapPending = null;
+      _abRecordedPoints.clear();
+      _nudgePanelVisible = false;
+    });
+  }
+
+  /// Wywoływane przez [PopScope], gdy użytkownik próbuje zejść z ekranu w
+  /// trakcie nagrywania linii AB (np. gestem "wstecz") — pyta, czy odrzucić
+  /// zebrane punkty, zamiast po cichu je tracić.
+  Future<void> _handleAbRecordingPopAttempt() async {
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: const Text('Nagrywanie w toku',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'Trwa nagrywanie linii AB. Wyjście teraz odrzuci zebrane punkty.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Zostań'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red[800]),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Odrzuć i wyjdź'),
+          ),
+        ],
+      ),
+    );
+    if (discard != true) return;
+    _cancelAbRecording();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  void _cancelAbRecording() {
+    setState(() {
+      _abRecording = false;
+      _abRecordedPoints.clear();
+    });
+  }
+
+  /// Zatrzymuje zbieranie i liczy dopasowanie. Gdy przejazd jest za krótki
+  /// albo ma za mało punktów RTK Fixed, NIE przerywa nagrywania — bufor
+  /// zostaje, użytkownik może jechać dalej i nacisnąć "Zakończ" ponownie,
+  /// zamiast tracić dotychczasowy przejazd.
+  Future<void> _finalizeAbRecording() async {
+    final points = List<LatLng>.from(_abRecordedPoints);
+    final fit = GeoUtils.fitLineThroughPoints(points);
+
+    if (fit == null || points.length < _kMinAbRecordedPoints) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Za mało punktów o jakości RTK Fixed (zebrano: ${points.length}, '
+            'wymagane min. $_kMinAbRecordedPoints). Sprawdź połączenie z '
+            'odbiornikiem RTK i jedź dalej — nagrywanie trwa.'),
+        backgroundColor: Colors.red[800],
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+    if (fit.lengthM < _kMinAbLineLengthM) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Przejazd zbyt krótki (${fit.lengthM.toStringAsFixed(1)} m, '
+            'wymagane min. ${_kMinAbLineLengthM.toStringAsFixed(0)} m) — jedź '
+            'dalej i spróbuj ponownie.'),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    setState(() => _abRecording = false);
+    await _showAbRecordingConfirmDialog(fit, pointCount: points.length);
+  }
+
+  Future<void> _showAbRecordingConfirmDialog(
+    AbLineFit fit, {
+    required int pointCount,
+  }) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: const Text('Linia AB z przejazdu',
+            style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Długość odcinka: ${fit.lengthM.toStringAsFixed(1)} m',
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text('Kierunek: ${fit.headingDeg.toStringAsFixed(1)}°',
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text('Punkty (RTK Fixed): $pointCount',
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            const SizedBox(height: 4),
+            Text(
+                'Rozrzut od prostej (RMS): '
+                '${(fit.rmsM * 100).toStringAsFixed(1)} cm',
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Odrzuć')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Zapisz'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+    _abRecordedPoints.clear();
+    await _commitAbLine(
+        fit.pointA, fit.pointB, fit.headingDeg, AbSource.drivenRecording);
+  }
+
+  /// Tekst statusu AB pokazywany w panelu "POLE" — jasno mówi, z czego
+  /// aktualnie korzysta SwathGuidance, zamiast zmuszać do zgadywania.
+  String _abStatusLabel(FieldModel field) {
+    if (_pointA == null || _pointB == null) {
+      return 'Linia AB: nie ustawiona (używam domyślnej)';
+    }
+    return switch (field.abSource) {
+      AbSource.manual2Points => 'Linia AB: ustawiona (ręcznie)',
+      AbSource.drivenRecording => 'Linia AB: ustawiona (przejazd)',
+      AbSource.unknown => 'Linia AB: ustawiona (nieznana metoda)',
+      AbSource.none => 'Linia AB: ustawiona (nieznana metoda)',
+    };
+  }
+
+  // ── Wspólny zapis / czyszczenie ──────────────────────────────────────────────
+
+  /// Zapisuje linię AB do tego samego miejsca, gdzie dziś przechowywany jest
+  /// kierunek ścieżek dla SwathGuidance — [FieldModel.lineALat]/[lineALon]/
+  /// [lineBLat]/[lineBLon] — niezależnie od tego, czy pochodzi ze stuknięć,
+  /// czy z dopasowania po przejeździe.
+  Future<void> _commitAbLine(
+    LatLng a,
+    LatLng b,
+    double headingDeg,
+    AbSource source,
+  ) async {
+    setState(() {
+      _pointA = a;
+      _pointB = b;
+      _swathAngleDeg = headingDeg;
+    });
+    NavBridge.instance
+        .setAbLine(a.latitude, a.longitude, b.latitude, b.longitude);
+
+    final field = _activeField;
+    if (field != null) {
+      field
+        ..lineALat = a.latitude
+        ..lineALon = a.longitude
+        ..lineBLat = b.latitude
+        ..lineBLon = b.longitude
+        ..abSource = source;
+      await FieldService.instance.save(field);
+      if (!mounted) return;
+      setState(() => _savedFields = FieldService.instance.getAll());
+    }
+
+    // Od razu pokaż efekt na mapie — bez dodatkowego "Generuj".
+    if (_fieldBoundary.length >= 3) {
+      await _planSwaths(workingWidthM: _activeWorkingWidth);
+    }
+  }
+
+  Future<void> _clearAbLine() async {
+    final field = _activeField;
+    setState(() {
+      _pointA = null;
+      _pointB = null;
+      _abTapMode = false;
+      _abTapPending = null;
+      _abRecording = false;
+      _abRecordedPoints.clear();
+      if (_fieldBoundary.length >= 3) {
+        _swathAngleDeg = GeoUtils.minPassesBearing(_fieldBoundary);
+      }
+    });
+    NavBridge.instance.resetAbLine();
+
+    if (field != null) {
+      field
+        ..lineALat = null
+        ..lineALon = null
+        ..lineBLat = null
+        ..lineBLon = null
+        ..abSource = AbSource.none;
+      await FieldService.instance.save(field);
+      if (!mounted) return;
+      setState(() => _savedFields = FieldService.instance.getAll());
+    }
+
+    if (_fieldBoundary.length >= 3) {
+      await _planSwaths(workingWidthM: _activeWorkingWidth);
+    }
   }
 
   void _toggleCoverage() {
@@ -1328,6 +1791,17 @@ class _MapViewState extends State<MapView> {
 
           _buildSectionHeader('POLE'),
           const SizedBox(height: 8),
+          if (_activeField != null) ...[
+            Text(
+              _abStatusLabel(_activeField!),
+              style: TextStyle(
+                color: _pointA != null ? Colors.greenAccent : Colors.white54,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Wrap(
             spacing: 8, runSpacing: 8,
             children: [
@@ -1350,10 +1824,7 @@ class _MapViewState extends State<MapView> {
                   onPressed: _toggleControlPointsMode,
                 ),
               if (_activeField != null &&
-                  (_activeField!.cpRotationRad != 0.0 ||
-                      _activeField!.cpScale != 1.0 ||
-                      _activeField!.cpTxM != 0.0 ||
-                      _activeField!.cpTyM != 0.0))
+                  _activeField!.correctionMode != FieldCorrectionMode.none)
                 _ActionTile(
                   icon: Icons.restart_alt,
                   label: 'Resetuj CP',
@@ -1380,6 +1851,31 @@ class _MapViewState extends State<MapView> {
                 isActive: _swaths.isNotEmpty || _headlandRings.isNotEmpty,
                 onPressed: _showSwathParamsDialog,
               ),
+              if (_activeField != null)
+                _ActionTile(
+                  icon: Icons.touch_app_outlined,
+                  label: 'AB: 2 punkty',
+                  tooltip: 'Wyznacz linię AB stuknięciami na mapie (szybkie, '
+                      'dla wąskich maszyn)',
+                  isActive: _abTapMode,
+                  onPressed: _toggleAbTapMode,
+                ),
+              if (_activeField != null)
+                _ActionTile(
+                  icon: Icons.route_outlined,
+                  label: 'AB: przejazd',
+                  tooltip: 'Wyznacz linię AB z rzeczywistego przejazdu RTK '
+                      '(precyzyjne, dla szerokich maszyn)',
+                  isActive: _abRecording,
+                  onPressed: _toggleAbRecording,
+                ),
+              if (_pointA != null)
+                _ActionTile(
+                  icon: Icons.clear,
+                  label: 'Wyczyść AB',
+                  tooltip: 'Usuń wyznaczoną linię AB (wróć do kąta auto)',
+                  onPressed: _clearAbLine,
+                ),
             ],
           ),
           const SizedBox(height: 16),
@@ -1683,7 +2179,11 @@ class _MapViewState extends State<MapView> {
       wmsOptions: WMSTileLayerOptions(
         baseUrl: kGeoportalWmsUrl,
         layers: const ['Raster'],
-        format: 'image/png',
+        // JPEG zamiast PNG — warstwa jest nieprzezroczysta (transparent: false),
+        // więc kompresja bezstratna PNG nie ma tu żadnej zalety, a kafelki
+        // zdjęć lotniczych w JPEG są kilkukrotnie mniejsze (potwierdzone
+        // wsparcie w GetCapabilities serwera ORTO/WMS/HighResolution).
+        format: 'image/jpeg',
         transparent: false,
         version: '1.1.1',
         crs: const Epsg3857(),
@@ -1729,11 +2229,19 @@ class _MapViewState extends State<MapView> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _mapMode == MapLayerMode.work
-          ? const Color(0xFF1A1A1A)
-          : Colors.black,
-      body: Stack(
+    return PopScope(
+      // Nagrywanie linii AB trwa zwykle kilka minut fizycznego przejazdu —
+      // przypadkowe zejście z ekranu (gest "wstecz") nie powinno po cichu
+      // gubić zebranych punktów.
+      canPop: !_abRecording,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _handleAbRecordingPopAttempt();
+      },
+      child: Scaffold(
+        backgroundColor: _mapMode == MapLayerMode.work
+            ? const Color(0xFF1A1A1A)
+            : Colors.black,
+        body: Stack(
         children: [
           // ── FlutterMap ──────────────────────────────────────────────────────
           FlutterMap(
@@ -1744,6 +2252,10 @@ class _MapViewState extends State<MapView> {
               onTap: (_, latLng) {
                 if (_controlPointsMode) {
                   _handleControlPointTap(latLng);
+                  return;
+                }
+                if (_abTapMode) {
+                  _handleAbTap(latLng);
                   return;
                 }
                 if (!_drawingMode) setState(() => _followTractor = false);
@@ -1931,6 +2443,60 @@ class _MapViewState extends State<MapView> {
                   ],
                 ),
 
+              // ── Linia AB — nagrywanie na żywo (tryb "przejazd") ─────────────
+              if (_abRecording && _abRecordedPoints.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _abRecordedPoints,
+                      color: Colors.pinkAccent.withValues(alpha: 0.55),
+                      strokeWidth: 3.0,
+                    ),
+                  ],
+                ),
+
+              // ── Linia AB — zatwierdzona (stuknięcia lub przejazd) ───────────
+              if (_pointA != null && _pointB != null)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: [_pointA!, _pointB!],
+                      color: Colors.pinkAccent,
+                      strokeWidth: 2.5,
+                    ),
+                  ],
+                ),
+              if ((_pointA != null && _pointB != null) ||
+                  _abTapPending != null)
+                CircleLayer(
+                  circles: [
+                    if (_pointA != null)
+                      CircleMarker(
+                        point: _pointA!,
+                        radius: 6,
+                        color: Colors.pinkAccent,
+                        borderColor: Colors.white,
+                        borderStrokeWidth: 1.5,
+                      ),
+                    if (_pointB != null)
+                      CircleMarker(
+                        point: _pointB!,
+                        radius: 6,
+                        color: Colors.purpleAccent,
+                        borderColor: Colors.white,
+                        borderStrokeWidth: 1.5,
+                      ),
+                    if (_abTapPending != null)
+                      CircleMarker(
+                        point: _abTapPending!,
+                        radius: 7,
+                        color: Colors.pinkAccent,
+                        borderColor: Colors.yellow,
+                        borderStrokeWidth: 2,
+                      ),
+                  ],
+                ),
+
               // ── Ikona ciągnika ────────────────────────────────────────────────
               MarkerLayer(
                 markers: [
@@ -1976,8 +2542,26 @@ class _MapViewState extends State<MapView> {
                 hasPendingSource: _cpPendingSource != null,
                 onUndo: _undoLastCpPair,
                 onReset: _resetCpPairs,
+                onRemovePair: _removeCpPair,
                 onCancel: _cancelControlPoints,
                 onConfirm: _confirmControlPoints,
+              ),
+            ),
+
+          // ── Panel nagrywania linii AB (tryb "przejazd") ───────────────────────
+          if (_abRecording)
+            Positioned(
+              left: 12,
+              bottom: 200,
+              child: AbRecordingPanel(
+                pointCount: _abRecordedPoints.length,
+                lengthM: _abRecordedPoints.length >= 2
+                    ? GeoUtils.fitLineThroughPoints(_abRecordedPoints)
+                        ?.lengthM
+                    : null,
+                fixStatus: GpsLocationService.instance.fixStatus,
+                onStop: _finalizeAbRecording,
+                onCancel: _cancelAbRecording,
               ),
             ),
 
@@ -2146,6 +2730,7 @@ class _MapViewState extends State<MapView> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

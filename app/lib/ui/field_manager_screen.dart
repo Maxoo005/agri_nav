@@ -256,6 +256,12 @@ class _FieldTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final pts = field.boundaryLats.length;
     final hasAb = field.lineA != null && field.lineB != null;
+    final abLabel = switch (field.abSource) {
+      AbSource.manual2Points => '  •  AB: ręcznie',
+      AbSource.drivenRecording => '  •  AB: przejazd',
+      AbSource.unknown => '  •  AB: nieznana metoda',
+      AbSource.none => '',
+    };
     final areaHa = field.areaHa ?? GeoUtils.polygonAreaHa(field.boundary);
 
     return ListTile(
@@ -275,7 +281,7 @@ class _FieldTile extends StatelessWidget {
       subtitle: Text(
         '${areaHa > 0 ? '${areaHa.toStringAsFixed(2)} ha  •  ' : ''}'
         '$pts wierzchołków'
-        '${hasAb ? '  •  linia AB ✓' : ''}',
+        '${hasAb ? abLabel : ''}',
         style: const TextStyle(color: Colors.white54, fontSize: 12),
       ),
       trailing: Row(
