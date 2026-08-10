@@ -18,6 +18,12 @@ class MachineService {
       _box.values.map((e) => MachineModel.fromJson(e as Map)).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
+  MachineModel? getById(String? id) {
+    if (id == null) return null;
+    final raw = _box.get(id);
+    return raw != null ? MachineModel.fromJson(raw as Map) : null;
+  }
+
   ValueListenable<Box> get listenable => _box.listenable();
 
   Future<void> save(MachineModel m) => _box.put(m.id, m.toJson());

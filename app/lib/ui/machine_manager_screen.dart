@@ -118,7 +118,10 @@ class MachineManagerScreen extends StatelessWidget {
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
     final widthCtrl = TextEditingController(
         text: existing?.workingWidthM?.toStringAsFixed(1) ?? '');
+    final tankCtrl = TextEditingController(
+        text: existing?.tankCapacity?.toStringAsFixed(0) ?? '');
     MachineType selectedType = existing?.type ?? MachineType.tractor;
+    MaterialUnit selectedUnit = existing?.tankUnit ?? MaterialUnit.liters;
 
     final result = await showDialog<bool>(
       context: context,
@@ -195,6 +198,52 @@ class MachineManagerScreen extends StatelessWidget {
                         borderSide: BorderSide(color: Colors.greenAccent)),
                   ),
                 ),
+                if (selectedType == MachineType.sprayer) ...[
+                  const SizedBox(height: 12),
+                  // Pojemność zbiornika
+                  TextField(
+                    controller: tankCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Pojemność zbiornika',
+                      labelStyle: const TextStyle(color: Colors.white54),
+                      hintText: 'np. 3000',
+                      hintStyle: const TextStyle(color: Colors.white24),
+                      suffixText: selectedUnit.shortLabel,
+                      suffixStyle: const TextStyle(color: Colors.white38),
+                      enabledBorder: const UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.white24)),
+                      focusedBorder: const UnderlineInputBorder(
+                          borderSide: BorderSide(color: Colors.greenAccent)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Jednostka
+                  const Text('Jednostka',
+                      style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    children: MaterialUnit.values.map((u) {
+                      final sel = selectedUnit == u;
+                      return ChoiceChip(
+                        label: Text(u.label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: sel ? Colors.black : Colors.white70,
+                            )),
+                        selected: sel,
+                        selectedColor: Colors.greenAccent,
+                        backgroundColor: const Color(0xFF1E1E1E),
+                        side: BorderSide(
+                            color: sel ? Colors.greenAccent : Colors.white24),
+                        onSelected: (_) => setS(() => selectedUnit = u),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ],
             ),
           ),
@@ -217,12 +266,18 @@ class MachineManagerScreen extends StatelessWidget {
     if (name.isEmpty) return;
 
     final width = double.tryParse(widthCtrl.text.trim().replaceAll(',', '.'));
+    final isSprayer = selectedType == MachineType.sprayer;
+    final tankCapacity = isSprayer
+        ? double.tryParse(tankCtrl.text.trim().replaceAll(',', '.'))
+        : null;
 
     final machine = MachineModel(
       id: existing?.id ?? const Uuid().v4(),
       name: name,
       type: selectedType,
       workingWidthM: width,
+      tankCapacity: tankCapacity,
+      tankUnit: isSprayer ? selectedUnit : null,
     );
     await MachineService.instance.save(machine);
   }
@@ -343,9 +398,14 @@ class _MachineTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final w = machine.workingWidthM;
-    final subtitle = w != null
+    var subtitle = w != null
         ? '${machine.type.label}  •  szerokość robocza: ${w.toStringAsFixed(1)} m'
         : '${machine.type.label}  •  szerokość: N/A (napęd)';
+    final tank = machine.tankCapacity;
+    if (machine.type == MachineType.sprayer && tank != null) {
+      final unit = (machine.tankUnit ?? MaterialUnit.liters).shortLabel;
+      subtitle += '  •  zbiornik: ${tank.toStringAsFixed(0)} $unit';
+    }
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),

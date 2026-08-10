@@ -43,26 +43,41 @@ class HistoryDatabase {
     final path = await getDatabasePath();
     return openDatabase(
       path,
-      version: 1,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE $_table (
-            id               TEXT PRIMARY KEY,
-            field_id         TEXT,
-            field_name       TEXT,
-            machine          TEXT,
-            task_type        TEXT,
-            working_width_m  REAL,
-            overlap_m        REAL,
-            swath_angle_deg  REAL,
-            work_duration_ms INTEGER,
-            covered_ha       REAL,
-            note             TEXT,
-            completed_at     TEXT
+            id                       TEXT PRIMARY KEY,
+            field_id                 TEXT,
+            field_name               TEXT,
+            machine                  TEXT,
+            task_type                TEXT,
+            working_width_m          REAL,
+            overlap_m                REAL,
+            swath_angle_deg          REAL,
+            work_duration_ms         INTEGER,
+            covered_ha               REAL,
+            productivity_ha_per_hour REAL,
+            material_consumed        REAL,
+            material_unit            TEXT,
+            note                     TEXT,
+            completed_at             TEXT
           )
         ''');
         await db.execute(
             'CREATE INDEX idx_history_field ON $_table (field_id, completed_at)');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(
+              'ALTER TABLE $_table ADD COLUMN productivity_ha_per_hour REAL');
+        }
+        if (oldVersion < 3) {
+          await db.execute(
+              'ALTER TABLE $_table ADD COLUMN material_consumed REAL');
+          await db
+              .execute('ALTER TABLE $_table ADD COLUMN material_unit TEXT');
+        }
       },
     );
   }

@@ -12,6 +12,7 @@ import 'app_theme.dart';
 import '../models/field_model.dart';
 import '../models/history_record.dart';
 import '../models/machine_model.dart';
+import '../services/machine_service.dart';
 import '../models/task_plan.dart';
 import '../models/work_task.dart';
 import '../services/coverage_service.dart';
@@ -32,6 +33,7 @@ import 'machine_selector_screen.dart';
 import 'work_mode_view.dart';
 import '../utils/geo_utils.dart';
 import '../utils/elastic_warp.dart';
+import 'widgets/degree_angle_input.dart';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapView — główny ekran nawigacji rolniczej
@@ -182,6 +184,12 @@ class _MapViewState extends State<MapView> {
   bool _trackingCoverage = false;
   double _coveredHa = 0.0;
   List<LatLng> _savedTrack = [];
+
+  /// Surowa (nie-zdeduplikowana) powierzchnia dla liczenia zużycia materiału —
+  /// patrz [GeoUtils.trackSweptAreaHa]. Osobna od [_coveredHa]: nakładki mają
+  /// się liczyć ponownie tutaj, w przeciwieństwie do liczenia hektarów.
+  double _rawMaterialAreaHa = 0.0;
+  LatLng? _lastMaterialPos;
 
   // ── Parametry generowania ścieżek ───────────────────────────────────────────
   double _overlapM = 0.0; // zakładka [m]
@@ -337,6 +345,14 @@ class _MapViewState extends State<MapView> {
       }
     }
 
+    // Cofanie: kurs GPS to kierunek ruchu po ziemi, więc przy jeździe tyłem
+    // "odwraca się" o ~180° względem przodu pojazdu. Taki skok traktujemy
+    // jako cofanie i nie obracamy wskaźnika — zostaje przy ostatnim kursie
+    // jazdy do przodu, zamiast wykonywać nagły obrót o pół obrotu.
+    if (_headingDiff(heading, _tractorHeading) > 135.0) {
+      heading = _tractorHeading;
+    }
+
     // Prędkość: preferuj sprzętowy odczyt (m/s → km/h), inaczej licz z
     // przyrostu pozycji z wygładzaniem EMA i martwą strefą na szum.
     final now = DateTime.now();
@@ -378,8 +394,20 @@ class _MapViewState extends State<MapView> {
       // i zużycie materiału stoją, dopóki operator nie wznowi.
       final session = WorkSessionService.instance;
       final sessionPaused = session.isActive && session.paused;
-      if (!sessionPaused) {
+      // Poza obrysem pola nie malujemy śladu ani nie liczymy hektarów —
+      // przejazd po uwrociu/drodze dojazdowej nie ma się wliczać.
+      final insideBoundary = _activeField == null ||
+          GeoUtils.pointInPolygon(newPos, _activeField!.boundary);
+      if (!sessionPaused && !session.machineOff && insideBoundary) {
         CoverageService.instance.addPoint(newPos);
+        // Surowa powierzchnia (nakładki liczą się ponownie) — podstawa
+        // zużycia materiału, osobna od zdeduplikowanych hektarów poniżej.
+        if (_lastMaterialPos != null) {
+          final enu = GeoUtils.toEnu(_lastMaterialPos!, newPos);
+          final segM = math.sqrt(enu.e * enu.e + enu.n * enu.n);
+          _rawMaterialAreaHa += segM * _activeWorkingWidth / 10000.0;
+        }
+        _lastMaterialPos = newPos;
         if (_activeField != null) {
           SectionControlBridge.instance.addStrip(
             pos.latitude,
@@ -391,9 +419,13 @@ class _MapViewState extends State<MapView> {
           // Praca w tle: zużycie materiału naliczane także po wyjściu z
           // Trybu Pracy, dopóki sesja nie jest zakończona.
           if (session.isActive) {
-            MaterialMonitorService.instance.updateArea(coveredHa);
+            MaterialMonitorService.instance.updateArea(_rawMaterialAreaHa);
           }
         }
+      } else {
+        // Przerwa w naliczaniu (pauza / maszyna wyłączona / poza obrysem) —
+        // następny punkt nie może doliczyć fantomowego odcinka przez przerwę.
+        _lastMaterialPos = null;
       }
     }
 
@@ -568,24 +600,33 @@ class _MapViewState extends State<MapView> {
   /// zgodnie z migawką zapisaną w planie.
   Future<void> _loadField(FieldModel field, {TaskPlan? plan}) async {
     if (plan != null) {
-      _activeTask = WorkTask(
-        id: plan.id,
-        fieldId: plan.fieldId,
-        machineId: plan.machineId,
-        taskType: plan.taskType,
-        effectiveWidthM: plan.workingWidthM,
-        targetRate: plan.targetRate,
-        initialTankVolume: plan.tankVolume,
-        unit: plan.unit,
-        createdAt: plan.createdAt,
-        name: plan.name,
-      );
-      _activeMachine = MachineModel(
-        id: plan.machineId ?? '',
-        name: plan.machineName ?? '—',
-        type: MachineType.fromJson(plan.machineType),
-        workingWidthM: plan.workingWidthM,
-      );
+      // Zadanie już w toku (potwierdzony poziom zbiornika / zmieniona dawka
+      // w trakcie pracy) ma pierwszeństwo przed świeżą migawką z planu —
+      // inaczej powrót na ten ekran zgubiłby te ustawienia i zapytałby o
+      // zbiornik od nowa.
+      _activeTask = WorkTaskService.instance.getById(plan.id) ??
+          WorkTask(
+            id: plan.id,
+            fieldId: plan.fieldId,
+            machineId: plan.machineId,
+            taskType: plan.taskType,
+            effectiveWidthM: plan.workingWidthM,
+            targetRate: plan.targetRate,
+            initialTankVolume: plan.tankVolume,
+            unit: plan.unit,
+            createdAt: plan.createdAt,
+            name: plan.name,
+          );
+      // Odczytaj prawdziwy profil maszyny (pojemność/jednostka zbiornika) —
+      // migawka w TaskPlan nie przechowuje tych pól. Gdy maszyna została
+      // usunięta z bazy, wróć do migawki jako fallback.
+      _activeMachine = MachineService.instance.getById(plan.machineId) ??
+          MachineModel(
+            id: plan.machineId ?? '',
+            name: plan.machineName ?? '—',
+            type: MachineType.fromJson(plan.machineType),
+            workingWidthM: plan.workingWidthM,
+          );
     }
 
     final savedTrack = plan != null
@@ -622,6 +663,9 @@ class _MapViewState extends State<MapView> {
       _headlandLaps = plan?.headlandLaps ?? 0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
+      _rawMaterialAreaHa =
+          GeoUtils.trackSweptAreaHa(savedTrack, replayWidth);
+      _lastMaterialPos = savedTrack.isNotEmpty ? savedTrack.last : null;
       // Zawsze przypisz (również gdy null) — inaczej linia AB poprzednio
       // wczytanego pola "przecieka" do pola, które żadnej linii nie ma.
       _pointA = field.lineA;
@@ -779,18 +823,16 @@ class _MapViewState extends State<MapView> {
               const SizedBox(height: 4),
               Text(
                 hasAbLine
-                    ? 'Kierunek ścieżek: ${angle.toStringAsFixed(0)}° '
+                    ? 'Kierunek ścieżek '
                         '(z linii AB — użyj "Wyczyść AB", aby ustawić ręcznie)'
-                    : 'Kierunek ścieżek: ${angle.toStringAsFixed(0)}°',
+                    : 'Kierunek ścieżek',
                 style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
-              Slider(
-                min: 0,
-                max: 179,
-                divisions: 179,
+              DegreeAngleInput(
                 value: angle,
-                activeColor: Colors.tealAccent,
-                onChanged: hasAbLine ? null : (v) => setDlg(() => angle = v),
+                enabled: !hasAbLine,
+                color: Colors.tealAccent,
+                onChanged: (v) => setDlg(() => angle = v),
               ),
             ],
           ),
@@ -985,9 +1027,16 @@ class _MapViewState extends State<MapView> {
     // Praca działa W TLE: dopóki sesja nie została zakończona, pokrycie
     // rejestruje się dalej na mapie (użytkownik może wrócić do Trybu Pracy).
     final sessionActive = WorkSessionService.instance.isActive;
+    // CoverageService jest singletonem współdzielonym z WorkModeView — jego
+    // bufor w pamięci jest już aktualny, więc surową powierzchnię materiału
+    // odtwarzamy z niego zamiast próbować przekazywać stan między ekranami.
+    final liveTrack = CoverageService.instance.currentTrack;
     setState(() {
       _savedTrack = saved;
       _coveredHa = SectionControlBridge.instance.coveredAreaHa();
+      _rawMaterialAreaHa =
+          GeoUtils.trackSweptAreaHa(liveTrack, _activeWorkingWidth);
+      _lastMaterialPos = liveTrack.isNotEmpty ? liveTrack.last : null;
       _trackingCoverage = sessionActive;
     });
   }
@@ -997,6 +1046,10 @@ class _MapViewState extends State<MapView> {
   /// historii (z notatką), zamraża czas i kończy rejestrację pokrycia.
   Future<void> _finishActiveSession() async {
     final session = WorkSessionService.instance;
+    // Odczytaj PRZED MaterialMonitorService.stop() (zeruje stan).
+    final monitor = MaterialMonitorService.instance;
+    final materialConsumed = monitor.isActive ? monitor.totalConsumed : null;
+    final materialUnit = monitor.isActive ? monitor.state.unit : null;
     final info = FinishWorkInfo(
       fieldName: _activeField?.name ?? '',
       machineName: _activeMachine?.name ?? '',
@@ -1007,6 +1060,8 @@ class _MapViewState extends State<MapView> {
       workDuration: session.elapsed,
       coveredHa: SectionControlBridge.instance.coveredAreaHa(),
       speedKmh: _speedKmh,
+      materialConsumed: materialConsumed,
+      materialUnit: materialUnit,
     );
     final note = await showFinishWorkDialog(context, info);
     if (note == null || !mounted) return;
@@ -1023,6 +1078,9 @@ class _MapViewState extends State<MapView> {
         swathAngleDeg: _swathAngleDeg,
         workDuration: session.elapsed,
         coveredHa: SectionControlBridge.instance.coveredAreaHa(),
+        productivityHaPerHour: info.hectaresPerHour,
+        materialConsumed: materialConsumed,
+        materialUnit: materialUnit,
         note: note,
         completedAt: DateTime.now(),
       ));
@@ -1489,7 +1547,7 @@ class _MapViewState extends State<MapView> {
             Text('Długość odcinka: ${fit.lengthM.toStringAsFixed(1)} m',
                 style: const TextStyle(color: Colors.white70, fontSize: 13)),
             const SizedBox(height: 4),
-            Text('Kierunek: ${fit.headingDeg.toStringAsFixed(1)}°',
+            Text('Kierunek: ${fit.headingDeg.toStringAsFixed(2)}°',
                 style: const TextStyle(color: Colors.white70, fontSize: 13)),
             const SizedBox(height: 4),
             Text('Punkty (RTK Fixed): $pointCount',
@@ -1978,7 +2036,6 @@ class _MapViewState extends State<MapView> {
     // Step 3: pick task type + optional material params
     TaskType? selectedType;
     double? targetRate;
-    double? tankVolume;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2042,24 +2099,12 @@ class _MapViewState extends State<MapView> {
                         setDlg(() => targetRate = d);
                       },
                     ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
-                      style: const TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        labelText:
-                            'Napełnienie zbiornika (${unit?.split('/').first ?? 'l'})',
-                        labelStyle: const TextStyle(color: Colors.white54),
-                        enabledBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: Colors.white30)),
-                        focusedBorder: const UnderlineInputBorder(
-                            borderSide: BorderSide(color: Colors.greenAccent)),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 10),
+                      child: Text(
+                        'Ile jest zatankowane, ustawisz na starcie Trybu Pracy.',
+                        style: TextStyle(color: Colors.white38, fontSize: 12),
                       ),
-                      onChanged: (v) {
-                        final d = double.tryParse(v.replaceAll(',', '.'));
-                        setDlg(() => tankVolume = d);
-                      },
                     ),
                   ],
                 ],
@@ -2093,7 +2138,6 @@ class _MapViewState extends State<MapView> {
       taskType: selectedType!,
       effectiveWidthM: machine.workingWidthM,
       targetRate: targetRate,
-      initialTankVolume: tankVolume,
       unit: selectedType!.defaultUnit,
       createdAt: DateTime.now(),
     );
@@ -2224,6 +2268,12 @@ class _MapViewState extends State<MapView> {
 
   /// Delegates to [GeoUtils.bearing].
   static double _bearing(LatLng from, LatLng to) => GeoUtils.bearing(from, to);
+
+  /// Najmniejsza różnica kątowa między dwoma kursami (0–360°), wynik w [0, 180].
+  static double _headingDiff(double a, double b) {
+    final d = (a - b).abs() % 360.0;
+    return d > 180.0 ? 360.0 - d : d;
+  }
 
   // ── Build ────────────────────────────────────────────────────────────────────
 

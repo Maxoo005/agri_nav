@@ -150,7 +150,7 @@ class TaskSummaryCard extends StatelessWidget {
             SummaryRow(
               icon: Icons.explore,
               label: 'Kierunek ścieżek',
-              value: '${plan.swathAngleDeg.toStringAsFixed(0)}°',
+              value: '${plan.swathAngleDeg.toStringAsFixed(2)}°',
             ),
             if (plan.targetRate != null)
               SummaryRow(

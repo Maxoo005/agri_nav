@@ -12,9 +12,11 @@ import '../models/work_task.dart';
 import '../services/coverage_service.dart';
 import '../services/gps_location_service.dart';
 import '../services/history_database.dart';
+import '../services/machine_service.dart';
 import '../services/material_monitor_service.dart';
 import '../services/work_mode_settings_service.dart';
 import '../services/work_session_service.dart';
+import '../services/work_task_service.dart';
 import '../utils/geo_utils.dart';
 import 'finish_work_dialog.dart';
 
@@ -153,6 +155,11 @@ class _WorkModeViewState extends State<WorkModeView> {
   /// (serwis przeżywa opuszczenie tego ekranu).
   bool get _isPaused => WorkSessionService.instance.paused;
 
+  /// Ręczny wyłącznik maszyny (patrz [WorkSessionService.machineOff]) — w
+  /// odróżnieniu od pauzy NIE zatrzymuje czasu pracy ani nawigacji, tylko
+  /// malowanie śladu i zużycie materiału.
+  bool get _machineOff => WorkSessionService.instance.machineOff;
+
   /// Pozycje GPS zapisane w momencie wstrzymania — wyświetlane jako znaczniki
   /// uzupełnienia materiału na kanwie pola.
   final List<LatLng> _pauseMarkers = [];
@@ -168,7 +175,12 @@ class _WorkModeViewState extends State<WorkModeView> {
   late double _coveredHa;
   double _speedKmh = 0.0;
   double _overlapFraction = 0.0;
-  double _newAreaHaLastStrip = 0.0;
+
+  /// Surowa (nie-zdeduplikowana) powierzchnia dla liczenia zużycia materiału —
+  /// patrz [GeoUtils.trackSweptAreaHa]. Nakładki liczą się tu ponownie, w
+  /// przeciwieństwie do [_coveredHa].
+  double _rawMaterialAreaHa = 0.0;
+  LatLng? _lastMaterialPos;
 
   // ── Material monitor ─────────────────────────────────────────────────────────
   MaterialMonitorState _monitorState = MaterialMonitorState.empty;
@@ -207,6 +219,15 @@ class _WorkModeViewState extends State<WorkModeView> {
     _fieldAreaHa = GeoUtils.polygonAreaHa(widget.fieldBoundary);
     _deviationCtrl = StreamController<_DeviationSnapshot>.broadcast();
 
+    // CoverageService jest singletonem (współdzielony z MapView) — jego
+    // bufor w pamięci jest już wczytany/aktualny w tym momencie (MapView
+    // woła startTracking() przed wejściem w Tryb Pracy), więc surową
+    // powierzchnię materiału odtwarzamy z niego.
+    final liveTrack = CoverageService.instance.currentTrack;
+    _rawMaterialAreaHa =
+        GeoUtils.trackSweptAreaHa(liveTrack, widget.workingWidthM);
+    _lastMaterialPos = liveTrack.isNotEmpty ? liveTrack.last : null;
+
     // Sesja pracy działa w tle: wznawia/przypina istniejącą albo startuje
     // nową. Timer biegnie w serwisie niezależnie od tego ekranu.
     if (widget.fieldId != null) {
@@ -223,7 +244,7 @@ class _WorkModeViewState extends State<WorkModeView> {
     // Start material monitor if task has rate/tank data
     if (widget.activeTask != null) {
       MaterialMonitorService.instance
-          .start(widget.activeTask!, currentAreaHa: widget.initialCoveredHa);
+          .start(widget.activeTask!, currentAreaHa: _rawMaterialAreaHa);
       _monitorState = MaterialMonitorService.instance.state;
       _monitorSub = MaterialMonitorService.instance.stream.listen((s) {
         if (!mounted) return;
@@ -248,6 +269,14 @@ class _WorkModeViewState extends State<WorkModeView> {
           );
         }
       });
+      // Dawka ustawiona, ale nie wiadomo jeszcze ile jest zatankowane (nowe
+      // podejście: poziom zbiornika ustawia się na starcie Trybu Pracy, nie
+      // przy tworzeniu zadania) — zapytaj operatora zanim ruszy.
+      if (widget.activeTask!.targetRate != null &&
+          widget.activeTask!.initialTankVolume == null) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _showInitialFillDialog());
+      }
     }
 
     // Subskrypcja do zunifikowanego strumienia GPS (real lub symulator)
@@ -386,11 +415,23 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     double overlapFraction = _overlapFraction;
     double coveredHa = _coveredHa;
-    double newAreaHaLastStrip = _newAreaHaLastStrip;
 
-    // ── 3. Ślad pokrycia: rejestruj tylko gdy praca AKTYWNA (nie wstrzymana) ─
-    if (!_isPaused) {
+    // ── 3. Ślad pokrycia: rejestruj tylko gdy praca AKTYWNA (nie wstrzymana),
+    //    maszyna WŁĄCZONA i pojazd jest w obrysie pola — poza granicą
+    //    (uwrocie, dojazd) albo z wyłączoną maszyną nie malujemy śladu ani
+    //    nie liczymy hektarów/materiału.
+    final insideBoundary = widget.fieldBoundary.length < 3 ||
+        GeoUtils.pointInPolygon(newPos, widget.fieldBoundary);
+    if (!_isPaused && !_machineOff && insideBoundary) {
       CoverageService.instance.addPoint(newPos);
+      // Surowa powierzchnia (nakładki liczą się ponownie) — podstawa
+      // zużycia materiału, osobna od zdeduplikowanych hektarów poniżej.
+      if (_lastMaterialPos != null) {
+        final enu = GeoUtils.toEnu(_lastMaterialPos!, newPos);
+        final segM = math.sqrt(enu.e * enu.e + enu.n * enu.n);
+        _rawMaterialAreaHa += segM * widget.workingWidthM / 10000.0;
+      }
+      _lastMaterialPos = newPos;
       if (widget.fieldId != null) {
         overlapFraction = SectionControlBridge.instance.addStrip(
           pos.latitude,
@@ -399,9 +440,12 @@ class _WorkModeViewState extends State<WorkModeView> {
           widget.workingWidthM,
         );
         coveredHa = SectionControlBridge.instance.coveredAreaHa();
-        newAreaHaLastStrip = SectionControlBridge.instance.newAreaHaLastStrip();
       }
-      MaterialMonitorService.instance.updateArea(coveredHa);
+      MaterialMonitorService.instance.updateArea(_rawMaterialAreaHa);
+    } else {
+      // Przerwa w naliczaniu — następny punkt nie może doliczyć fantomowego
+      // odcinka przez przerwę (pauza / maszyna wyłączona / poza obrysem).
+      _lastMaterialPos = null;
     }
 
     // Update guidance fields directly (no setState) — used only as the
@@ -417,7 +461,6 @@ class _WorkModeViewState extends State<WorkModeView> {
       _speedKmh = speedKmh;
       _overlapFraction = overlapFraction;
       _coveredHa = coveredHa;
-      _newAreaHaLastStrip = newAreaHaLastStrip;
       _activeHeadlandRingIndex = newHeadlandRingIndex;
     });
 
@@ -450,6 +493,10 @@ class _WorkModeViewState extends State<WorkModeView> {
   /// kończy monitor materiału i rejestrację pokrycia, po czym wraca na mapę.
   Future<void> _finishWorkMode() async {
     final session = WorkSessionService.instance;
+    // Odczytaj PRZED MaterialMonitorService.stop() (zeruje stan).
+    final monitor = MaterialMonitorService.instance;
+    final materialConsumed = monitor.isActive ? monitor.totalConsumed : null;
+    final materialUnit = monitor.isActive ? monitor.state.unit : null;
     final info = FinishWorkInfo(
       fieldName: widget.fieldName ?? '',
       machineName: widget.machineName ?? '',
@@ -460,6 +507,8 @@ class _WorkModeViewState extends State<WorkModeView> {
       workDuration: session.elapsed,
       coveredHa: _coveredHa,
       speedKmh: _speedKmh,
+      materialConsumed: materialConsumed,
+      materialUnit: materialUnit,
     );
     final note = await showFinishWorkDialog(context, info);
     if (note == null || !mounted) return;
@@ -477,6 +526,9 @@ class _WorkModeViewState extends State<WorkModeView> {
         swathAngleDeg: widget.swathAngleDeg,
         workDuration: session.elapsed,
         coveredHa: _coveredHa,
+        productivityHaPerHour: info.hectaresPerHour,
+        materialConsumed: materialConsumed,
+        materialUnit: materialUnit,
         note: note,
         completedAt: DateTime.now(),
       ));
@@ -490,10 +542,130 @@ class _WorkModeViewState extends State<WorkModeView> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  /// Pojemność zbiornika z profilu maszyny — prawdziwy fizyczny limit, w
+  /// odróżnieniu od [WorkTask.initialTankVolume] (ile faktycznie wlano na
+  /// starcie, może być mniej niż pełny zbiornik). Fallback na
+  /// `initialTankVolume`, gdyby maszyna nie miała ustawionej pojemności.
+  double? get _machineTankCapacity {
+    final task = widget.activeTask;
+    if (task == null) return null;
+    return MachineService.instance.getById(task.machineId)?.tankCapacity ??
+        task.initialTankVolume;
+  }
+
+  /// Pyta operatora ile jest zatankowane na starcie Trybu Pracy — poziom
+  /// zbiornika nie jest już ustalany przy tworzeniu zadania, tylko tutaj
+  /// (patrz [WorkTask.initialTankVolume]). Wpisz dokładną ilość albo kafelek
+  /// "Pełny zbiornik" (pojemność wzięta z profilu maszyny).
+  Future<void> _showInitialFillDialog() async {
+    final task = widget.activeTask;
+    if (task == null || !mounted) return;
+    final unit = (task.unit ?? 'l/ha').split('/').first;
+    final capacity = _machineTankCapacity;
+
+    double? amount;
+    final choice = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Row(
+            children: [
+              Icon(Icons.local_gas_station_rounded, color: Colors.greenAccent),
+              SizedBox(width: 10),
+              Text('Ile jest zatankowane?',
+                  style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                autofocus: true,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'Ilość ($unit)',
+                  labelStyle: const TextStyle(color: Colors.white54),
+                  enabledBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white30)),
+                  focusedBorder: const UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.greenAccent)),
+                ),
+                onChanged: (v) {
+                  final d = double.tryParse(v.replaceAll(',', '.'));
+                  setDlg(() => amount = d);
+                },
+              ),
+              if (capacity != null) ...[
+                const SizedBox(height: 14),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => Navigator.pop(ctx, 'full'),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 12, horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A3A1A),
+                      borderRadius: BorderRadius.circular(8),
+                      border:
+                          Border.all(color: Colors.greenAccent, width: 0.5),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.water_drop_rounded,
+                            color: Colors.greenAccent, size: 18),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Pełny zbiornik (${capacity.toStringAsFixed(0)} $unit)',
+                          style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'skip'),
+              child: const Text('Pomiń (bez monitorowania)',
+                  style: TextStyle(color: Colors.white54)),
+            ),
+            if (amount != null && amount! > 0)
+              FilledButton(
+                style:
+                    FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+                onPressed: () => Navigator.pop(ctx, 'amount'),
+                child: const Text('Zatwierdź'),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || choice == null || choice == 'skip') return;
+    final fill = choice == 'full' ? capacity : amount;
+    if (fill == null || fill <= 0) return;
+    MaterialMonitorService.instance
+        .confirmInitialFill(fill, currentAreaHa: _rawMaterialAreaHa);
+    await WorkTaskService.instance.save(task);
+    if (mounted) {
+      setState(() => _monitorState = MaterialMonitorService.instance.state);
+    }
+  }
+
   Future<void> _showRefillDialog() async {
     final task = widget.activeTask;
     if (task == null) return;
-    final maxVol = task.initialTankVolume ?? 0.0;
+    final maxVol = _machineTankCapacity ?? 0.0;
     final unit = MaterialMonitorService.instance.state.unit;
 
     // Option A: full refill (one tap)
@@ -565,10 +737,14 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     if (choice == null || !mounted) return;
     if (choice == 'full') {
-      MaterialMonitorService.instance.fullRefill(currentAreaHa: _coveredHa);
+      MaterialMonitorService.instance.fullRefill(
+          currentAreaHa: _rawMaterialAreaHa, maxCapacity: maxVol);
     } else if (choice == 'partial' && partialAmount != null) {
-      MaterialMonitorService.instance
-          .refill(addedVolume: partialAmount!, currentAreaHa: _coveredHa);
+      MaterialMonitorService.instance.refill(
+        addedVolume: partialAmount!,
+        currentAreaHa: _rawMaterialAreaHa,
+        maxCapacity: maxVol,
+      );
     }
     // Allow low alert to fire again after refill
     setState(() {
@@ -576,6 +752,71 @@ class _WorkModeViewState extends State<WorkModeView> {
       _lowAlertShown = false;
     });
   }
+
+  /// Pozwala zmienić dawkę (l/ha lub kg/ha) w trakcie pracy — np. gdy operator
+  /// koryguje ustawienia oprysku/siewnika w polu. Zużycie policzone dotychczas
+  /// (przy starej dawce) zostaje zachowane; nowa dawka liczy się dopiero od
+  /// tego momentu (patrz [MaterialMonitorService.setRate]).
+  Future<void> _showChangeRateDialog() async {
+    final task = widget.activeTask;
+    if (task == null || task.targetRate == null) return;
+    final unit = MaterialMonitorService.instance.state.unit;
+
+    double? newRate = task.targetRate;
+    final rateCtrl =
+        TextEditingController(text: _formatRate(task.targetRate!));
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Row(
+          children: [
+            Icon(Icons.tune_rounded, color: Colors.tealAccent),
+            SizedBox(width: 10),
+            Text('Zmień dawkę', style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: TextField(
+          controller: rateCtrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            labelText: 'Dawka ($unit/ha)',
+            labelStyle: const TextStyle(color: Colors.white54),
+            enabledBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.white30)),
+            focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.tealAccent)),
+          ),
+          onChanged: (v) => newRate = double.tryParse(v.replaceAll(',', '.')),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Anuluj')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.teal[700]),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Zapisz'),
+          ),
+        ],
+      ),
+    );
+    rateCtrl.dispose();
+
+    if (confirmed != true || newRate == null || newRate! <= 0 || !mounted) {
+      return;
+    }
+    MaterialMonitorService.instance
+        .setRate(newRate!, currentAreaHa: _rawMaterialAreaHa);
+    await WorkTaskService.instance.save(task);
+    setState(() => _monitorState = MaterialMonitorService.instance.state);
+  }
+
+  static String _formatRate(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toString();
 
   // ── Build ─────────────────────────────────────────────────────────────────────
   @override
@@ -643,10 +884,8 @@ class _WorkModeViewState extends State<WorkModeView> {
                 coveredHa: _coveredHa,
                 fieldAreaHa: _fieldAreaHa,
                 workElapsed: _workElapsed,
-                workingWidthM: widget.workingWidthM,
                 snapInfo: _snapInfo,
                 overlapFraction: _overlapFraction,
-                newAreaHaLastStrip: _newAreaHaLastStrip,
                 fixStatus: _fixStatus,
               ),
             ),
@@ -696,6 +935,12 @@ class _WorkModeViewState extends State<WorkModeView> {
               right: 20,
               child: Row(
                 children: [
+                  _MachineOffButton(
+                    isOff: _machineOff,
+                    onPressed: () => setState(() => WorkSessionService.instance
+                        .setMachineOff(!_machineOff)),
+                  ),
+                  const SizedBox(width: 8),
                   _PauseButton(
                     isPaused: _isPaused,
                     onPressed: _togglePause,
@@ -720,7 +965,9 @@ class _WorkModeViewState extends State<WorkModeView> {
                 bottom: padding.bottom + 86,
                 child: _TankIndicator(
                   state: _monitorState,
+                  rate: widget.activeTask?.targetRate ?? 0.0,
                   onRefill: _showRefillDialog,
+                  onChangeRate: _showChangeRateDialog,
                 ),
               ),
           ],
@@ -1210,10 +1457,8 @@ class _StatsPanel extends StatelessWidget {
     required this.coveredHa,
     required this.fieldAreaHa,
     required this.workElapsed,
-    required this.workingWidthM,
     required this.snapInfo,
     required this.overlapFraction,
-    required this.newAreaHaLastStrip,
     required this.fixStatus,
   });
 
@@ -1221,10 +1466,8 @@ class _StatsPanel extends StatelessWidget {
   final double coveredHa;
   final double fieldAreaHa;
   final Duration workElapsed;
-  final double workingWidthM;
   final SnapInfo snapInfo;
   final double overlapFraction;
-  final double newAreaHaLastStrip;
   final GpsFixStatus fixStatus;
 
   /// Etykieta + kolor kropki dla kafelka GPS — czerwony/szary = za mało
@@ -1264,14 +1507,14 @@ class _StatsPanel extends StatelessWidget {
             value: '${speedKmh.toStringAsFixed(1)} km/h',
           ),
           const _TileDivider(),
-          // Wydajność [ha/h] — przeliczenie uzależnione od prędkości:
-          // prędkość [km/h] × szerokość robocza [m] / 10.
+          // Wydajność [ha/h] — liczona ze zrobionych hektarów i czasu pracy
+          // (nie z prędkości × szerokości).
           _StatTile(
             icon: Icons.speed_outlined,
             color: Colors.tealAccent,
             label: 'Wydajność',
             value:
-                '${(speedKmh * workingWidthM / 10.0).toStringAsFixed(2)} ha/h',
+                '${hectaresPerHourOf(coveredHa, workElapsed).toStringAsFixed(2)} ha/h',
           ),
           const _TileDivider(),
           _StatTile(
@@ -1302,15 +1545,6 @@ class _StatsPanel extends StatelessWidget {
               color: Colors.yellowAccent,
               label: 'Pas',
               value: '${snapInfo.swathIndex + 1}',
-            ),
-          ],
-          if (newAreaHaLastStrip == 0.0 && overlapFraction > 0) ...[
-            const _TileDivider(),
-            const _StatTile(
-              icon: Icons.block_rounded,
-              color: Colors.orangeAccent,
-              label: 'Nowe',
-              value: '0.00 ha',
             ),
           ],
           if (overlapFraction >= 0.10) ...[
@@ -1416,10 +1650,17 @@ class _TileDivider extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _TankIndicator extends StatelessWidget {
-  const _TankIndicator({required this.state, required this.onRefill});
+  const _TankIndicator({
+    required this.state,
+    required this.rate,
+    required this.onRefill,
+    required this.onChangeRate,
+  });
 
   final MaterialMonitorState state;
+  final double rate;
   final VoidCallback onRefill;
+  final VoidCallback onChangeRate;
 
   static Color _fillColor(double fraction) {
     if (fraction > 0.25) return Colors.greenAccent;
@@ -1499,6 +1740,26 @@ class _TankIndicator extends StatelessWidget {
             'Zasięg: ${state.rangeHa.toStringAsFixed(2)} ha',
             style: const TextStyle(color: Colors.white54, fontSize: 11),
           ),
+          const SizedBox(height: 2),
+
+          // Dawka (edytowalna w trakcie pracy)
+          InkWell(
+            onTap: onChangeRate,
+            borderRadius: BorderRadius.circular(4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Dawka: ${rate.toStringAsFixed(1)} ${state.unit}/ha',
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ),
+                const Icon(Icons.edit_rounded,
+                    color: Colors.tealAccent, size: 13),
+              ],
+            ),
+          ),
           const SizedBox(height: 8),
 
           // Refill button
@@ -1562,6 +1823,45 @@ class _ExitButton extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 // Przycisk Wstrzymaj / Wznów
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Ręczny wyłącznik maszyny — narzędzie jest fizycznie wyłączone (np. jazda
+/// na uwrociu/drogą dojazdową): nie maluje śladu i nie zużywa materiału, ale
+/// w odróżnieniu od [_PauseButton] NIE zatrzymuje czasu pracy ani nawigacji.
+class _MachineOffButton extends StatelessWidget {
+  const _MachineOffButton({required this.isOff, required this.onPressed});
+
+  final bool isOff;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color bg =
+        isOff ? const Color(0xAA4A0000) : const Color(0xAA1A1A1A);
+    final Color fg = isOff ? Colors.redAccent : Colors.white54;
+
+    return FilledButton.icon(
+      style: FilledButton.styleFrom(
+        backgroundColor: bg,
+        foregroundColor: fg,
+        minimumSize: const Size(88, 54),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: fg.withValues(alpha: 0.45)),
+        ),
+        textStyle: const TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.4,
+        ),
+      ),
+      onPressed: onPressed,
+      icon: Icon(isOff
+          ? Icons.power_off_rounded
+          : Icons.power_settings_new_rounded),
+      label: Text(isOff ? 'Wyłączona' : 'Maszyna'),
+    );
+  }
+}
 
 class _PauseButton extends StatelessWidget {
   const _PauseButton({required this.isPaused, required this.onPressed});

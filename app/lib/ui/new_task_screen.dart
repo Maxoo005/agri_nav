@@ -14,6 +14,7 @@ import 'field_schema_preview.dart';
 import 'machine_manager_screen.dart';
 import 'map_view.dart';
 import 'summary_row.dart';
+import 'widgets/degree_angle_input.dart';
 
 /// Kreator nowego zadania roboczego.
 ///
@@ -56,7 +57,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
   TaskType? _taskType;
   final _nameCtrl = TextEditingController();
   final _rateCtrl = TextEditingController();
-  final _tankCtrl = TextEditingController();
 
   // ── Parametry ścieżek ─────────────────────────────────────────────────────
   double _width = 3.0;
@@ -101,9 +101,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
     if (plan.targetRate != null) {
       _rateCtrl.text = _formatNum(plan.targetRate!);
     }
-    if (plan.tankVolume != null) {
-      _tankCtrl.text = _formatNum(plan.tankVolume!);
-    }
     if (plan.name.isNotEmpty) {
       _nameCtrl.text = plan.name;
     }
@@ -113,7 +110,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
   void dispose() {
     _nameCtrl.dispose();
     _rateCtrl.dispose();
-    _tankCtrl.dispose();
     super.dispose();
   }
 
@@ -203,7 +199,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
         headlandLaps: _laps,
         swathAngleDeg: _angle,
         targetRate: _parseDouble(_rateCtrl.text),
-        tankVolume: _parseDouble(_tankCtrl.text),
         unit: taskType.defaultUnit,
         createdAt: editing?.createdAt ?? DateTime.now(),
       );
@@ -445,21 +440,11 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
                   borderSide: BorderSide(color: Colors.greenAccent)),
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _tankCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              labelText:
-                  'Napełnienie zbiornika (${unit?.split('/').first ?? 'l'})',
-              labelStyle: const TextStyle(color: Colors.white54),
-              prefixIcon:
-                  const Icon(Icons.local_gas_station, color: Colors.white38),
-              enabledBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white24)),
-              focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.greenAccent)),
+          const Padding(
+            padding: EdgeInsets.only(top: 10),
+            child: Text(
+              'Ile jest zatankowane, ustawisz na starcie Trybu Pracy.',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
             ),
           ),
         ] else
@@ -555,11 +540,7 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
             ),
           ],
         ),
-        _ParamSlider(
-          label: '${_angle.toStringAsFixed(0)}°',
-          min: 0,
-          max: 179,
-          divisions: 179,
+        DegreeAngleInput(
           value: _angle,
           color: Colors.tealAccent,
           onChanged: (v) => setState(() => _angle = v),
@@ -632,7 +613,7 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
         SummaryRow(
             icon: Icons.explore,
             label: 'Kierunek ścieżek',
-            value: '${_angle.toStringAsFixed(0)}°'),
+            value: '${_angle.toStringAsFixed(2)}°'),
         if (taskType?.usesMaterial == true) ...[
           SummaryRow(
               icon: Icons.speed,
@@ -640,12 +621,6 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
               value: _rateCtrl.text.trim().isEmpty
                   ? '—'
                   : '${_rateCtrl.text.trim()} ${taskType!.defaultUnit}'),
-          SummaryRow(
-              icon: Icons.local_gas_station,
-              label: 'Zbiornik',
-              value: _tankCtrl.text.trim().isEmpty
-                  ? '—'
-                  : '${_tankCtrl.text.trim()} ${taskType!.defaultUnit!.split('/').first}'),
         ],
         const SizedBox(height: 16),
         if (_savedPlan != null && _savedPath != null) ...[
