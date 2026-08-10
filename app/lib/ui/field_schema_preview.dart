@@ -64,11 +64,15 @@ class _FieldSchemaPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (field.boundaryLats.isEmpty) return;
+    // field.boundary (nie boundaryLats/boundaryLons wprost) — stosuje
+    // aktualną korektę punktami kontrolnymi, żeby ten podgląd zgadzał się
+    // z granicą faktycznie zapisywaną do TaskPlan i widoczną na mapie.
+    final boundary = field.boundary;
+    if (boundary.isEmpty) return;
 
     // ── 1. Znormalizuj współrzędne do przestrzeni ekranu ─────────────────
-    final lats = field.boundaryLats;
-    final lons = field.boundaryLons;
+    final lats = boundary.map((p) => p.latitude).toList();
+    final lons = boundary.map((p) => p.longitude).toList();
 
     double minLat = lats[0], maxLat = lats[0];
     double minLon = lons[0], maxLon = lons[0];

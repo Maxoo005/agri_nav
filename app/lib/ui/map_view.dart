@@ -20,6 +20,7 @@ import '../services/field_service.dart';
 import '../services/gps_location_service.dart';
 import '../services/history_database.dart';
 import '../services/material_monitor_service.dart';
+import '../services/task_database.dart';
 import '../services/work_session_service.dart';
 import '../services/work_task_service.dart';
 import '../models/lpis_parcel.dart';
@@ -250,6 +251,24 @@ class _MapViewState extends State<MapView> {
 
   /// Aktywne zadanie robocze (null = brak / tryb legacy).
   WorkTask? _activeTask;
+
+  /// Zapisany plan (SQLite) zadania załadowanego na start tego ekranu —
+  /// null gdy pole otwarto bez zadania (tryb legacy). Trzymany, żeby móc
+  /// wykryć rozjazd między jego zamrożoną migawką granicy a aktualną
+  /// korektą pola (patrz [_taskBoundaryStale]) i ewentualnie ją nadpisać.
+  TaskPlan? _loadedTaskPlan;
+
+  /// Czy granica zapisana w [_loadedTaskPlan] różni się od aktualnej,
+  /// skorygowanej granicy pola (rolnik dodał/zmienił punkty kontrolne po
+  /// utworzeniu zadania). Gdy true, pokazywany jest baner z jawnym wyborem
+  /// aktualizacji — bez cichej, automatycznej zmiany geometrii zadania
+  /// w trakcie pracy.
+  bool _taskBoundaryStale = false;
+
+  /// Aktualna, skorygowana wersja pola dla [_loadedTaskPlan] — źródło dla
+  /// przycisku "Aktualizuj" w banerze nieaktualności. Ustawiane razem z
+  /// [_taskBoundaryStale].
+  FieldModel? _staleLiveField;
 
   /// Efektywna szerokość robocza: maszyna → pole → domyślna 3 m.
   double get _activeWorkingWidth =>
@@ -627,6 +646,14 @@ class _MapViewState extends State<MapView> {
             type: MachineType.fromJson(plan.machineType),
             workingWidthM: plan.workingWidthM,
           );
+    } else {
+      // Pole ładowane bez planu (np. świeży import LPIS) — kontekst
+      // poprzednio otwartego zadania (jeśli był) już nie dotyczy tego pola,
+      // inaczej baner nieaktualności zostałby "zawieszony" nad niepowiązanym
+      // polem. _loadTaskPlan ustawi te pola ponownie, jeśli trzeba.
+      _loadedTaskPlan = null;
+      _taskBoundaryStale = false;
+      _staleLiveField = null;
     }
 
     final savedTrack = plan != null
@@ -728,6 +755,115 @@ class _MapViewState extends State<MapView> {
     // szerokością, bo _activeMachine (ustawione z planu) determinuje
     // _activeWorkingWidth == plan.workingWidthM. Drugie wywołanie tu
     // powtórzyłoby ten sam koszt (~20-200 ms) bez żadnej korzyści.
+
+    _loadedTaskPlan = plan;
+    _checkTaskBoundaryStaleness();
+  }
+
+  // ── Nieaktualność granicy zadania (korekta zmieniona po jego utworzeniu) ───
+
+  /// Odległość [m] między dwoma punktami WGS-84 — lokalna aproksymacja ENU,
+  /// wystarczająca przy porównywaniu wierzchołków tej samej granicy.
+  double _vertexDistanceM(double lat1, double lon1, LatLng p2) {
+    final enu = GeoUtils.toEnu(LatLng(lat1, lon1), p2);
+    return math.sqrt(enu.e * enu.e + enu.n * enu.n);
+  }
+
+  /// Czy zamrożona granica zapisana w [plan] różni się od [liveBoundary]
+  /// (aktualna korekta pola) o więcej niż drobny szum numeryczny.
+  ///
+  /// Różna liczba wierzchołków (np. przejście na korektę elastyczną, która
+  /// zagęszcza krawędzie) liczy się od razu jako rozjazd — bez próby
+  /// dopasowania punkt-do-punktu.
+  bool _boundaryDiffers(TaskPlan plan, List<LatLng> liveBoundary) {
+    const thresholdM = 0.3;
+    final lats = plan.boundaryLats;
+    final lons = plan.boundaryLons;
+    if (lats.length != liveBoundary.length) return true;
+    for (var i = 0; i < lats.length; i++) {
+      if (_vertexDistanceM(lats[i], lons[i], liveBoundary[i]) > thresholdM) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Porównuje [_loadedTaskPlan] z aktualnym, zapisanym stanem pola
+  /// (odczytanym świeżo z [FieldService], nie z [_activeField] — dla zadań
+  /// otwartych z planu [_activeField] to sama zamrożona migawka, więc
+  /// porównanie sam-do-siebie zawsze wyszłoby "aktualne"). Wywoływać po
+  /// każdej zmianie korekty pola w trakcie tej sesji ekranu.
+  void _checkTaskBoundaryStaleness() {
+    final plan = _loadedTaskPlan;
+    if (plan == null) return;
+    final liveField = FieldService.instance.getById(plan.fieldId);
+    final stale =
+        liveField != null && _boundaryDiffers(plan, liveField.boundary);
+    setState(() {
+      _taskBoundaryStale = stale;
+      _staleLiveField = stale ? liveField : null;
+    });
+  }
+
+  /// Nadpisuje granicę [_loadedTaskPlan] aktualną, skorygowaną granicą pola
+  /// i przeładowuje ścieżki/pokrycie — jedyna droga do zmiany granicy
+  /// istniejącego zadania: zawsze jawna akcja rolnika z banera, nigdy cicho.
+  Future<void> _updateTaskBoundaryFromField() async {
+    final plan = _loadedTaskPlan;
+    final liveField = _staleLiveField;
+    if (plan == null || liveField == null) return;
+
+    final boundary = liveField.boundary;
+    final updatedPlan = TaskPlan(
+      id: plan.id,
+      name: plan.name,
+      fieldId: plan.fieldId,
+      fieldName: plan.fieldName,
+      boundaryLats: boundary.map((p) => p.latitude).toList(),
+      boundaryLons: boundary.map((p) => p.longitude).toList(),
+      lineALat: plan.lineALat,
+      lineALon: plan.lineALon,
+      lineBLat: plan.lineBLat,
+      lineBLon: plan.lineBLon,
+      machineId: plan.machineId,
+      machineName: plan.machineName,
+      machineType: plan.machineType,
+      taskType: plan.taskType,
+      workingWidthM: plan.workingWidthM,
+      overlapM: plan.overlapM,
+      headlandLaps: plan.headlandLaps,
+      swathAngleDeg: plan.swathAngleDeg,
+      targetRate: plan.targetRate,
+      tankVolume: plan.tankVolume,
+      unit: plan.unit,
+      createdAt: plan.createdAt,
+    );
+    await TaskDatabase.instance.save(updatedPlan);
+
+    setState(() {
+      _loadedTaskPlan = updatedPlan;
+      _taskBoundaryStale = false;
+      _staleLiveField = null;
+    });
+
+    // Przeładuj pole/ścieżki/pokrycie na bazie nowej granicy — ta sama
+    // ścieżka co przy pierwszym otwarciu zadania z planu.
+    await _loadField(liveField, plan: updatedPlan);
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text(
+          'Zadanie zaktualizowane do nowej granicy pola'),
+      backgroundColor: Colors.green[700],
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  /// Ukrywa baner nieaktualności bez zmiany zapisanej granicy zadania —
+  /// zadanie nadal pracuje na starej migawce do jawnej aktualizacji albo
+  /// ponownego otwarcia ekranu.
+  void _dismissTaskBoundaryWarning() {
+    setState(() => _taskBoundaryStale = false);
   }
 
   // ── Generowanie ścieżek ───────────────────────────────────────────────────
@@ -1106,6 +1242,7 @@ class _MapViewState extends State<MapView> {
         ..clear()
         ..addAll(updated.boundary);
     });
+    _checkTaskBoundaryStaleness();
   }
 
   Future<void> _resetActiveNudge() async {
@@ -1117,6 +1254,7 @@ class _MapViewState extends State<MapView> {
         ..clear()
         ..addAll(updated.boundary);
     });
+    _checkTaskBoundaryStaleness();
   }
 
   // ── Punkty kontrolne — korekta obrotem+skalą+przesunięciem ──────────────────
@@ -1345,6 +1483,7 @@ class _MapViewState extends State<MapView> {
         ..addAll(updated.boundary);
       _clearControlPointsState();
     });
+    _checkTaskBoundaryStaleness();
   }
 
   Future<void> _resetControlPoints() async {
@@ -1357,6 +1496,7 @@ class _MapViewState extends State<MapView> {
         ..clear()
         ..addAll(updated.boundary);
     });
+    _checkTaskBoundaryStaleness();
   }
 
   // ── Wyznaczanie linii AB ─────────────────────────────────────────────────────
@@ -2677,17 +2817,32 @@ class _MapViewState extends State<MapView> {
               ),
             ),
 
-          // ── Praca w toku (banner w tle) ─────────────────────────────────────
-          if (_activeField != null &&
-              _activeField!.id == WorkSessionService.instance.fieldId)
+          // ── Nieaktualna granica zadania + Praca w toku (banery w tle) ───────
+          if (_taskBoundaryStale ||
+              (_activeField != null &&
+                  _activeField!.id == WorkSessionService.instance.fieldId))
             Positioned(
               left: 16,
               right: 16,
               bottom: 24,
-              child: _ActiveWorkBanner(
-                fieldName: _activeField!.name,
-                onResume: _launchWorkMode,
-                onFinish: _finishActiveSession,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_taskBoundaryStale) ...[
+                    _StaleTaskBoundaryBanner(
+                      onUpdate: _updateTaskBoundaryFromField,
+                      onDismiss: _dismissTaskBoundaryWarning,
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  if (_activeField != null &&
+                      _activeField!.id == WorkSessionService.instance.fieldId)
+                    _ActiveWorkBanner(
+                      fieldName: _activeField!.name,
+                      onResume: _launchWorkMode,
+                      onFinish: _finishActiveSession,
+                    ),
+                ],
               ),
             ),
 
@@ -2840,6 +2995,71 @@ class _ActionTile extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Banner nieaktualności granicy zadania — korekta zmieniona po jego utworzeniu
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Ostrzega, że zapisana w zadaniu granica (migawka z chwili utworzenia)
+/// różni się od aktualnej, skorygowanej granicy pola — rolnik dodał/zmienił
+/// punkty kontrolne już PO utworzeniu tego zadania. Aktualizacja jest zawsze
+/// jawną akcją ("Aktualizuj") — nigdy cichą, żeby nie przesunąć geometrii
+/// zadania (i już zebranego pokrycia terenu) w trakcie pracy bez wiedzy
+/// operatora.
+class _StaleTaskBoundaryBanner extends StatelessWidget {
+  const _StaleTaskBoundaryBanner({
+    required this.onUpdate,
+    required this.onDismiss,
+  });
+
+  final VoidCallback onUpdate;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xEE3A2A00),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.7)),
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)],
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Colors.orangeAccent, size: 22),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Granica pola zmieniła się od utworzenia tego zadania '
+              '(korekta punktami kontrolnymi). Prowadzenie i ścieżki wciąż '
+              'bazują na starej granicy.',
+              style: TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: onUpdate,
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.orangeAccent,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+            ),
+            child: const Text('Aktualizuj',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          IconButton(
+            tooltip: 'Zamknij',
+            visualDensity: VisualDensity.compact,
+            color: Colors.white54,
+            onPressed: onDismiss,
+            icon: const Icon(Icons.close, size: 18),
+          ),
+        ],
       ),
     );
   }

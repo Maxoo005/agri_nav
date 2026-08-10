@@ -175,6 +175,12 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
       final editing = widget.initialPlan;
       final enteredName = _nameCtrl.text.trim();
       final fallbackName = editing?.name;
+      // Migawka granicy MUSI przejść przez getter [FieldModel.boundary] —
+      // to on stosuje aktualną korektę (offset/similarity/elastic) do
+      // surowej geometrii katastralnej. TaskPlan nie przechowuje parametrów
+      // korekty, więc to jedyny moment, w którym korekta trafia do zadania;
+      // odczyt wprost z field.boundaryLats/boundaryLons pominąłby ją.
+      final correctedBoundary = field.boundary;
       final plan = TaskPlan(
         id: editing?.id ?? const Uuid().v4(),
         name: enteredName.isNotEmpty
@@ -184,8 +190,8 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
                 : 'Zadanie ${existing.length + 1}'),
         fieldId: field.id,
         fieldName: field.name,
-        boundaryLats: field.boundaryLats,
-        boundaryLons: field.boundaryLons,
+        boundaryLats: correctedBoundary.map((p) => p.latitude).toList(),
+        boundaryLons: correctedBoundary.map((p) => p.longitude).toList(),
         lineALat: field.lineALat,
         lineALon: field.lineALon,
         lineBLat: field.lineBLat,

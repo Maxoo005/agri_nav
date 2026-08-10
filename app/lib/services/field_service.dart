@@ -30,6 +30,12 @@ class FieldService {
       _box.values.map((e) => FieldModel.fromJson(e as Map)).toList()
         ..sort((a, b) => a.name.compareTo(b.name));
 
+  /// Pojedyncze pole po [id], albo `null` gdy nie istnieje (np. usunięte).
+  FieldModel? getById(String id) {
+    final raw = _box.get(id);
+    return raw == null ? null : FieldModel.fromJson(raw as Map);
+  }
+
   /// ValueListenable — pozwala reaktywnie słuchać zmian w UI.
   ValueListenable<Box> get listenable => _box.listenable();
 
