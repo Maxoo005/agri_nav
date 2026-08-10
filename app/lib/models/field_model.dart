@@ -1,5 +1,7 @@
 import 'package:latlong2/latlong.dart';
 
+import '../utils/geo_utils.dart';
+
 /// Źródło pochodzenia granicy pola.
 enum FieldSource {
   /// Ręcznie narysowane przez użytkownika.
@@ -58,6 +60,15 @@ class FieldModel {
   double offsetLat;
   double offsetLon;
 
+  /// Korekta punktami kontrolnymi — transformacja podobieństwa (obrót +
+  /// skala + przesunięcie w metrach ENU) dopasowana metodą najmniejszych
+  /// kwadratów do par punktów wskazanych przez rolnika. Niezależna od
+  /// [offsetLat]/[offsetLon] — patrz [boundary].
+  double cpRotationRad;
+  double cpScale;
+  double cpTxM;
+  double cpTyM;
+
   /// Powierzchnia pola [ha] (dane LPIS), przeliczona
   /// z geometrii granicy. Null gdy jeszcze nie obliczono.
   double? areaHa;
@@ -80,20 +91,53 @@ class FieldModel {
     this.source = FieldSource.manual,
     this.offsetLat = 0.0,
     this.offsetLon = 0.0,
+    this.cpRotationRad = 0.0,
+    this.cpScale = 1.0,
+    this.cpTxM = 0.0,
+    this.cpTyM = 0.0,
     this.areaHa,
   })  : sourceParcelIds = sourceParcelIds ?? [],
         lpisParcelIds = lpisParcelIds ?? [];
 
   // ── Wygoda ──────────────────────────────────────────────────────────────────
 
-  /// Granica jako lista LatLng z uwzględnieniem przesunięcia offsetowego.
-  List<LatLng> get boundary => List.generate(
+  /// Granica jako lista LatLng: (1) oryginalna geometria katastralna →
+  /// (2) korekta punktami kontrolnymi ([cpRotationRad]/[cpScale]/[cpTxM]/
+  /// [cpTyM]), jeśli ustawiona → (3) przesunięcie offsetowe ([offsetLat]/
+  /// [offsetLon]).
+  ///
+  /// Fast path: gdy korekta punktami kontrolnymi jest domyślna (brak obrotu/
+  /// skali/przesunięcia), krok (2) jest pomijany — zachowanie identyczne
+  /// jak przed wprowadzeniem tego mechanizmu.
+  List<LatLng> get boundary {
+    final hasCp =
+        cpRotationRad != 0.0 || cpScale != 1.0 || cpTxM != 0.0 || cpTyM != 0.0;
+    if (!hasCp) {
+      return List.generate(
         boundaryLats.length,
         (i) => LatLng(
           boundaryLats[i] + offsetLat,
           boundaryLons[i] + offsetLon,
         ),
       );
+    }
+    final origin = center;
+    return List.generate(boundaryLats.length, (i) {
+      final raw = LatLng(boundaryLats[i], boundaryLons[i]);
+      final corrected = GeoUtils.applySimilarity2D(
+        origin,
+        raw,
+        rotationRad: cpRotationRad,
+        scale: cpScale,
+        txM: cpTxM,
+        tyM: cpTyM,
+      );
+      return LatLng(
+        corrected.latitude + offsetLat,
+        corrected.longitude + offsetLon,
+      );
+    });
+  }
 
   LatLng? get lineA => lineALat != null ? LatLng(lineALat!, lineALon!) : null;
   LatLng? get lineB => lineBLat != null ? LatLng(lineBLat!, lineBLon!) : null;
@@ -127,6 +171,10 @@ class FieldModel {
         'source': source.name,
         'offsetLat': offsetLat,
         'offsetLon': offsetLon,
+        'cpRotationRad': cpRotationRad,
+        'cpScale': cpScale,
+        'cpTxM': cpTxM,
+        'cpTyM': cpTyM,
         if (areaHa != null) 'areaHa': areaHa,
       };
 
@@ -158,6 +206,10 @@ class FieldModel {
         ),
         offsetLat: (map['offsetLat'] as num?)?.toDouble() ?? 0.0,
         offsetLon: (map['offsetLon'] as num?)?.toDouble() ?? 0.0,
+        cpRotationRad: (map['cpRotationRad'] as num?)?.toDouble() ?? 0.0,
+        cpScale: (map['cpScale'] as num?)?.toDouble() ?? 1.0,
+        cpTxM: (map['cpTxM'] as num?)?.toDouble() ?? 0.0,
+        cpTyM: (map['cpTyM'] as num?)?.toDouble() ?? 0.0,
         areaHa: (map['areaHa'] as num?)?.toDouble(),
       );
 }
