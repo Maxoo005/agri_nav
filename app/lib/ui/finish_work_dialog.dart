@@ -14,6 +14,15 @@ class FinishWorkInfo {
   final double coveredHa;
   final double speedKmh;
 
+  /// Łączne zużycie materiału (l lub kg) — suma z całej pracy, liczona z
+  /// bilansu masy w [MaterialMonitorService.totalConsumed] (odporna na
+  /// tankowania i zmiany dawki w trakcie). Null = zadanie bez monitorowania
+  /// materiału.
+  final double? materialConsumed;
+
+  /// Jednostka [materialConsumed], np. "l" lub "kg".
+  final String? materialUnit;
+
   const FinishWorkInfo({
     required this.fieldName,
     required this.machineName,
@@ -24,15 +33,26 @@ class FinishWorkInfo {
     required this.workDuration,
     required this.coveredHa,
     required this.speedKmh,
+    this.materialConsumed,
+    this.materialUnit,
   });
 
-  /// Teoretyczna wydajność [ha/h] przy bieżącej prędkości:
-  /// `prędkość [km/h] × szerokość robocza [m] / 10`.
-  double get hectaresPerHour => speedKmh * workingWidthM / 10.0;
+  /// Wydajność [ha/h] na podstawie faktycznie zrobionych hektarów i czasu
+  /// pracy: `zrobione [ha] / czas pracy [h]`.
+  double get hectaresPerHour => hectaresPerHourOf(coveredHa, workDuration);
+
+  /// Rzeczywista dawka [jednostka/ha]: zużyty materiał / zrobione hektary.
+  /// To przeliczenie z faktu, nie z ustawionej dawki docelowej — może się od
+  /// niej różnić przy zakładkach/uwrociach. Null gdy brak danych.
+  double? get effectiveRatePerHa {
+    final consumed = materialConsumed;
+    if (consumed == null || coveredHa <= 0) return null;
+    return consumed / coveredHa;
+  }
 }
 
 /// Otwiera okno "Zakończ pracę" z podsumowaniem, notatką i przeliczeniem
-/// wydajności (ha/h) pod prędkością.
+/// wydajności (ha/h) ze zrobionych hektarów i czasu pracy.
 ///
 /// Zwraca wpisaną notatkę (może być pusta), albo `null` gdy anulowano.
 Future<String?> showFinishWorkDialog(
@@ -69,7 +89,7 @@ Future<String?> showFinishWorkDialog(
               ),
               _InfoRow(
                 label: 'Kierunek',
-                value: '${info.swathAngleDeg.toStringAsFixed(0)}°',
+                value: '${info.swathAngleDeg.toStringAsFixed(2)}°',
               ),
               _InfoRow(
                 label: 'Czas pracy',
@@ -83,12 +103,25 @@ Future<String?> showFinishWorkDialog(
                 label: 'Prędkość',
                 value: '${info.speedKmh.toStringAsFixed(1)} km/h',
               ),
-              // Przeliczenie uzależnione od prędkości — wydajność ha/godz.
+              // Wydajność liczona ze zrobionych ha i czasu pracy.
               _InfoRow(
                 label: 'Wydajność',
                 value: '${info.hectaresPerHour.toStringAsFixed(2)} ha/h',
                 highlight: true,
               ),
+              if (info.materialConsumed != null) ...[
+                _InfoRow(
+                  label: 'Zużyto materiału',
+                  value:
+                      '${info.materialConsumed!.toStringAsFixed(1)} ${info.materialUnit ?? ''}',
+                ),
+                if (info.effectiveRatePerHa != null)
+                  _InfoRow(
+                    label: 'Rzeczywista dawka',
+                    value:
+                        '${info.effectiveRatePerHa!.toStringAsFixed(2)} ${info.materialUnit ?? ''}/ha',
+                  ),
+              ],
               const SizedBox(height: 16),
               TextField(
                 controller: noteCtrl,

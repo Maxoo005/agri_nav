@@ -265,6 +265,57 @@ abstract final class GeoUtils {
     return sum2.abs() / 20000.0;
   }
 
+  /// Czy [pt] leży wewnątrz wielokąta [polygon] (WGS-84, niekoniecznie
+  /// zamknięty — ostatni wierzchołek nie musi powtarzać pierwszego).
+  ///
+  /// Klasyczny ray-casting (parzysto-nieparzysty), operujący bezpośrednio na
+  /// stopniach lat/lon — wystarczająco dokładny dla topologii "wewnątrz
+  /// pola", bo pola są na tyle małe, że lokalne zniekształcenie rzutu nie
+  /// zmienia wyniku testu.
+  static bool pointInPolygon(LatLng pt, List<LatLng> polygon) {
+    if (polygon.length < 3) return false;
+    var inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final xi = polygon[i].longitude, yi = polygon[i].latitude;
+      final xj = polygon[j].longitude, yj = polygon[j].latitude;
+      final crosses = (yi > pt.latitude) != (yj > pt.latitude);
+      if (crosses &&
+          pt.longitude <
+              (xj - xi) * (pt.latitude - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /// Surowa (NIE zdeduplikowana) powierzchnia pokryta narzędziem o szerokości
+  /// [widthM] wzdłuż śladu [track]: suma długości kolejnych odcinków × szerokość.
+  ///
+  /// W odróżnieniu od powierzchni liczonej przez [SectionControl] (unikalne
+  /// komórki siatki — nakładki liczą się raz), to jest podstawa do liczenia
+  /// zużycia materiału: dawka/ha leci przez całą szerokość narzędzia przy
+  /// każdym przejeździe, niezależnie od tego, czy dany pas się nakłada z
+  /// poprzednim (zakładka) czy nie — więc nakładki MUSZĄ liczyć się ponownie.
+  ///
+  /// [track] bywa nieciągły (przerwy z pauzy / wyjścia poza obrys / wyłączonej
+  /// maszyny — te punkty w ogóle nie trafiają do śladu). Odcinki dłuższe niż
+  /// [maxSegmentM] traktujemy jako taki "przeskok" i pomijamy, żeby nie
+  /// doliczyć fantomowego przejazdu przez przerwę.
+  static double trackSweptAreaHa(
+    List<LatLng> track,
+    double widthM, {
+    double maxSegmentM = 15.0,
+  }) {
+    if (track.length < 2 || widthM <= 0) return 0.0;
+    var totalM = 0.0;
+    for (int i = 1; i < track.length; i++) {
+      final enu = toEnu(track[i - 1], track[i]);
+      final segM = math.sqrt(enu.e * enu.e + enu.n * enu.n);
+      if (segM <= maxSegmentM) totalM += segM;
+    }
+    return totalM * widthM / 10000.0;
+  }
+
   /// Finds the swath bearing [0, 180) that minimises the number of passes.
   ///
   /// Strategy: sweep every 1° in [0°, 179°] and for each candidate angle

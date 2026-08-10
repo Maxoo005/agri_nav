@@ -14,4 +14,12 @@ class WorkTaskService {
   Box get _box => Hive.box(_kBox);
 
   Future<void> save(WorkTask task) => _box.put(task.id, task.toJson());
+
+  /// Odczytuje wcześniej zapisany [WorkTask] (np. z potwierdzonym poziomem
+  /// zbiornika / zmienioną dawką w trakcie pracy) — ma pierwszeństwo przed
+  /// odtwarzaniem świeżego WorkTask z migawki zapisanej w TaskPlan.
+  WorkTask? getById(String id) {
+    final raw = _box.get(id);
+    return raw != null ? WorkTask.fromJson(Map<String, dynamic>.from(raw)) : null;
+  }
 }

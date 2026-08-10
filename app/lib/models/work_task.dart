@@ -60,12 +60,15 @@ class WorkTask {
   // ── Material consumption fields ───────────────────────────────────────────
 
   /// Application rate per hectare (e.g. l/ha for spraying, kg/ha for seeding).
-  /// Null = material monitoring disabled for this task.
-  final double? targetRate;
+  /// Null = material monitoring disabled for this task. Mutable: can be
+  /// adjusted mid-task via [MaterialMonitorService.setRate].
+  double? targetRate;
 
   /// Volume/mass loaded into the tank at task start (same unit as [targetRate]
-  /// but absolute, e.g. litres or kilograms).
-  final double? initialTankVolume;
+  /// but absolute, e.g. litres or kilograms). Null until the operator
+  /// confirms the fill level at the start of Work Mode. Mutable: set once
+  /// via [MaterialMonitorService.confirmInitialFill].
+  double? initialTankVolume;
 
   /// Unit label shown in the UI, e.g. "l/ha", "kg/ha".
   final String? unit;

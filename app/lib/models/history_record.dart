@@ -30,6 +30,17 @@ class HistoryRecord {
   /// Powierzchnia zrobiona w momencie zakończenia [ha].
   final double coveredHa;
 
+  /// Wydajność [ha/h] w momencie zakończenia — `coveredHa / czas pracy`.
+  /// Null dla starszych rekordów (przed wersją z wydajnością).
+  final double? productivityHaPerHour;
+
+  /// Łączne zużycie materiału (l/kg) w momencie zakończenia. Null = zadanie
+  /// bez monitorowania materiału (albo starszy rekord sprzed tej wersji).
+  final double? materialConsumed;
+
+  /// Jednostka [materialConsumed], np. "l" lub "kg".
+  final String? materialUnit;
+
   /// Notatka operatora wpisana przy "Zakończ pracę" (może być pusta).
   final String? note;
 
@@ -47,6 +58,9 @@ class HistoryRecord {
     required this.swathAngleDeg,
     required this.workDuration,
     required this.coveredHa,
+    this.productivityHaPerHour,
+    this.materialConsumed,
+    this.materialUnit,
     this.note,
     required this.completedAt,
   });
@@ -65,6 +79,9 @@ class HistoryRecord {
         'swath_angle_deg': swathAngleDeg,
         'work_duration_ms': workDuration.inMilliseconds,
         'covered_ha': coveredHa,
+        'productivity_ha_per_hour': productivityHaPerHour,
+        'material_consumed': materialConsumed,
+        'material_unit': materialUnit,
         'note': note,
         'completed_at': completedAt.toIso8601String(),
       };
@@ -85,6 +102,10 @@ class HistoryRecord {
         workDuration: Duration(
             milliseconds: (map['work_duration_ms'] as num?)?.toInt() ?? 0),
         coveredHa: (map['covered_ha'] as num?)?.toDouble() ?? 0.0,
+        productivityHaPerHour:
+            (map['productivity_ha_per_hour'] as num?)?.toDouble(),
+        materialConsumed: (map['material_consumed'] as num?)?.toDouble(),
+        materialUnit: map['material_unit'] as String?,
         note: map['note'] as String?,
         completedAt: DateTime.parse(map['completed_at'] as String),
       );

@@ -64,6 +64,11 @@ class MaterialMonitorService {
   /// Tank volume (same unit as task) at the moment of last refill start.
   double _tankAtBase = 0.0;
 
+  /// Everything ever loaded into the tank this task (initial fill + all
+  /// refills). Used with [_state.remainingVolume] to derive [totalConsumed]
+  /// by mass/volume balance, independent of rate changes/refills/pauses.
+  double _totalAdded = 0.0;
+
   /// Unit abbreviation stripped of the "/ha" suffix, e.g. "l" or "kg".
   String _volUnit = 'l';
 
@@ -84,6 +89,13 @@ class MaterialMonitorService {
       _task!.targetRate != null &&
       _task!.initialTankVolume != null;
 
+  /// Lifetime material used so far this task, by mass/volume balance:
+  /// everything ever loaded into the tank minus what's currently left.
+  /// Correct across refills, rate changes and pauses — those only move
+  /// material between "in tank" and "used", they never lose track of it.
+  double get totalConsumed =>
+      (_totalAdded - _state.remainingVolume).clamp(0.0, double.infinity);
+
   // ── Control ───────────────────────────────────────────────────────────────
 
   /// Attach a [WorkTask] to the service.
@@ -102,8 +114,23 @@ class MaterialMonitorService {
     if (!sameTask) {
       _baseAreaHa = currentAreaHa;
       _tankAtBase = task.initialTankVolume ?? 0.0;
+      _totalAdded = _tankAtBase;
     }
     _volUnit = _stripPerHa(task.unit ?? 'l/ha');
+    _recalculate(currentAreaHa);
+  }
+
+  /// First-time tank fill, confirmed by the operator at the start of Work
+  /// Mode ([WorkTask.initialTankVolume] is null until this is called — the
+  /// amount is no longer fixed back at task-planning time). Establishes the
+  /// tank/area baseline that [_recalculate] measures consumption from.
+  void confirmInitialFill(double amount, {required double currentAreaHa}) {
+    final task = _task;
+    if (task == null) return;
+    task.initialTankVolume = amount;
+    _tankAtBase = amount;
+    _baseAreaHa = currentAreaHa;
+    _totalAdded = amount;
     _recalculate(currentAreaHa);
   }
 
@@ -124,23 +151,47 @@ class MaterialMonitorService {
 
   /// Add [addedVolume] to the current tank level and reset the area baseline.
   ///
-  /// Clamps to [initialTankVolume] so it never overfills past the original
-  /// maximum.
-  void refill({required double addedVolume, required double currentAreaHa}) {
+  /// Clamps to [maxCapacity] — the machine's physical tank capacity — so it
+  /// never overfills past what the tank can actually hold.
+  void refill({
+    required double addedVolume,
+    required double currentAreaHa,
+    required double maxCapacity,
+  }) {
     if (_task == null) return;
-    final maxTank = _task!.initialTankVolume ?? 0.0;
-    // The tank can't exceed original capacity
-    final newLevel = (_state.remainingVolume + addedVolume).clamp(0.0, maxTank);
+    final newLevel =
+        (_state.remainingVolume + addedVolume).clamp(0.0, maxCapacity);
+    final actualAdded = newLevel - _state.remainingVolume;
+    if (actualAdded > 0) _totalAdded += actualAdded;
     _tankAtBase = newLevel;
     _baseAreaHa = currentAreaHa;
     _recalculate(currentAreaHa);
   }
 
-  /// Completely refill to original capacity and reset baseline.
-  void fullRefill({required double currentAreaHa}) {
+  /// Completely refill to [maxCapacity] (machine's physical tank capacity)
+  /// and reset baseline.
+  void fullRefill({required double currentAreaHa, required double maxCapacity}) {
     if (_task == null) return;
-    _tankAtBase = _task!.initialTankVolume ?? 0.0;
+    final actualAdded = maxCapacity - _state.remainingVolume;
+    if (actualAdded > 0) _totalAdded += actualAdded;
+    _tankAtBase = maxCapacity;
     _baseAreaHa = currentAreaHa;
+    _recalculate(currentAreaHa);
+  }
+
+  /// Changes the application rate (l/ha or kg/ha) mid-task.
+  ///
+  /// Consumption so far (at the OLD rate) is locked in first — the current
+  /// [_recalculate] result becomes the new base tank level and area baseline
+  /// — so the rate change only affects consumption going forward, never
+  /// retroactively recomputes what was already used.
+  void setRate(double newRate, {required double currentAreaHa}) {
+    final task = _task;
+    if (task == null) return;
+    _recalculate(currentAreaHa);
+    _tankAtBase = _state.remainingVolume;
+    _baseAreaHa = currentAreaHa;
+    task.targetRate = newRate;
     _recalculate(currentAreaHa);
   }
 

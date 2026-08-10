@@ -179,9 +179,25 @@ class _HistoryCard extends StatelessWidget {
             children: [
               _chip('Szerokość', '${record.workingWidthM.toStringAsFixed(1)} m'),
               _chip('Zakładka', '${record.overlapM.toStringAsFixed(2)} m'),
-              _chip('Kierunek', '${record.swathAngleDeg.toStringAsFixed(0)}°'),
+              _chip('Kierunek', '${record.swathAngleDeg.toStringAsFixed(2)}°'),
               _chip('Czas pracy', formatWorkDuration(record.workDuration)),
               _chip('Zrobione', '${record.coveredHa.toStringAsFixed(2)} ha'),
+              _chip(
+                'Wydajność',
+                '${_productivityOf(record).toStringAsFixed(2)} ha/h',
+              ),
+              if (record.materialConsumed != null)
+                _chip(
+                  'Zużyto',
+                  '${record.materialConsumed!.toStringAsFixed(1)} '
+                      '${record.materialUnit ?? ''}',
+                ),
+              if (_materialRateOf(record) != null)
+                _chip(
+                  'Dawka rzeczywista',
+                  '${_materialRateOf(record)!.toStringAsFixed(2)} '
+                      '${record.materialUnit ?? ''}/ha',
+                ),
             ],
           ),
           if (note.isNotEmpty) ...[
@@ -223,6 +239,20 @@ class _HistoryCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Wydajność rekordu — zapisana w momencie zakończenia pracy, a dla starszych
+/// rekordów (bez tej wartości) przeliczona ze zrobionych ha i czasu pracy.
+double _productivityOf(HistoryRecord r) =>
+    r.productivityHaPerHour ?? hectaresPerHourOf(r.coveredHa, r.workDuration);
+
+/// Rzeczywista dawka [jednostka/ha]: zużyty materiał / zrobione hektary.
+/// Null gdy zadanie nie miało monitorowania materiału albo nic nie zrobiono
+/// (coveredHa == 0 — np. testowe przeklikanie bez realnego przejazdu).
+double? _materialRateOf(HistoryRecord r) {
+  final consumed = r.materialConsumed;
+  if (consumed == null || r.coveredHa <= 0) return null;
+  return consumed / r.coveredHa;
+}
 
 String _formatDate(DateTime d) {
   final dd = d.day.toString().padLeft(2, '0');

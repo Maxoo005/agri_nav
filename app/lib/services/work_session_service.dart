@@ -20,6 +20,14 @@ String formatWorkDuration(Duration d) {
   return '$h:$mm:$ss';
 }
 
+/// Wydajność [ha/h] na podstawie faktycznie zrobionych hektarów i czasu pracy:
+/// `coveredHa / czas [h]`. Zwraca 0 przy zerowym czasie pracy.
+double hectaresPerHourOf(double coveredHa, Duration duration) {
+  final hours = duration.inMilliseconds / Duration.millisecondsPerHour;
+  if (hours <= 0) return 0;
+  return coveredHa / hours;
+}
+
 /// Singleton — stan aktywności pracy biegnącej W TLE.
 ///
 /// Wymóg UX: praca działa w tle aż do jej jawnego zakończenia przez operatora.
@@ -56,6 +64,7 @@ class WorkSessionService {
     instance._runningSince =
         runningSinceRaw != null ? DateTime.tryParse(runningSinceRaw) : null;
     instance._paused = paused;
+    instance._machineOff = raw['machineOff'] as bool? ?? false;
     if (instance._runningSince != null && !paused) {
       instance._startTicker();
     }
@@ -78,6 +87,13 @@ class WorkSessionService {
 
   bool _paused = false;
 
+  /// Ręczny wyłącznik maszyny (np. opryskiwacza/rozsiewacza) — operator
+  /// jedzie dalej (np. na uwrociu albo drogą dojazdową), ale narzędzie jest
+  /// fizycznie wyłączone: nie maluje śladu pokrycia i nie zużywa materiału.
+  /// W odróżnieniu od [pause] NIE zatrzymuje licznika czasu pracy ani
+  /// nawigacji — to lokalny stan sekcji, nie przerwa w pracy.
+  bool _machineOff = false;
+
   final _controller = StreamController<Duration>.broadcast();
   Timer? _ticker;
 
@@ -91,6 +107,8 @@ class WorkSessionService {
   bool get isActive => _runningSince != null || _paused;
 
   bool get paused => _paused;
+
+  bool get machineOff => _machineOff;
 
   /// Aktualny łączny czas pracy (uwzględnia bieżący segment i przerwy).
   Duration get elapsed {
@@ -156,6 +174,14 @@ class WorkSessionService {
     _persist();
   }
 
+  /// Przełącza ręczny wyłącznik maszyny (patrz [machineOff]).
+  void setMachineOff(bool value) {
+    if (_machineOff == value) return;
+    _machineOff = value;
+    _emit();
+    _persist();
+  }
+
   /// Kończy pracę: czas się zamraża, sesja przestaje istnieć w tle.
   /// Nagrywanie pokrycia zatrzymuje wywołujący (CoverageService).
   void finish() {
@@ -164,6 +190,7 @@ class WorkSessionService {
     }
     _runningSince = null;
     _paused = false;
+    _machineOff = false;
     _ticker?.cancel();
     _ticker = null;
     _emit();
@@ -180,6 +207,7 @@ class WorkSessionService {
     _accumulatedMs = 0;
     _runningSince = null;
     _paused = false;
+    _machineOff = false;
     _emit();
     _box.delete(_kSessionKey);
   }
@@ -201,6 +229,7 @@ class WorkSessionService {
       'accumulatedMs': _accumulatedMs,
       'runningSince': _runningSince?.toIso8601String(),
       'paused': _paused,
+      'machineOff': _machineOff,
       'finished': false,
     });
   }
