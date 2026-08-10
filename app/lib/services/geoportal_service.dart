@@ -11,6 +11,7 @@ import '../models/field_model.dart';
 import 'field_service.dart';
 import 'wkt_parser.dart';
 import '../utils/geo_utils.dart';
+import '../utils/elastic_warp.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wyjątki
@@ -63,8 +64,9 @@ class ParcelFetchResult {
 ///   [fetchAndCacheByTeryt]  — pobierz działkę wg numeru ewidencyjnego
 ///   [nudgeField]            — przesuń granicę o dx/dy [m] (korekta offsetu)
 ///   [resetNudge]            — wyzeruj przesunięcie działki
-///   [applyControlPoints]    — dopasuj granicę metodą punktów kontrolnych
-///   [resetControlPoints]    — wyzeruj korektę punktami kontrolnymi
+///   [applyControlPoints]        — dopasuj granicę metodą punktów kontrolnych (2-3 pary, sztywno)
+///   [applyControlPointsElastic] — dopasuj granicę metodą IDW (4+ par, elastycznie)
+///   [resetControlPoints]        — wyzeruj korektę punktami kontrolnymi
 class GeoportalService {
   GeoportalService._();
   static final instance = GeoportalService._();
@@ -266,17 +268,60 @@ class GeoportalService {
     field.cpScale = fit.scale;
     field.cpTxM = fit.txM;
     field.cpTyM = fit.tyM;
+    field.correctionMode = FieldCorrectionMode.similarity;
+    field.elasticSrcLats = [];
+    field.elasticSrcLons = [];
+    field.elasticTgtLats = [];
+    field.elasticTgtLons = [];
     await FieldService.instance.save(field);
     return field;
   }
 
-  /// Resetuje korektę punktami kontrolnymi [field] do wartości domyślnych
-  /// i zapisuje do Hive. Niezależne od [nudgeField]/[resetNudge].
+  /// Dopasowuje granicę [field] do ortofotomapy metodą elastyczną (Inverse
+  /// Distance Weighting — patrz [ElasticWarp]), wywoływaną automatycznie,
+  /// gdy rolnik wskaże [ElasticWarp.minControlPoints] lub więcej par (patrz
+  /// `map_view.dart` — wybór metody to funkcja samej liczby par, nie osobny
+  /// wybór użytkownika).
+  ///
+  /// W przeciwieństwie do [applyControlPoints] (4 liczby), tego dopasowania
+  /// nie da się skompresować — zapisywane są SUROWE pary WGS-84
+  /// ([FieldModel.elasticSrcLats] i spółka), a samo dopasowanie jest liczone
+  /// od nowa przy każdym odczycie [FieldModel.boundary]. W przeciwieństwie do
+  /// klasycznego Thin Plate Spline, IDW nie rozwiązuje układu równań, więc
+  /// nie ma tu (w odróżnieniu od dawniejszej wersji) przypadku zdegenerowanego
+  /// układu do zwalidowania przed zapisem — działa dla dowolnego ułożenia par.
+  Future<FieldModel> applyControlPointsElastic(
+    FieldModel field,
+    List<({LatLng source, LatLng target})> pairs,
+  ) async {
+    assert(pairs.length >= ElasticWarp.minControlPoints,
+        'Potrzeba co najmniej ${ElasticWarp.minControlPoints} par punktów dla korekty elastycznej');
+    field.elasticSrcLats = pairs.map((p) => p.source.latitude).toList();
+    field.elasticSrcLons = pairs.map((p) => p.source.longitude).toList();
+    field.elasticTgtLats = pairs.map((p) => p.target.latitude).toList();
+    field.elasticTgtLons = pairs.map((p) => p.target.longitude).toList();
+    field.correctionMode = FieldCorrectionMode.elastic;
+    field.cpRotationRad = 0.0;
+    field.cpScale = 1.0;
+    field.cpTxM = 0.0;
+    field.cpTyM = 0.0;
+    await FieldService.instance.save(field);
+    return field;
+  }
+
+  /// Resetuje korektę punktami kontrolnymi [field] (obie metody —
+  /// similarity i elastyczna) do wartości domyślnych i zapisuje do Hive.
+  /// Niezależne od [nudgeField]/[resetNudge].
   Future<FieldModel> resetControlPoints(FieldModel field) async {
     field.cpRotationRad = 0.0;
     field.cpScale = 1.0;
     field.cpTxM = 0.0;
     field.cpTyM = 0.0;
+    field.elasticSrcLats = [];
+    field.elasticSrcLons = [];
+    field.elasticTgtLats = [];
+    field.elasticTgtLons = [];
+    field.correctionMode = FieldCorrectionMode.none;
     await FieldService.instance.save(field);
     return field;
   }

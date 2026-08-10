@@ -13,6 +13,16 @@ typedef SimilarityFit = ({
   double tyM,
 });
 
+/// Wynik dopasowania linii AB metodą najmniejszych kwadratów (patrz
+/// [GeoUtils.fitLineThroughPoints]).
+typedef AbLineFit = ({
+  LatLng pointA,
+  LatLng pointB,
+  double headingDeg,
+  double lengthM,
+  double rmsM,
+});
+
 /// Geometry helpers shared across the application.
 ///
 /// All helpers are pure functions — no state, no side effects.
@@ -133,6 +143,97 @@ abstract final class GeoUtils {
     final e2 = scale * (p.e * cosT - p.n * sinT) + txM;
     final n2 = scale * (p.e * sinT + p.n * cosT) + tyM;
     return fromEnu(origin, e2, n2);
+  }
+
+  /// Total-least-squares (orthogonal regression / PCA) best-fit line through
+  /// [points], for deriving a precise AB heading from a recorded RTK track.
+  ///
+  /// Unlike ordinary "y on x" regression, this does not break down for a
+  /// near-vertical (north-south) path — it minimises the sum of squared
+  /// PERPENDICULAR distances from every point to the line, via the closed-form
+  /// principal-axis angle of the points' 2×2 covariance matrix (same family of
+  /// method as [fitSimilarity2D], applied to a line instead of a similarity
+  /// transform).
+  ///
+  /// Returns `null` when fewer than 2 points are given, or all points are
+  /// (numerically) coincident.
+  ///
+  /// The returned heading is folded into `[0, 180)` — same convention as
+  /// [bearing] mod 180 and the existing `_swathAngleDeg`/`_abFromAngle` in
+  /// map_view.dart, since an AB line has a direction but no "arrow": a swath
+  /// running north-south is the same line whether recorded driving north or
+  /// south. [pointA]/[pointB] are the extreme projections of the recorded
+  /// points onto the fitted line (not the raw, noisy first/last samples),
+  /// ordered so [pointA] is nearest the start of the recording and [pointB]
+  /// nearest the end — purely cosmetic, so "A" matches where the driver
+  /// actually started. [lengthM] is the resulting line's extent; [rmsM] is
+  /// the RMS perpendicular residual (how tightly the points hugged the fitted
+  /// line) — both are left for the caller to apply as UX/acceptance
+  /// thresholds (e.g. minimum length, minimum straightness).
+  static AbLineFit? fitLineThroughPoints(List<LatLng> points) {
+    if (points.length < 2) return null;
+
+    final origin = points.first;
+    final enu = points.map((p) => toEnu(origin, p)).toList();
+
+    var eBar = 0.0, nBar = 0.0;
+    for (final p in enu) {
+      eBar += p.e;
+      nBar += p.n;
+    }
+    eBar /= enu.length;
+    nBar /= enu.length;
+
+    var sEE = 0.0, sNN = 0.0, sEN = 0.0;
+    for (final p in enu) {
+      final de = p.e - eBar;
+      final dn = p.n - nBar;
+      sEE += de * de;
+      sNN += dn * dn;
+      sEN += de * dn;
+    }
+    if (sEE + sNN < 1e-6) return null; // wszystkie punkty w jednym miejscu
+
+    // Kąt głównej osi chmury punktów względem osi E (matematyczna konwencja,
+    // przeciwnie do wskazówek zegara) — standardowy wzór zamknięty PCA/TLS.
+    final thetaStd = 0.5 * math.atan2(2 * sEN, sEE - sNN);
+    // Konwersja na namiar używany w reszcie kodu (0°=N, 90°=E, zgodnie z
+    // ruchem wskazówek zegara — patrz [bearing]/`_abFromAngle`), zwinięty do
+    // [0,180) tym samym idiomem co [bearing] (dodanie pełnego obrotu przed
+    // modulo dla bezpieczeństwa przy wartościach ujemnych).
+    final headingDeg =
+        ((math.pi / 2 - thetaStd) * 180.0 / math.pi + 360.0) % 180.0;
+    final headingRad = headingDeg * math.pi / 180.0;
+    final dirE = math.sin(headingRad), dirN = math.cos(headingRad);
+    final perpE = math.cos(headingRad), perpN = -math.sin(headingRad);
+
+    var tMin = double.infinity, tMax = double.negativeInfinity;
+    var tFirst = 0.0, tLast = 0.0;
+    var sumPerp2 = 0.0;
+    for (var i = 0; i < enu.length; i++) {
+      final de = enu[i].e - eBar;
+      final dn = enu[i].n - nBar;
+      final t = de * dirE + dn * dirN;
+      final perp = de * perpE + dn * perpN;
+      sumPerp2 += perp * perp;
+      if (t < tMin) tMin = t;
+      if (t > tMax) tMax = t;
+      if (i == 0) tFirst = t;
+      if (i == enu.length - 1) tLast = t;
+    }
+
+    LatLng atT(double t) => fromEnu(origin, eBar + t * dirE, nBar + t * dirN);
+    final endMin = atT(tMin);
+    final endMax = atT(tMax);
+    final startFirst = tFirst <= tLast; // A ≈ początek jazdy, B ≈ koniec
+
+    return (
+      pointA: startFirst ? endMin : endMax,
+      pointB: startFirst ? endMax : endMin,
+      headingDeg: headingDeg,
+      lengthM: tMax - tMin,
+      rmsM: math.sqrt(sumPerp2 / enu.length),
+    );
   }
 
   /// Computes the area of a closed polygon [pts] in hectares (1 ha = 10 000 m²).
