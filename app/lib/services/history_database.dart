@@ -108,26 +108,14 @@ class HistoryDatabase {
     return rows.map(HistoryFieldSummary.fromMap).toList();
   }
 
-  /// Lata, w których pole miało zakończone prace — malejąco (z liczbą prac).
-  Future<List<HistoryYearSummary>> getYears(String fieldId) async {
-    final db = await _database;
-    final rows = await db.rawQuery('''
-      SELECT strftime('%Y', completed_at) AS year, COUNT(*) AS count
-      FROM $_table
-      WHERE field_id = ?
-      GROUP BY year
-      ORDER BY year DESC
-    ''', [fieldId]);
-    return rows.map(HistoryYearSummary.fromMap).toList();
-  }
-
-  /// Wszystkie zakończone prace pola w danym roku — od najnowszej.
-  Future<List<HistoryRecord>> getRecords(String fieldId, int year) async {
+  /// Wszystkie zakończone prace danego pola — niezależnie od roku i typu
+  /// zadania — od najnowszej.
+  Future<List<HistoryRecord>> getFieldRecords(String fieldId) async {
     final db = await _database;
     final rows = await db.query(
       _table,
-      where: "field_id = ? AND strftime('%Y', completed_at) = ?",
-      whereArgs: [fieldId, '$year'],
+      where: 'field_id = ?',
+      whereArgs: [fieldId],
       orderBy: 'completed_at DESC',
     );
     return rows.map(HistoryRecord.fromMap).toList();
