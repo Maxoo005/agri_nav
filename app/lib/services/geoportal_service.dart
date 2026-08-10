@@ -63,6 +63,8 @@ class ParcelFetchResult {
 ///   [fetchAndCacheByTeryt]  — pobierz działkę wg numeru ewidencyjnego
 ///   [nudgeField]            — przesuń granicę o dx/dy [m] (korekta offsetu)
 ///   [resetNudge]            — wyzeruj przesunięcie działki
+///   [applyControlPoints]    — dopasuj granicę metodą punktów kontrolnych
+///   [resetControlPoints]    — wyzeruj korektę punktami kontrolnymi
 class GeoportalService {
   GeoportalService._();
   static final instance = GeoportalService._();
@@ -238,6 +240,43 @@ class GeoportalService {
   Future<FieldModel> resetNudge(FieldModel field) async {
     field.offsetLat = 0.0;
     field.offsetLon = 0.0;
+    await FieldService.instance.save(field);
+    return field;
+  }
+
+  /// Dopasowuje granicę [field] do ortofotomapy metodą punktów kontrolnych.
+  ///
+  /// [pairs] to co najmniej 2 pary (punkt na surowej granicy katastralnej,
+  /// odpowiadający punkt na ortofotomapie). Liczy transformację podobieństwa
+  /// (obrót + skala + przesunięcie) metodą najmniejszych kwadratów
+  /// ([GeoUtils.fitSimilarity2D]) w lokalnym układzie ENU względem
+  /// [FieldModel.center]. Nie modyfikuje surowych współrzędnych ani offsetu
+  /// — zapisuje wynik w [FieldModel.cpRotationRad]/[FieldModel.cpScale]/
+  /// [FieldModel.cpTxM]/[FieldModel.cpTyM] i zapisuje do Hive.
+  Future<FieldModel> applyControlPoints(
+    FieldModel field,
+    List<({LatLng source, LatLng target})> pairs,
+  ) async {
+    assert(pairs.length >= 2, 'Potrzeba co najmniej 2 par punktów');
+    final origin = field.center;
+    final src = pairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
+    final tgt = pairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
+    final fit = GeoUtils.fitSimilarity2D(src, tgt);
+    field.cpRotationRad = fit.rotationRad;
+    field.cpScale = fit.scale;
+    field.cpTxM = fit.txM;
+    field.cpTyM = fit.tyM;
+    await FieldService.instance.save(field);
+    return field;
+  }
+
+  /// Resetuje korektę punktami kontrolnymi [field] do wartości domyślnych
+  /// i zapisuje do Hive. Niezależne od [nudgeField]/[resetNudge].
+  Future<FieldModel> resetControlPoints(FieldModel field) async {
+    field.cpRotationRad = 0.0;
+    field.cpScale = 1.0;
+    field.cpTxM = 0.0;
+    field.cpTyM = 0.0;
     await FieldService.instance.save(field);
     return field;
   }

@@ -196,6 +196,12 @@ class _MapViewState extends State<MapView> {
   // ── Korekta przesunięcia (Nudge) ─────────────────────────────────────────────
   bool _nudgePanelVisible = false;
 
+  // ── Korekta punktami kontrolnymi (obrót + skala + przesunięcie) ─────────────
+  bool _controlPointsMode = false;
+  LatLng? _cpPendingSource;
+  final List<({LatLng source, LatLng target})> _cpPairs = [];
+  List<LatLng> _cpPreviewBoundary = [];
+
   // ── Manual Offset — kalibracja warstwy LPIS względem satelity (stopnie) ─────
   double _parcelLatOffset = 0;
   double _parcelLonOffset = 0;
@@ -397,6 +403,7 @@ class _MapViewState extends State<MapView> {
     setState(() {
       _drawingMode = !_drawingMode;
       if (_drawingMode) {
+        _clearControlPointsState();
         _fieldBoundary.clear();
         _swaths = [];
         _headlandRings = [];
@@ -979,6 +986,162 @@ class _MapViewState extends State<MapView> {
     });
   }
 
+  // ── Punkty kontrolne — korekta obrotem+skalą+przesunięciem ──────────────────
+
+  /// Zeruje stan trybu punktów kontrolnych (bez `setState` — do złożenia
+  /// z innymi blokami `setState`, np. przy wejściu w tryb rysowania).
+  void _clearControlPointsState() {
+    _controlPointsMode = false;
+    _cpPendingSource = null;
+    _cpPairs.clear();
+    _cpPreviewBoundary.clear();
+  }
+
+  void _toggleControlPointsMode() {
+    setState(() {
+      final turningOn = !_controlPointsMode;
+      _clearControlPointsState();
+      if (turningOn) {
+        _controlPointsMode = true;
+        _drawingMode = false;
+        _nudgePanelVisible = false;
+      }
+    });
+  }
+
+  /// Najbliższy surowy wierzchołek granicy katastralnej (przed CP i offsetem)
+  /// w promieniu ~40px ekranu od [tapped], albo `null` gdy brak trafienia.
+  LatLng? _nearestRawVertex(LatLng tapped) {
+    final field = _activeField;
+    if (field == null) return null;
+    const thresholdPx = 40.0;
+    final tappedPt = _mapController.camera.latLngToScreenPoint(tapped);
+    LatLng? best;
+    var bestDist = thresholdPx;
+    for (var i = 0; i < field.boundaryLats.length; i++) {
+      final vertex = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
+      final vertexPt = _mapController.camera.latLngToScreenPoint(vertex);
+      final dx = vertexPt.x - tappedPt.x;
+      final dy = vertexPt.y - tappedPt.y;
+      final dist = math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = vertex;
+      }
+    }
+    return best;
+  }
+
+  void _handleControlPointTap(LatLng latLng) {
+    if (_activeField == null) return;
+    if (_cpPendingSource == null) {
+      final snapped = _nearestRawVertex(latLng);
+      if (snapped == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content:
+                Text('Stuknij bliżej wierzchołka granicy (czerwony punkt)'),
+          ),
+        );
+        return;
+      }
+      setState(() => _cpPendingSource = snapped);
+    } else {
+      setState(() {
+        _cpPairs.add((source: _cpPendingSource!, target: latLng));
+        _cpPendingSource = null;
+        _updateCpPreview();
+      });
+    }
+  }
+
+  /// Przelicza podgląd na żywo (niezatwierdzony fit) z aktualnych par.
+  /// Wymaga wywołania wewnątrz `setState`.
+  void _updateCpPreview() {
+    final field = _activeField;
+    if (field == null || _cpPairs.length < 2) {
+      _cpPreviewBoundary = [];
+      return;
+    }
+    final origin = field.center;
+    final src = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
+    final tgt = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
+    final fit = GeoUtils.fitSimilarity2D(src, tgt);
+    _cpPreviewBoundary = List.generate(field.boundaryLats.length, (i) {
+      final raw = LatLng(field.boundaryLats[i], field.boundaryLons[i]);
+      final corrected = GeoUtils.applySimilarity2D(
+        origin,
+        raw,
+        rotationRad: fit.rotationRad,
+        scale: fit.scale,
+        txM: fit.txM,
+        tyM: fit.tyM,
+      );
+      return LatLng(
+        corrected.latitude + field.offsetLat,
+        corrected.longitude + field.offsetLon,
+      );
+    });
+  }
+
+  void _undoLastCpPair() {
+    setState(() {
+      if (_cpPendingSource != null) {
+        _cpPendingSource = null;
+      } else if (_cpPairs.isNotEmpty) {
+        _cpPairs.removeLast();
+      }
+      _updateCpPreview();
+    });
+  }
+
+  void _resetCpPairs() {
+    setState(() {
+      _cpPendingSource = null;
+      _cpPairs.clear();
+      _cpPreviewBoundary = [];
+    });
+  }
+
+  void _cancelControlPoints() {
+    setState(_clearControlPointsState);
+  }
+
+  Future<void> _confirmControlPoints() async {
+    if (_activeField == null) return;
+    if (_cpPairs.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Potrzeba co najmniej 2 par punktów (masz: ${_cpPairs.length})',
+          ),
+        ),
+      );
+      return;
+    }
+    final updated = await GeoportalService.instance
+        .applyControlPoints(_activeField!, _cpPairs);
+    setState(() {
+      _activeField = updated;
+      _fieldBoundary
+        ..clear()
+        ..addAll(updated.boundary);
+      _clearControlPointsState();
+    });
+  }
+
+  Future<void> _resetControlPoints() async {
+    if (_activeField == null) return;
+    final updated =
+        await GeoportalService.instance.resetControlPoints(_activeField!);
+    setState(() {
+      _activeField = updated;
+      _fieldBoundary
+        ..clear()
+        ..addAll(updated.boundary);
+    });
+  }
+
   void _toggleCoverage() {
     if (_trackingCoverage) {
       CoverageService.instance.stopTracking();
@@ -1176,6 +1339,26 @@ class _MapViewState extends State<MapView> {
                   isActive: _nudgePanelVisible,
                   onPressed: () => setState(
                       () => _nudgePanelVisible = !_nudgePanelVisible),
+                ),
+              if (_activeField != null)
+                _ActionTile(
+                  icon: Icons.control_camera_rounded,
+                  label: 'Punkty kontrolne',
+                  tooltip:
+                      'Dopasuj granicę do ortofotomapy punktami kontrolnymi',
+                  isActive: _controlPointsMode,
+                  onPressed: _toggleControlPointsMode,
+                ),
+              if (_activeField != null &&
+                  (_activeField!.cpRotationRad != 0.0 ||
+                      _activeField!.cpScale != 1.0 ||
+                      _activeField!.cpTxM != 0.0 ||
+                      _activeField!.cpTyM != 0.0))
+                _ActionTile(
+                  icon: Icons.restart_alt,
+                  label: 'Resetuj CP',
+                  tooltip: 'Wyzeruj korektę punktami kontrolnymi',
+                  onPressed: _resetControlPoints,
                 ),
               _ActionTile(
                 icon: _drawingMode ? Icons.cancel_outlined : Icons.edit,
@@ -1559,6 +1742,10 @@ class _MapViewState extends State<MapView> {
               initialCenter: _tractorPos,
               initialZoom: 17,
               onTap: (_, latLng) {
+                if (_controlPointsMode) {
+                  _handleControlPointTap(latLng);
+                  return;
+                }
                 if (!_drawingMode) setState(() => _followTractor = false);
               },
             ),
@@ -1663,6 +1850,87 @@ class _MapViewState extends State<MapView> {
                   }).toList(),
                 ),
 
+              // ── Punkty kontrolne — granica surowa (referencja Krok 1) ───────
+              if (_controlPointsMode &&
+                  _activeField != null &&
+                  _activeField!.boundaryLats.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: [
+                        for (var i = 0;
+                            i < _activeField!.boundaryLats.length;
+                            i++)
+                          LatLng(_activeField!.boundaryLats[i],
+                              _activeField!.boundaryLons[i]),
+                        LatLng(_activeField!.boundaryLats.first,
+                            _activeField!.boundaryLons.first),
+                      ],
+                      color: Colors.deepOrangeAccent,
+                      strokeWidth: 1.5,
+                      pattern: StrokePattern.dashed(segments: const [6, 4]),
+                    ),
+                  ],
+                ),
+
+              // ── Punkty kontrolne — podgląd na żywo (niezatwierdzony fit) ────
+              if (_cpPreviewBoundary.length >= 3)
+                PolygonLayer(
+                  polygons: [
+                    Polygon(
+                      points: _cpPreviewBoundary,
+                      color: Colors.cyan.withValues(alpha: 0.12),
+                      borderColor: Colors.cyanAccent,
+                      borderStrokeWidth: 2.5,
+                      pattern: StrokePattern.dashed(segments: const [8, 5]),
+                    ),
+                  ],
+                ),
+
+              // ── Punkty kontrolne — pary (łączniki + kropki) ──────────────────
+              if (_controlPointsMode && _cpPairs.isNotEmpty)
+                PolylineLayer(
+                  polylines: _cpPairs
+                      .map((p) => Polyline(
+                            points: [p.source, p.target],
+                            color: Colors.white54,
+                            strokeWidth: 1.0,
+                            pattern:
+                                StrokePattern.dashed(segments: const [4, 4]),
+                          ))
+                      .toList(),
+                ),
+              if (_controlPointsMode &&
+                  (_cpPairs.isNotEmpty || _cpPendingSource != null))
+                CircleLayer(
+                  circles: [
+                    for (final p in _cpPairs) ...[
+                      CircleMarker(
+                        point: p.source,
+                        radius: 6,
+                        color: Colors.red,
+                        borderColor: Colors.white,
+                        borderStrokeWidth: 1.5,
+                      ),
+                      CircleMarker(
+                        point: p.target,
+                        radius: 6,
+                        color: Colors.green,
+                        borderColor: Colors.white,
+                        borderStrokeWidth: 1.5,
+                      ),
+                    ],
+                    if (_cpPendingSource != null)
+                      CircleMarker(
+                        point: _cpPendingSource!,
+                        radius: 7,
+                        color: Colors.red,
+                        borderColor: Colors.yellow,
+                        borderStrokeWidth: 2,
+                      ),
+                  ],
+                ),
+
               // ── Ikona ciągnika ────────────────────────────────────────────────
               MarkerLayer(
                 markers: [
@@ -1695,6 +1963,21 @@ class _MapViewState extends State<MapView> {
                 onNudge: (dx, dy) => _nudgeActive(dx, dy),
                 onReset: _resetActiveNudge,
                 onClose: () => setState(() => _nudgePanelVisible = false),
+              ),
+            ),
+
+          // ── Panel korekty punktami kontrolnymi ────────────────────────────────
+          if (_controlPointsMode && _activeField != null)
+            Positioned(
+              left: 12,
+              bottom: 200,
+              child: ControlPointsPanel(
+                pairCount: _cpPairs.length,
+                hasPendingSource: _cpPendingSource != null,
+                onUndo: _undoLastCpPair,
+                onReset: _resetCpPairs,
+                onCancel: _cancelControlPoints,
+                onConfirm: _confirmControlPoints,
               ),
             ),
 

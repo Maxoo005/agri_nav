@@ -2,6 +2,17 @@ import 'dart:math' as math;
 
 import 'package:latlong2/latlong.dart';
 
+/// Punkt w lokalnym układzie ENU (metry), względem pewnego originu WGS-84.
+typedef Enu = ({double e, double n});
+
+/// Wynik dopasowania transformacji podobieństwa 2D (obrót + skala + przesunięcie).
+typedef SimilarityFit = ({
+  double rotationRad,
+  double scale,
+  double txM,
+  double tyM,
+});
+
 /// Geometry helpers shared across the application.
 ///
 /// All helpers are pure functions — no state, no side effects.
@@ -18,6 +29,110 @@ abstract final class GeoUtils {
     final x = math.cos(lat1) * math.sin(lat2) -
         math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
     return (math.atan2(y, x) * 180.0 / math.pi + 360.0) % 360.0;
+  }
+
+  /// Converts [p] to a local ENU (East/North, metres) frame centred at [origin].
+  ///
+  /// Equirectangular approximation — same convention (`111320.0`, `cos(lat)`)
+  /// already used by [GeoportalService.nudgeField] and [minPassesBearing].
+  /// Accurate enough at field scale; consistent with the rest of the codebase.
+  static Enu toEnu(LatLng origin, LatLng p) {
+    const mPerDeg = 111320.0;
+    final cosLat = math.cos(origin.latitude * math.pi / 180.0);
+    return (
+      e: (p.longitude - origin.longitude) * mPerDeg * cosLat,
+      n: (p.latitude - origin.latitude) * mPerDeg,
+    );
+  }
+
+  /// Inverse of [toEnu] — converts an ENU offset from [origin] back to WGS-84.
+  static LatLng fromEnu(LatLng origin, double e, double n) {
+    const mPerDeg = 111320.0;
+    final cosLat = math.cos(origin.latitude * math.pi / 180.0);
+    return LatLng(
+      origin.latitude + n / mPerDeg,
+      origin.longitude + (cosLat > 0.0 ? e / (mPerDeg * cosLat) : 0.0),
+    );
+  }
+
+  /// Least-squares fit of a 2D similarity transform (rotation + uniform scale
+  /// + translation) mapping [src] onto [tgt], both in ENU metres.
+  ///
+  /// Closed-form complex-number solution (Kabsch/Procrustes 2D, no
+  /// reflection): representing each point as `e + i·n`, the optimal
+  /// rotation+scale is `z = Σ(conj(src_i)·tgt_i) / Σ|src_i|²`; `|z|` is the
+  /// scale and `arg(z)` the rotation. Translation follows from the centroids.
+  ///
+  /// Requires `src.length == tgt.length >= 2`.
+  static SimilarityFit fitSimilarity2D(List<Enu> src, List<Enu> tgt) {
+    assert(src.length == tgt.length && src.length >= 2,
+        'fitSimilarity2D wymaga co najmniej 2 par punktów');
+
+    var meanSrcE = 0.0, meanSrcN = 0.0, meanTgtE = 0.0, meanTgtN = 0.0;
+    for (var i = 0; i < src.length; i++) {
+      meanSrcE += src[i].e;
+      meanSrcN += src[i].n;
+      meanTgtE += tgt[i].e;
+      meanTgtN += tgt[i].n;
+    }
+    final count = src.length;
+    meanSrcE /= count;
+    meanSrcN /= count;
+    meanTgtE /= count;
+    meanTgtN /= count;
+
+    var numRe = 0.0, numIm = 0.0, denom = 0.0;
+    for (var i = 0; i < src.length; i++) {
+      final sE = src[i].e - meanSrcE;
+      final sN = src[i].n - meanSrcN;
+      final tE = tgt[i].e - meanTgtE;
+      final tN = tgt[i].n - meanTgtN;
+      // conj(s)·t = (sE - i·sN)(tE + i·tN)
+      numRe += sE * tE + sN * tN;
+      numIm += sE * tN - sN * tE;
+      denom += sE * sE + sN * sN;
+    }
+
+    if (denom < 1e-9) {
+      // Zdegenerowany przypadek (wszystkie punkty źródłowe w jednym miejscu)
+      // — brak sensownego obrotu/skali, tylko przesunięcie centroidów.
+      return (
+        rotationRad: 0.0,
+        scale: 1.0,
+        txM: meanTgtE - meanSrcE,
+        tyM: meanTgtN - meanSrcN,
+      );
+    }
+
+    final zRe = numRe / denom;
+    final zIm = numIm / denom;
+    final scale = math.sqrt(zRe * zRe + zIm * zIm);
+    final rotationRad = math.atan2(zIm, zRe);
+
+    // t = meanTgt − z·meanSrc (mnożenie zespolone: obrót+skala meanSrc)
+    final txM = meanTgtE - (zRe * meanSrcE - zIm * meanSrcN);
+    final tyM = meanTgtN - (zIm * meanSrcE + zRe * meanSrcN);
+
+    return (rotationRad: rotationRad, scale: scale, txM: txM, tyM: tyM);
+  }
+
+  /// Applies a [SimilarityFit] to [point], both in the same ENU frame
+  /// (identified by [origin]). Shared by [FieldModel.boundary] (committed
+  /// fit) and the live control-points preview (uncommitted fit).
+  static LatLng applySimilarity2D(
+    LatLng origin,
+    LatLng point, {
+    required double rotationRad,
+    required double scale,
+    required double txM,
+    required double tyM,
+  }) {
+    final p = toEnu(origin, point);
+    final cosT = math.cos(rotationRad);
+    final sinT = math.sin(rotationRad);
+    final e2 = scale * (p.e * cosT - p.n * sinT) + txM;
+    final n2 = scale * (p.e * sinT + p.n * cosT) + tyM;
+    return fromEnu(origin, e2, n2);
   }
 
   /// Computes the area of a closed polygon [pts] in hectares (1 ha = 10 000 m²).
