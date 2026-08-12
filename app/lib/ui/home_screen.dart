@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
+import 'file_import_sheet.dart';
 import 'lpis_import_sheet.dart';
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
@@ -94,6 +95,32 @@ class _HomeScreenState extends State<HomeScreen> {
                             context,
                             MaterialPageRoute(
                               builder: (_) => MapView(initialField: field),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    _MenuTile(
+                      icon: Icons.upload_file,
+                      label: 'Importuj z pliku',
+                      onTap: () async {
+                        final fields = await FileImportSheet.show(context);
+                        if (fields.isEmpty || !context.mounted) return;
+                        if (fields.length == 1) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  MapView(initialField: fields.first),
+                            ),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                  'Zaimportowano ${fields.length} pól z pliku'),
+                              backgroundColor: Colors.green[700],
+                              duration: const Duration(seconds: 3),
                             ),
                           );
                         }

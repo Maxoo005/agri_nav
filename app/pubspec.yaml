@@ -32,6 +32,10 @@ dependencies:
   # SQLite FFI — backend dla platform desktop (Windows), gdy brak wtyczki sqflite
   sqflite_common_ffi: ^2.3.0
   sqlite3_flutter_libs: ^0.5.0
+  # Wybór pliku z pamięci telefonu — import granicy pola z KML/GeoJSON
+  file_picker: ^8.1.2
+  # Parsowanie KML (XML) przy imporcie granicy pola z pliku
+  xml: ^6.6.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0

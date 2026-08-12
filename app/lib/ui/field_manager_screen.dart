@@ -266,14 +266,40 @@ class _FieldTile extends StatelessWidget {
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.green[900],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Icon(Icons.landscape, color: Colors.greenAccent, size: 24),
+      leading: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Colors.green[900],
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.landscape,
+                color: Colors.greenAccent, size: 24),
+          ),
+          // Odznaka źródła pochodzenia granicy — widoczna dla każdego pola,
+          // niezależnie skąd trafiło do aplikacji (katastr, LPIS, plik,
+          // ręcznie narysowane).
+          Positioned(
+            right: -4,
+            bottom: -4,
+            child: Tooltip(
+              message: _sourceLabel(field.source),
+              child: Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E1E),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Icon(_sourceIcon(field.source),
+                    size: 12, color: Colors.white70),
+              ),
+            ),
+          ),
+        ],
       ),
       title: Text(field.name,
           style: const TextStyle(
@@ -306,4 +332,18 @@ class _FieldTile extends StatelessWidget {
       onTap: onTap,
     );
   }
+
+  IconData _sourceIcon(FieldSource s) => switch (s) {
+        FieldSource.manual => Icons.edit_outlined,
+        FieldSource.uldk => Icons.satellite_alt,
+        FieldSource.lpis => Icons.grid_on,
+        FieldSource.file => Icons.upload_file,
+      };
+
+  String _sourceLabel(FieldSource s) => switch (s) {
+        FieldSource.manual => 'Rysowane ręcznie',
+        FieldSource.uldk => 'Import ULDK/GUGiK',
+        FieldSource.lpis => 'Import LPIS',
+        FieldSource.file => 'Import z pliku (KML/GeoJSON)',
+      };
 }
