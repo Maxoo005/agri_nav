@@ -13,6 +13,11 @@ enum FieldSource {
 
   /// Pobrane z rejestru LPIS (dane z ULDK/GUGiK).
   lpis,
+
+  /// Wczytane z pliku KML/GeoJSON dostarczonego przez rolnika (np.
+  /// narysowane w Google Earth Pro / QGIS na ortofotomapie i wyeksportowane)
+  /// — patrz `FileImportSheet`.
+  file,
 }
 
 /// Metoda wyznaczenia linii AB ([FieldModel.lineA]/[FieldModel.lineB]).
