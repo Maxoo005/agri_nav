@@ -549,7 +549,7 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.tealAccent),
                     )
-                  : const Text('Zoptymalizuj kierunek',
+                  : const Text('Kierunek wg granicy',
                       style: TextStyle(
                           color: Colors.tealAccent,
                           fontWeight: FontWeight.w600)),

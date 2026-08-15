@@ -163,8 +163,7 @@ FfiOptimizeResult* agrinav_optimize_angle(
     int32_t       vertexCount,
     double        workingWidth,
     double        overlapM,
-    int32_t       headlandLaps,
-    double        turnPenaltyFactor
+    int32_t       headlandLaps
 ) {
     // Decode flat polygon buffer [lat₀,lon₀, lat₁,lon₁, ...]
     std::vector<agrinav::LatLon> pts;
@@ -176,8 +175,7 @@ FfiOptimizeResult* agrinav_optimize_angle(
         pts,
         workingWidth,
         overlapM,
-        static_cast<int>(headlandLaps),
-        turnPenaltyFactor
+        static_cast<int>(headlandLaps)
     );
 
     auto* r = static_cast<FfiOptimizeResult*>(std::malloc(sizeof(FfiOptimizeResult)));

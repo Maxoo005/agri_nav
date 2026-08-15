@@ -9,17 +9,37 @@ import 'map_view.dart';
 import 'new_task_screen.dart';
 import 'task_summary_card.dart';
 
-/// Wybór zadania przed wejściem w Tryb Pracy.
+/// Wybór zadania przed wejściem w Tryb Pracy — albo, w [manageMode], globalny
+/// ekran zarządzania wszystkimi zadaniami ("Zadania" na ekranie głównym).
 ///
 /// Pola są wypisane jako rozwijane sekcje — po rozwinięciu widać zapisane
-/// zadania (karty-podsumowania, jak w "Zadania dla pola"). Wybór zadania
-/// otwiera [MapView] z polem i konfiguracją wczytaną z planu.
+/// zadania (karty-podsumowania, jak w "Zadania dla pola"). Oba tryby dzielą
+/// dokładnie ten sam mechanizm ładowania/grupowania pól+zadań — różni się
+/// tylko interakcja z kartą zadania:
+///  • [manageMode] = false (domyślnie, "Tryb pracy"): wybór zadania otwiera
+///    [MapView] z polem i konfiguracją wczytaną z planu.
+///  • [manageMode] = true ("Zadania"): karty dostają menu "Zmień nazwę" /
+///    "Edytuj zadanie" zamiast bezpośredniego wejścia, plus stały FAB
+///    "Nowe zadanie" (kafelek "Nowe zadanie" nie istnieje już na ekranie
+///    głównym — tworzenie zadań żyje tutaj).
 class WorkModeTaskPickerScreen extends StatefulWidget {
-  const WorkModeTaskPickerScreen({super.key});
+  const WorkModeTaskPickerScreen({super.key, this.manageMode = false});
 
+  final bool manageMode;
+
+  /// Wejście "Tryb pracy" — wybór zadania prowadzi wprost do [MapView].
   static Future<void> open(BuildContext context) => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const WorkModeTaskPickerScreen()),
+      );
+
+  /// Wejście "Zadania" — przeglądanie i zarządzanie (zmiana nazwy/edycja)
+  /// wszystkich zapisanych zadań, plus tworzenie nowych.
+  static Future<void> openManage(BuildContext context) => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const WorkModeTaskPickerScreen(manageMode: true),
+        ),
       );
 
   @override
@@ -73,6 +93,76 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
     );
   }
 
+  // ── Akcje trybu zarządzania ("Zadania") ──────────────────────────────────
+  // Portowane z field_tasks_screen.dart (ta sama funkcjonalność — zmiana
+  // nazwy / edycja zadania), żeby nie dotykać innego ekranu poza tą zmianą.
+
+  Future<void> _renameTask(TaskPlan plan) async {
+    final controller = TextEditingController(text: plan.name);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text('Zmień nazwę zadania',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            labelText: 'Nazwa',
+            labelStyle: const TextStyle(color: Colors.white54),
+            hintText: 'np. Oprysk pszenicy',
+            hintStyle: const TextStyle(color: Colors.white24),
+            filled: true,
+            fillColor: const Color(0xFF2A2A2A),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Colors.white24),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: Colors.white24),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Anuluj', style: TextStyle(color: Colors.white60)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Zapisz'),
+          ),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty) return;
+    try {
+      await TaskDatabase.instance.rename(plan.id, newName);
+      if (!mounted) return;
+      _load();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: const Text('Nazwa zadania zmieniona'),
+        backgroundColor: Colors.green[700],
+        duration: const Duration(seconds: 2),
+      ));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd zmiany nazwy: $e'),
+        backgroundColor: Colors.red[800],
+      ));
+    }
+  }
+
+  Future<void> _editTask(TaskPlan plan) async {
+    await NewTaskScreen.open(context, plan: plan);
+    if (mounted) _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -80,13 +170,14 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E1E1E),
         foregroundColor: Colors.white,
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Wybierz zadanie',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            Text('Tryb pracy',
-                style: TextStyle(fontSize: 11, color: Colors.white54)),
+            Text(widget.manageMode ? 'Zadania' : 'Wybierz zadanie',
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w600)),
+            Text(widget.manageMode ? 'Wszystkie pola' : 'Tryb pracy',
+                style: const TextStyle(fontSize: 11, color: Colors.white54)),
           ],
         ),
         actions: [
@@ -98,6 +189,17 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
         ],
       ),
       body: _buildBody(),
+      floatingActionButton: widget.manageMode
+          ? FloatingActionButton.extended(
+              backgroundColor: Colors.green[700],
+              onPressed: () async {
+                await NewTaskScreen.open(context);
+                if (mounted) _load();
+              },
+              icon: const Icon(Icons.add),
+              label: const Text('Nowe zadanie'),
+            )
+          : null,
     );
   }
 
@@ -244,10 +346,16 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
           ...tasks.map(
             (plan) => Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: TaskSummaryCard(
-                plan: plan,
-                onTap: () => _openTask(plan),
-              ),
+              child: widget.manageMode
+                  ? TaskSummaryCard(
+                      plan: plan,
+                      onRename: () => _renameTask(plan),
+                      onEdit: () => _editTask(plan),
+                    )
+                  : TaskSummaryCard(
+                      plan: plan,
+                      onTap: () => _openTask(plan),
+                    ),
             ),
           ),
       ],
