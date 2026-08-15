@@ -26,8 +26,8 @@ struct SwathPlan {
     std::vector<std::vector<LatLon>> headlandRings;
 };
 
-/// Result of [SwathPlanner::optimizeAngle]: the best-scoring swath plan found
-/// plus the angle and summary stats that produced it.
+/// Result of [SwathPlanner::optimizeAngle]: the swath plan at the field's
+/// longest-edge bearing, plus the angle and summary stats that produced it.
 struct SwathAngleResult {
     /// Full plan (swaths + headland rings) at [bestAngleDeg].
     SwathPlan plan;
@@ -77,28 +77,22 @@ public:
         int                        headlandLaps = 0
     );
 
-    /// Searches swath bearings in [0, 180) for the one minimising total work
-    /// time (approximated as travel distance + a per-turn distance penalty),
-    /// using a coarse-to-fine sweep (1° → 0.1° → 0.01°) seeded with a
-    /// rotating-calipers minimum-width candidate. Headland ring geometry is
-    /// computed once and reused across all candidate angles.
+    /// Deterministic swath bearing: the bearing of the field boundary's
+    /// single longest edge (between adjacent vertices), folded to [0, 180)
+    /// with full double precision. No search, no scoring — the same input
+    /// polygon always yields the same angle.
     ///
     /// @param polygon           Field boundary vertices (WGS-84).
     /// @param workingWidthM     Machine working width [m].
     /// @param overlapM          Strip overlap [m] (see [plan]).
     /// @param headlandLaps      Headland passes (see [plan]).
-    /// @param turnPenaltyFactor Per-turn cost, expressed as a multiple of
-    ///                          workingWidthM added to the score for every
-    ///                          extra swath (headland U-turn ≈ a few machine
-    ///                          widths of "wasted" equivalent distance).
-    /// @return                  Best angle found + its plan + summary stats.
+    /// @return                  Longest-edge angle + its plan + summary stats.
     ///                          Empty plan / swathCount==0 on invalid input.
     static SwathAngleResult optimizeAngle(
         const std::vector<LatLon>& polygon,
         double                     workingWidthM,
-        double                     overlapM         = 0.0,
-        int                        headlandLaps     = 0,
-        double                     turnPenaltyFactor = 3.0
+        double                     overlapM     = 0.0,
+        int                        headlandLaps = 0
     );
 };
 

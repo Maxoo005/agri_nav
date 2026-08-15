@@ -147,16 +147,14 @@ typedef struct {
     double    totalLengthM;     ///< sum of all swath segment lengths [m] at bestAngleDeg
 } FfiOptimizeResult;
 
-/// Searches swath bearings [0,180) for the one minimising total work time
-/// (approximated as travel distance + a per-turn distance penalty), via a
-/// coarse-to-fine sweep. See SwathPlanner::optimizeAngle() for the algorithm.
+/// Deterministic swath bearing: the bearing of the field boundary's single
+/// longest edge, folded to [0,180). See SwathPlanner::optimizeAngle() for
+/// the algorithm — no search, no scoring, same input always yields the same
+/// angle.
 ///
 /// @param workingWidth     Machine working width [m].
 /// @param overlapM         Strip overlap [m] (0 = no overlap).
 /// @param headlandLaps     Concentric headland passes to generate (0 = full-field).
-/// @param turnPenaltyFactor Per-turn cost as a multiple of workingWidth added
-///                          to the score for every extra swath (default 3.0
-///                          if unsure — see SwathPlanner::optimizeAngle doc).
 /// @return                 Heap-allocated FfiOptimizeResult; release with
 ///                         agrinav_free_optimize_result(). Never NULL
 ///                         (failure → swathCount == 0).
@@ -165,8 +163,7 @@ FfiOptimizeResult* agrinav_optimize_angle(
     int32_t       vertexCount,
     double        workingWidth,
     double        overlapM,
-    int32_t       headlandLaps,
-    double        turnPenaltyFactor
+    int32_t       headlandLaps
 );
 
 /// Releases all memory allocated by agrinav_optimize_angle().

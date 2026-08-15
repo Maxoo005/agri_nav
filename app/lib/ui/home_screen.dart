@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../services/field_service.dart';
+import '../services/task_database.dart';
+import '../services/work_session_service.dart';
 import 'app_theme.dart';
-import 'file_import_sheet.dart';
-import 'lpis_import_sheet.dart';
+import 'create_field_sheet.dart';
 import 'field_manager_screen.dart';
 import 'gps_settings_screen.dart';
 import 'history_screen.dart';
 import 'machine_manager_screen.dart';
 import 'map_view.dart';
-import 'new_task_screen.dart';
 import 'work_mode_task_picker.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -57,7 +58,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _MenuTile(
                       icon: Icons.map_rounded,
                       label: 'Tryb pracy',
-                      onTap: () => WorkModeTaskPickerScreen.open(context),
+                      onTap: () => _openWorkMode(context),
                     ),
                     _MenuTile(
                       icon: Icons.agriculture,
@@ -80,79 +81,31 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap: () => MachineManagerScreen.open(context),
                     ),
                     _MenuTile(
-                      icon: Icons.assignment_add,
-                      label: 'Nowe zadanie',
-                      onTap: () => NewTaskScreen.open(context),
+                      icon: Icons.assignment,
+                      label: 'Zadania',
+                      onTap: () => WorkModeTaskPickerScreen.openManage(context),
                     ),
                     _MenuTile(
-                      icon: Icons.satellite_alt,
-                      label: 'Import działek',
-                      onTap: () async {
-                        final field = await LpisImportSheet.show(context,
-                            mapBounds: null, fullScreen: true);
-                        if (field != null && context.mounted) {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => MapView(initialField: field),
-                            ),
-                          );
-                        }
-                      },
+                      icon: Icons.add_location_alt,
+                      label: 'Utwórz pole',
+                      tooltip: 'Import działek (ULDK), import z pliku '
+                          'KML/GeoJSON albo obejście granicy z RTK.',
+                      onTap: () => CreateFieldSheet.show(context),
                     ),
                     _MenuTile(
-                      icon: Icons.upload_file,
-                      label: 'Importuj z pliku',
-                      onTap: () async {
-                        final fields = await FileImportSheet.show(context);
-                        if (fields.isEmpty || !context.mounted) return;
-                        if (fields.length == 1) {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  MapView(initialField: fields.first),
-                            ),
-                          );
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                  'Zaimportowano ${fields.length} pól z pliku'),
-                              backgroundColor: Colors.green[700],
-                              duration: const Duration(seconds: 3),
-                            ),
-                          );
-                        }
-                      },
+                      icon: Icons.history_rounded,
+                      label: 'Historia',
+                      onTap: () => HistoryScreen.open(context),
                     ),
                     _MenuTile(
-                      icon: Icons.directions_walk,
-                      label: 'Obejdź granicę (RTK)',
-                      tooltip: 'Najdokładniejsza metoda — obejdź granicę '
-                          'pola pieszo lub maszyną z aktywnym modułem RTK.',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              const MapView(startBoundaryWalk: true),
-                        ),
-                      ),
-                    ),
-                    _MenuTile(
-                      icon: Icons.gps_fixed,
-                      label: 'Ustawienia GPS',
+                      icon: Icons.settings,
+                      label: 'Ustawienia',
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
                           builder: (_) => const GpsSettingsScreen(),
                         ),
                       ),
-                    ),
-                    _MenuTile(
-                      icon: Icons.history_rounded,
-                      label: 'Historia',
-                      onTap: () => HistoryScreen.open(context),
                     ),
                   ],
                 ),
@@ -162,6 +115,36 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  /// "Tryb pracy": gdy jest aktywna (trwająca lub wstrzymana) sesja pracy —
+  /// [WorkSessionService] przetrwa restart appki — wchodzi wprost w [MapView]
+  /// z tym polem/zadaniem, gdzie istniejący baner "PRACA W TOKU" pozwala
+  /// jednym tapnięciem wznowić Tryb Pracy. Bez aktywnej sesji: dzisiejszy
+  /// wybór zadania ([WorkModeTaskPickerScreen]).
+  Future<void> _openWorkMode(BuildContext context) async {
+    final session = WorkSessionService.instance;
+    if (session.isActive && session.fieldId != null) {
+      if (session.taskId != null) {
+        final plan = await TaskDatabase.instance.getById(session.taskId!);
+        if (plan != null && context.mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => MapView(initialTask: plan)),
+          );
+          return;
+        }
+      }
+      final field = FieldService.instance.getById(session.fieldId!);
+      if (field != null && context.mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => MapView(initialField: field)),
+        );
+        return;
+      }
+    }
+    if (context.mounted) await WorkModeTaskPickerScreen.open(context);
   }
 }
 

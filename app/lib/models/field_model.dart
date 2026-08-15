@@ -143,6 +143,14 @@ class FieldModel {
   /// z geometrii granicy. Null gdy jeszcze nie obliczono.
   double? areaHa;
 
+  /// Numery działek ewidencyjnych wpisane ręcznie przez rolnika (wolny
+  /// tekst, np. "123/4, 125/1") — notatka "co obejmuje to pole", niezależna
+  /// od [sourceParcelIds]/[lpisParcelIds] (te są strukturalnymi
+  /// identyfikatorami z automatycznego scalania ULDK/LPIS i puste dla pól
+  /// rysowanych ręcznie/importowanych z pliku/RTK, gdzie i tak brakuje tej
+  /// informacji). Null gdy nie wpisano.
+  String? parcelNumbersNote;
+
   FieldModel({
     required this.id,
     required this.name,
@@ -172,6 +180,7 @@ class FieldModel {
     List<double>? elasticTgtLats,
     List<double>? elasticTgtLons,
     this.areaHa,
+    this.parcelNumbersNote,
   })  : sourceParcelIds = sourceParcelIds ?? [],
         lpisParcelIds = lpisParcelIds ?? [],
         elasticSrcLats = elasticSrcLats ?? [],
@@ -315,6 +324,7 @@ class FieldModel {
         if (elasticTgtLats.isNotEmpty) 'elasticTgtLats': elasticTgtLats,
         if (elasticTgtLons.isNotEmpty) 'elasticTgtLons': elasticTgtLons,
         if (areaHa != null) 'areaHa': areaHa,
+        if (parcelNumbersNote != null) 'parcelNumbersNote': parcelNumbersNote,
       };
 
   factory FieldModel.fromJson(Map<dynamic, dynamic> map) => FieldModel(
@@ -379,5 +389,6 @@ class FieldModel {
         elasticTgtLats: (map['elasticTgtLats'] as List?)?.cast<double>(),
         elasticTgtLons: (map['elasticTgtLons'] as List?)?.cast<double>(),
         areaHa: (map['areaHa'] as num?)?.toDouble(),
+        parcelNumbersNote: map['parcelNumbersNote'] as String?,
       );
 }

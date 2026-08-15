@@ -164,39 +164,64 @@ class FieldManagerScreen extends StatelessWidget {
   }
 
   Future<void> _editName(BuildContext context, FieldModel field) async {
-    final ctrl = TextEditingController(text: field.name);
-    final newName = await showDialog<String>(
+    final nameCtrl = TextEditingController(text: field.name);
+    final parcelsCtrl =
+        TextEditingController(text: field.parcelNumbersNote ?? '');
+    final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A2A),
-        title: const Text('Zmień nazwę', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: ctrl,
-          style: const TextStyle(color: Colors.white),
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'Nazwa pola',
-            hintStyle: TextStyle(color: Colors.white38),
-            enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.white38)),
-            focusedBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.greenAccent)),
-          ),
+        title: const Text('Edytuj pole', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              style: const TextStyle(color: Colors.white),
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Nazwa pola',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white38)),
+                focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.greenAccent)),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: parcelsCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Numery działek',
+                labelStyle: TextStyle(color: Colors.white54),
+                hintText: 'np. 123/4, 125/1',
+                hintStyle: TextStyle(color: Colors.white24),
+                enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white38)),
+                focusedBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.greenAccent)),
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx), child: const Text('Anuluj')),
           TextButton(
-              onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+              onPressed: () => Navigator.pop(ctx, true),
               child: const Text('Zapisz',
                   style: TextStyle(color: Colors.greenAccent))),
         ],
       ),
     );
-    if (newName != null && newName.isNotEmpty) {
-      field.name = newName;
-      await FieldService.instance.save(field);
-    }
+    if (result != true) return;
+    final newName = nameCtrl.text.trim();
+    if (newName.isNotEmpty) field.name = newName;
+    final newParcels = parcelsCtrl.text.trim();
+    field.parcelNumbersNote = newParcels.isEmpty ? null : newParcels;
+    await FieldService.instance.save(field);
   }
 
   Future<void> _populateAreas(BuildContext context) async {
@@ -304,11 +329,28 @@ class _FieldTile extends StatelessWidget {
       title: Text(field.name,
           style: const TextStyle(
               color: Colors.white, fontWeight: FontWeight.w600)),
-      subtitle: Text(
-        '${areaHa > 0 ? '${areaHa.toStringAsFixed(2)} ha  •  ' : ''}'
-        '$pts wierzchołków'
-        '${hasAb ? abLabel : ''}',
-        style: const TextStyle(color: Colors.white54, fontSize: 12),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '${areaHa > 0 ? '${areaHa.toStringAsFixed(2)} ha  •  ' : ''}'
+            '$pts wierzchołków'
+            '${hasAb ? abLabel : ''}',
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          if (field.parcelNumbersNote != null &&
+              field.parcelNumbersNote!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                'Działki: ${field.parcelNumbersNote}',
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

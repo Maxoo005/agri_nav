@@ -160,8 +160,9 @@ static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
 
 /// Everything about a field that does NOT depend on swath bearing: the CCW
 /// outer boundary, the headland rings, the swath-clipping inner boundary and
-/// the effective strip pitch. Computed once and reused across every angle
-/// candidate in [SwathPlanner::optimizeAngle].
+/// the effective strip pitch. Shared by [SwathPlanner::plan] and
+/// [SwathPlanner::optimizeAngle] so the Clipper2 offset work only ever runs
+/// once per call.
 struct FieldGeometry {
     std::vector<Vec2> outerPoly;                        // ENU, CCW
     std::vector<Vec2> innerPoly;                         // ENU, CCW — swath clip boundary
@@ -240,8 +241,8 @@ static std::vector<std::vector<LatLon>> ringsToLatLon(
 // ─── Swath sweep: angle-dependent, cheap (no Clipper2) part ──────────────────
 
 /// Result of sweeping parallel scanlines across [innerPoly] along direction
-/// [d] (perpendicular axis [p]) — kept in ENU (no WGS-84 round-trip) so
-/// [SwathPlanner::optimizeAngle] can score ~200 candidate angles cheaply.
+/// [d] (perpendicular axis [p]) — kept in ENU (no WGS-84 round-trip) until
+/// the final [materializeSwaths] conversion back to WGS-84.
 struct EnuSweepResult {
     std::vector<std::array<double, 3>> segments;  // {tK, sS, sE} per swath
     double totalLengthM = 0.0;
@@ -250,7 +251,7 @@ struct EnuSweepResult {
 
 static EnuSweepResult sweepSwathsEnu(
     const std::vector<Vec2>& innerPoly, const Vec2& d, const Vec2& p,
-    double effectiveWidth
+    double effectiveWidth, bool flushNearSide
 ) {
     EnuSweepResult out;
     if (innerPoly.size() < 3) return out;
@@ -263,38 +264,39 @@ static EnuSweepResult sweepSwathsEnu(
         if (t > tMax) tMax = t;
     }
 
-    // Symmetric, span-centred fixed-pitch grid — replaces the old
-    // tMin-anchored grid + per-edge correction hacks.
-    //
-    // Anchoring the first line exactly at tMin (the old approach) meant its
-    // *centreline* sat on the boundary of the swath-clip area instead of
-    // being inset by half a working width, so:
-    //   - when the swath direction runs parallel to the nearest field edge,
-    //     the first/last pass double-covers a half-width strip already
-    //     handled by the outermost headland lap;
-    //   - when it doesn't (the common case — an arbitrary AB bearing versus
-    //     an irregular boundary), tMin is realised at a single polygon
-    //     vertex instead of a whole edge, the tangent scanline's clipped
-    //     segment collapses to a sliver below the 0.01 m discard threshold,
-    //     and that whole pass silently vanishes — leaving a wedge-shaped gap
-    //     between the headland ring and the next surviving pass that is
-    //     invisible on the map (verified: field-test AB bearings reproduce
-    //     this; see project diagnostics).
-    //
-    // Fix: pick the smallest line count that can cover the full span at
-    // exactly `effectiveWidth` pitch (nLines = ceil(span/effectiveWidth)),
-    // then centre that whole comb of lines within [tMin, tMax]. Every
-    // interior pitch stays exactly effectiveWidth (unchanged expectation:
-    // "dokładnie workingWidthM-overlapM between passes"), and the leftover
-    // slack (< effectiveWidth by construction) is split evenly between the
-    // near and far boundary, bounding the boundary-adjacent overlap/shortfall
-    // to < effectiveWidth/2 on EACH end instead of being unbounded on one end
-    // and vertex-dependent on the other.
     const double span = tMax - tMin;
-    const int nLines = std::max(
-        1, static_cast<int>(std::ceil(span / effectiveWidth - 1e-9)));
-    const double center = (tMin + tMax) * 0.5;
-    const double c1     = center - static_cast<double>(nLines - 1) * effectiveWidth * 0.5;
+    int    nLines;
+    double c1;
+
+    if (flushNearSide) {
+        // headlandLaps > 0: the pass nearest tMin MUST be flush against
+        // innerPoly — its outer edge (centreline − W/2) has to land exactly
+        // on tMin, zero tolerance (this is what makes the machine's outer
+        // edge touch the headland's inner edge with no gap and no overlap).
+        // Any leftover slack that doesn't divide evenly into whole passes is
+        // pushed entirely onto the far (tMax) side, and only ever as a GAP —
+        // nLines is floor()'d, never ceil()'d, so the far-side pass can
+        // never cross tMax either (consistent with "swaths must not cross
+        // innerPoly" below). Worst case the far side is left with an
+        // uncovered strip up to just under one effectiveWidth; that's the
+        // accepted trade-off for guaranteeing the near-side flush touch.
+        nLines = (span < effectiveWidth)
+            ? 1
+            : std::max(1, static_cast<int>(std::floor(span / effectiveWidth + 1e-9)));
+        c1 = tMin + effectiveWidth * 0.5;
+    } else {
+        // headlandLaps == 0: no headland ring exists, so there is nothing to
+        // flush against — keep the symmetric, span-centred fixed-pitch grid
+        // from the previous fix (replaces the old tMin-anchored grid, which
+        // either double-covered a half-width strip when the swath direction
+        // ran parallel to the nearest edge, or silently dropped a whole pass
+        // to a sub-threshold sliver when tMin was realised at a single
+        // vertex instead of a whole edge).
+        nLines = std::max(
+            1, static_cast<int>(std::ceil(span / effectiveWidth - 1e-9)));
+        const double center = (tMin + tMax) * 0.5;
+        c1 = center - static_cast<double>(nLines - 1) * effectiveWidth * 0.5;
+    }
 
     for (int k = 0; k < nLines; ++k) {
         const double tK = c1 + static_cast<double>(k) * effectiveWidth;
@@ -331,79 +333,27 @@ static std::vector<Swath> materializeSwaths(
     return out;
 }
 
-// ─── Convex hull + rotating calipers (angle heuristic seed) ──────────────────
+// ─── Deterministic direction rule: longest boundary edge ─────────────────────
 
-/// Andrew's monotone chain convex hull. Returns CCW hull; degenerate inputs
-/// (< 3 distinct, non-collinear points) return whatever collapsed set remains
-/// (0-2 points) — caller must check size before use.
-static std::vector<Vec2> convexHull(std::vector<Vec2> pts) {
-    std::sort(pts.begin(), pts.end(), [](const Vec2& a, const Vec2& b) {
-        return a.e != b.e ? a.e < b.e : a.n < b.n;
-    });
-    pts.erase(std::unique(pts.begin(), pts.end(), [](const Vec2& a, const Vec2& b) {
-        return std::abs(a.e - b.e) < 1e-9 && std::abs(a.n - b.n) < 1e-9;
-    }), pts.end());
+/// Bearing of the single longest edge between adjacent vertices of [poly]
+/// (CCW ENU), folded to [0, 180) in the same convention as
+/// [SwathPlanner::plan]'s AB-derived bearing (d = (sinθ, cosθ) in (E,N)).
+/// Full double precision (no rounding) — exact to the input coordinates.
+static double longestEdgeBearingDeg(const std::vector<Vec2>& poly) {
+    const int n = static_cast<int>(poly.size());
+    if (n < 2) return 0.0;
 
-    const int n = static_cast<int>(pts.size());
-    if (n < 3) return pts;
-
-    auto cross3 = [](const Vec2& O, const Vec2& A, const Vec2& B) {
-        return (A.e - O.e) * (B.n - O.n) - (A.n - O.n) * (B.e - O.e);
-    };
-
-    std::vector<Vec2> hull(static_cast<size_t>(2 * n));
-    int k = 0;
-    for (int i = 0; i < n; ++i) {  // lower hull
-        while (k >= 2 && cross3(hull[static_cast<size_t>(k - 2)],
-                                 hull[static_cast<size_t>(k - 1)], pts[static_cast<size_t>(i)]) <= 0)
-            --k;
-        hull[static_cast<size_t>(k++)] = pts[static_cast<size_t>(i)];
-    }
-    for (int i = n - 2, t = k + 1; i >= 0; --i) {  // upper hull
-        while (k >= t && cross3(hull[static_cast<size_t>(k - 2)],
-                                 hull[static_cast<size_t>(k - 1)], pts[static_cast<size_t>(i)]) <= 0)
-            --k;
-        hull[static_cast<size_t>(k++)] = pts[static_cast<size_t>(i)];
-    }
-    hull.resize(static_cast<size_t>(k - 1));  // drop duplicated closing point
-    return hull;
-}
-
-/// Tests the orientation of every hull edge as a candidate swath direction
-/// and returns the one minimising the hull's projected width onto the
-/// perpendicular axis (the standard rotating-calipers minimum-width
-/// orientation — always aligned with a hull edge). O(m²), m = hull size
-/// (typically < 100 for field polygons) — fine for a once-per-search call.
-///
-/// @return Angle in the same convention as [SwathPlanner::plan]'s AB-derived
-///         bearing (d = (sinθ, cosθ) in (E,N)), folded to [0,180); or -1.0
-///         when the hull has fewer than 3 (distinct, non-collinear) points.
-static double calipersBestAngleDeg(const std::vector<Vec2>& hull) {
-    const int m = static_cast<int>(hull.size());
-    if (m < 3) return -1.0;
-
-    double bestWidth = std::numeric_limits<double>::max();
-    double bestAngleDeg = 0.0;
-
-    for (int i = 0; i < m; ++i) {
-        Vec2 edgeDir = { hull[static_cast<size_t>((i + 1) % m)].e - hull[static_cast<size_t>(i)].e,
-                         hull[static_cast<size_t>((i + 1) % m)].n - hull[static_cast<size_t>(i)].n };
-        const double len = normVec(edgeDir);
-        if (len < 1e-9) continue;  // defensive; shouldn't occur post-dedup
-        edgeDir = { edgeDir.e / len, edgeDir.n / len };
-        const Vec2 perp = { -edgeDir.n, edgeDir.e };
-
-        double minP =  std::numeric_limits<double>::max();
-        double maxP = -std::numeric_limits<double>::max();
-        for (const auto& v : hull) {
-            const double t = dot(v, perp);
-            if (t < minP) minP = t;
-            if (t > maxP) maxP = t;
-        }
-        const double width = maxP - minP;
-        if (width < bestWidth) {
-            bestWidth = width;
-            const double angleDeg = std::atan2(edgeDir.e, edgeDir.n) * 180.0 / M_PI;
+    double bestLenSq    = -1.0;
+    double bestAngleDeg =  0.0;
+    for (int i = 0; i < n; ++i) {
+        const Vec2& a = poly[static_cast<size_t>(i)];
+        const Vec2& b = poly[static_cast<size_t>((i + 1) % n)];
+        const double de = b.e - a.e;
+        const double dn = b.n - a.n;
+        const double lenSq = de * de + dn * dn;
+        if (lenSq > bestLenSq) {
+            bestLenSq = lenSq;
+            const double angleDeg = std::atan2(de, dn) * 180.0 / M_PI;
             bestAngleDeg = std::fmod(angleDeg + 360.0, 180.0);
         }
     }
@@ -436,7 +386,8 @@ SwathPlan SwathPlanner::plan(
         polygon, oLat, oLon, workingWidthM, overlapM, headlandLaps);
     if (!geo.valid) return result;
 
-    const EnuSweepResult sweep = sweepSwathsEnu(geo.innerPoly, d, p, geo.effectiveWidth);
+    const EnuSweepResult sweep = sweepSwathsEnu(
+        geo.innerPoly, d, p, geo.effectiveWidth, headlandLaps > 0);
     result.swaths = materializeSwaths(sweep, d, p, oLat, oLon);
     result.headlandRings = ringsToLatLon(geo.headlandRingsEnu, oLat, oLon);
     return result;
@@ -446,8 +397,7 @@ SwathAngleResult SwathPlanner::optimizeAngle(
     const std::vector<LatLon>& polygon,
     double                     workingWidthM,
     double                     overlapM,
-    int                        headlandLaps,
-    double                     turnPenaltyFactor
+    int                        headlandLaps
 ) {
     SwathAngleResult result;
     if (polygon.size() < 3 || workingWidthM <= 0.0) return result;
@@ -459,63 +409,31 @@ SwathAngleResult SwathPlanner::optimizeAngle(
         polygon, oLat, oLon, workingWidthM, overlapM, headlandLaps);
     if (!geo.valid) return result;
 
-    // Candidate pool: full 1° blind sweep + one rotating-calipers "insurance"
-    // candidate. Calipers alone isn't trusted for concave/wedge-shaped fields
-    // (it minimises bounding width, not the real clipped-segment count/score),
-    // so it augments rather than replaces the coarse sweep.
-    std::vector<double> candidates;
-    candidates.reserve(181);
-    for (int deg = 0; deg < 180; ++deg) candidates.push_back(static_cast<double>(deg));
-
-    const std::vector<Vec2> hull = convexHull(geo.outerPoly);
-    const double calipersAngle = calipersBestAngleDeg(hull);
-    if (calipersAngle >= 0.0) candidates.push_back(calipersAngle);
-
-    double bestAngle = 0.0;
-    double bestScore = std::numeric_limits<double>::max();
-    EnuSweepResult bestSweep;
-
-    auto consider = [&](double angleDeg) {
-        const double rad = angleDeg * M_PI / 180.0;
-        const Vec2 d = { std::sin(rad), std::cos(rad) };
-        const Vec2 p = { -d.n, d.e };
-        EnuSweepResult sweep = sweepSwathsEnu(geo.innerPoly, d, p, geo.effectiveWidth);
-
-        const double score = (sweep.swathCount == 0)
-            ? std::numeric_limits<double>::max()
-            : sweep.totalLengthM +
-                  static_cast<double>(std::max(0, sweep.swathCount - 1)) *
-                      turnPenaltyFactor * workingWidthM;
-
-        if (score < bestScore) {
-            bestScore = score;
-            bestAngle = angleDeg;
-            bestSweep = std::move(sweep);
-        }
-    };
-
-    for (double a : candidates) consider(a);  // coarse: 180 + 1 candidates
-
-    auto refine = [&](double center, double window, double step) {
-        const int nSteps = static_cast<int>(std::round(window / step));
-        for (int i = -nSteps; i <= nSteps; ++i) {
-            double a = std::fmod(center + static_cast<double>(i) * step, 180.0);
-            if (a < 0.0) a += 180.0;
-            consider(a);
-        }
-    };
-    refine(bestAngle, 1.0, 0.1);    // fine:  ±1.0° @ 0.1°  → 21 candidates
-    refine(bestAngle, 0.1, 0.01);   // finer: ±0.1° @ 0.01° → 21 candidates
+    // Deterministic rule: swath bearing = bearing of the field boundary's
+    // single longest edge, folded to [0, 180). Replaces the old coarse-to-
+    // fine blind search (no scoring, no turn-penalty heuristic, no rotating
+    // calipers) — see longestEdgeBearingDeg().
+    //
+    // Edge case: the RTK-walked boundary is RDP-simplified (ε ≈ 0.15 m,
+    // see map_view.dart) before it reaches this function, which removes
+    // most walking-noise vertices. A long, nominally straight edge with a
+    // real deviation greater than that epsilon can still survive as two
+    // separate segments, in which case this rule may pick a different edge
+    // than the field's true longest physical side.
+    const double bestAngle = longestEdgeBearingDeg(geo.outerPoly);
 
     const double rad = bestAngle * M_PI / 180.0;
     const Vec2 d = { std::sin(rad), std::cos(rad) };
     const Vec2 p = { -d.n, d.e };
 
-    result.plan.swaths = materializeSwaths(bestSweep, d, p, oLat, oLon);
+    const EnuSweepResult sweep = sweepSwathsEnu(
+        geo.innerPoly, d, p, geo.effectiveWidth, headlandLaps > 0);
+
+    result.plan.swaths = materializeSwaths(sweep, d, p, oLat, oLon);
     result.plan.headlandRings = ringsToLatLon(geo.headlandRingsEnu, oLat, oLon);
     result.bestAngleDeg = bestAngle;
-    result.totalLengthM = bestSweep.totalLengthM;
-    result.swathCount   = bestSweep.swathCount;
+    result.totalLengthM = sweep.totalLengthM;
+    result.swathCount   = sweep.swathCount;
     return result;
 }
 
