@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:latlong2/latlong.dart';
 
+import '../ffi/guidance_bridge.dart' show Swath;
+
 /// Punkt w lokalnym układzie ENU (metry), względem pewnego originu WGS-84.
 typedef Enu = ({double e, double n});
 
@@ -62,6 +64,35 @@ abstract final class GeoUtils {
     return LatLng(
       origin.latitude + n / mPerDeg,
       origin.longitude + (cosLat > 0.0 ? e / (mPerDeg * cosLat) : 0.0),
+    );
+  }
+
+  /// Shifts every swath in [swaths] by [offsetM] metres, perpendicular to its
+  /// own start→end bearing. Positive = right of travel direction (same sign
+  /// convention as [SnapInfo.side] == +1). Pure transform over the planner's
+  /// output — never mutates the SwathPlanner result itself, so it composes
+  /// cleanly with re-generation/re-optimization.
+  static List<Swath> offsetSwaths(List<Swath> swaths, double offsetM) {
+    if (offsetM == 0.0 || swaths.isEmpty) return swaths;
+    return [for (final s in swaths) _offsetSwath(s, offsetM)];
+  }
+
+  static Swath _offsetSwath(Swath s, double offsetM) {
+    final start = LatLng(s.startLat, s.startLon);
+    final end = LatLng(s.endLat, s.endLon);
+    final endEnu = toEnu(start, end);
+    final len = math.sqrt(endEnu.e * endEnu.e + endEnu.n * endEnu.n);
+    if (len < 1e-6) return s;
+    final dE = endEnu.e / len, dN = endEnu.n / len;
+    // Perpendicular, rotated 90° clockwise from travel direction = "right".
+    final offE = dN * offsetM, offN = -dE * offsetM;
+    final newStart = fromEnu(start, offE, offN);
+    final newEnd = fromEnu(start, endEnu.e + offE, endEnu.n + offN);
+    return Swath(
+      startLat: newStart.latitude,
+      startLon: newStart.longitude,
+      endLat: newEnd.latitude,
+      endLon: newEnd.longitude,
     );
   }
 

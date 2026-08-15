@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:latlong2/latlong.dart';
@@ -140,6 +141,199 @@ class SwathPlannerFullBridge {
 
       _freePlan(r);
       return PlanResult(swaths: swaths, headlandRings: rings);
+    } finally {
+      calloc.free(buf);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OptimizeAngleBridge — bindings for agrinav_optimize_angle / agrinav_free_optimize_result
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Native struct FfiOptimizeResult (64-bit layout, 48 bytes) — same layout as
+/// FfiPlanResult with bestAngleDeg/totalLengthM appended:
+///   +0   Pointer<Double>  swathData
+///   +8   Pointer<Double>  ringPointData
+///   +16  Pointer<Int32>   ringPointCounts
+///   +24  Int32            swathCount
+///   +28  Int32            ringCount
+///   +32  Double           bestAngleDeg
+///   +40  Double           totalLengthM
+final class FfiOptimizeResult extends Struct {
+  external Pointer<Double> swathData;
+  external Pointer<Double> ringPointData;
+  external Pointer<Int32> ringPointCounts;
+  @Int32()
+  external int swathCount;
+  @Int32()
+  external int ringCount;
+  @Double()
+  external double bestAngleDeg;
+  @Double()
+  external double totalLengthM;
+}
+
+typedef _OptimizeAngleNative = Pointer<FfiOptimizeResult> Function(
+    Pointer<Double>, Int32, Double, Double, Int32, Double);
+typedef _FreeOptimizeResultNative = Void Function(Pointer<FfiOptimizeResult>);
+
+/// Result of automatic angle optimization: best-scoring plan + summary stats.
+class OptimizeAngleResult {
+  const OptimizeAngleResult({
+    required this.swaths,
+    required this.headlandRings,
+    required this.bestAngleDeg,
+    required this.swathCount,
+    required this.totalLengthM,
+  });
+
+  /// Parallel cultivated passes at [bestAngleDeg].
+  final List<Swath> swaths;
+
+  /// Headland rings as lists of points (angle-independent).
+  final List<List<(double lat, double lon)>> headlandRings;
+
+  /// Winning swath bearing, degrees from North, folded to [0, 180).
+  final double bestAngleDeg;
+
+  /// Number of swath segments at [bestAngleDeg] (== swaths.length).
+  final int swathCount;
+
+  /// Sum of all swath segment lengths [m] at [bestAngleDeg].
+  final double totalLengthM;
+
+  static const empty = OptimizeAngleResult(
+    swaths: [],
+    headlandRings: [],
+    bestAngleDeg: 0,
+    swathCount: 0,
+    totalLengthM: 0,
+  );
+}
+
+/// Singleton wrapping `agrinav_optimize_angle` — searches swath bearings
+/// [0,180) for the one minimising total work time (coarse-to-fine sweep, see
+/// SwathPlanner::optimizeAngle). Always call via [optimizeAsync], which runs
+/// the native search inside `Isolate.run`.
+///
+/// Must follow the [LpisProcessorBridge]-proven pattern (see
+/// field_processor_bridge.dart), NOT the abandoned attempt noted in
+/// map_view.dart's `_planSwaths`: `.instance` is resolved *inside* the
+/// isolate closure, so `DynamicLibrary.open`/`lookupFunction` happen fresh in
+/// the spawned isolate's own memory space, rather than trying to transfer a
+/// handle created in the parent isolate (which silently fails on Android).
+class OptimizeAngleBridge {
+  OptimizeAngleBridge._() {
+    final lib = nativeLib;
+    _optimize = lib.lookupFunction<
+        _OptimizeAngleNative,
+        Pointer<FfiOptimizeResult> Function(
+            Pointer<Double>, int, double, double, int, double)>(
+      'agrinav_optimize_angle',
+    );
+    _free = lib.lookupFunction<_FreeOptimizeResultNative,
+        void Function(Pointer<FfiOptimizeResult>)>(
+      'agrinav_free_optimize_result',
+    );
+  }
+
+  static final instance = OptimizeAngleBridge._();
+
+  late final Pointer<FfiOptimizeResult> Function(
+      Pointer<Double>, int, double, double, int, double) _optimize;
+  late final void Function(Pointer<FfiOptimizeResult>) _free;
+
+  /// Searches for the swath bearing minimising total work time.
+  ///
+  /// [polygon]            — field boundary (lat/lon, ≥ 3 points).
+  /// [overlapM]           — strip overlap [m] (see [SwathPlannerFullBridge]).
+  /// [headlandLaps]       — number of headland passes (see [SwathPlannerFullBridge]).
+  /// [turnPenaltyFactor]  — per-turn cost as a multiple of [workingWidthM]
+  ///                        (default 3.0 — see SwathPlanner::optimizeAngle doc).
+  ///
+  /// Runs in `Isolate.run` — safe to call from async UI code, does not block
+  /// the UI thread regardless of search duration.
+  static Future<OptimizeAngleResult> optimizeAsync({
+    required List<(double lat, double lon)> polygon,
+    required double workingWidthM,
+    double overlapM = 0.0,
+    int headlandLaps = 0,
+    double turnPenaltyFactor = 3.0,
+  }) {
+    if (polygon.length < 3) return Future.value(OptimizeAngleResult.empty);
+
+    final flat = <double>[
+      for (final (lat, lon) in polygon) ...[lat, lon],
+    ];
+
+    return Isolate.run(() {
+      return OptimizeAngleBridge.instance._optimizeSync(
+        flat,
+        workingWidthM: workingWidthM,
+        overlapM: overlapM,
+        headlandLaps: headlandLaps,
+        turnPenaltyFactor: turnPenaltyFactor,
+      );
+    });
+  }
+
+  OptimizeAngleResult _optimizeSync(
+    List<double> flatPolygon, {
+    required double workingWidthM,
+    required double overlapM,
+    required int headlandLaps,
+    required double turnPenaltyFactor,
+  }) {
+    final buf = calloc<Double>(flatPolygon.length);
+    try {
+      for (int i = 0; i < flatPolygon.length; i++) {
+        buf[i] = flatPolygon[i];
+      }
+
+      final r = _optimize(buf, flatPolygon.length ~/ 2, workingWidthM,
+          overlapM, headlandLaps, turnPenaltyFactor);
+      if (r == nullptr) return OptimizeAngleResult.empty;
+
+      try {
+        // ── Internal swaths ────────────────────────────────────────────────
+        final swathCount = r.ref.swathCount;
+        final List<Swath> swaths = List.generate(swathCount, (i) {
+          final d = r.ref.swathData;
+          return Swath(
+            startLat: d[i * 4 + 0],
+            startLon: d[i * 4 + 1],
+            endLat: d[i * 4 + 2],
+            endLon: d[i * 4 + 3],
+          );
+        });
+
+        // ── Headland rings ─────────────────────────────────────────────────
+        final ringCount = r.ref.ringCount;
+        final List<List<(double, double)>> rings = [];
+        if (ringCount > 0) {
+          int offset = 0;
+          for (int k = 0; k < ringCount; k++) {
+            final pts = r.ref.ringPointCounts[k];
+            final List<(double, double)> ring = List.generate(pts, (j) {
+              final idx = (offset + j) * 2;
+              return (r.ref.ringPointData[idx], r.ref.ringPointData[idx + 1]);
+            });
+            rings.add(ring);
+            offset += pts;
+          }
+        }
+
+        return OptimizeAngleResult(
+          swaths: swaths,
+          headlandRings: rings,
+          bestAngleDeg: r.ref.bestAngleDeg,
+          swathCount: swathCount,
+          totalLengthM: r.ref.totalLengthM,
+        );
+      } finally {
+        _free(r);
+      }
     } finally {
       calloc.free(buf);
     }

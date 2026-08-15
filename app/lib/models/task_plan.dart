@@ -37,6 +37,14 @@ class TaskPlan {
   final int headlandLaps;
   final double swathAngleDeg;
 
+  /// Ręczna korekta wygenerowanych ścieżek [m], prostopadle do kierunku
+  /// jazdy. Dodatnia = w prawo względem kierunku jazdy (ten sam znak co
+  /// [SnapInfo.side] == +1). Stosowana jako przesunięcie NAD wynikiem
+  /// SwathPlannera (ręcznym lub optymalizatora) — nie modyfikuje samego
+  /// algorytmu generowania, więc przetrwa ponowne wygenerowanie/optymalizację
+  /// w ramach tego samego zadania.
+  final double manualOffsetM;
+
   // ── Parametry materiału (opcjonalnie) ──────────────────────────────────────
   final double? targetRate;
   final double? tankVolume;
@@ -63,6 +71,7 @@ class TaskPlan {
     required this.overlapM,
     required this.headlandLaps,
     required this.swathAngleDeg,
+    this.manualOffsetM = 0.0,
     this.targetRate,
     this.tankVolume,
     this.unit,
@@ -92,6 +101,7 @@ class TaskPlan {
         'overlap_m': overlapM,
         'headland_laps': headlandLaps,
         'swath_angle_deg': swathAngleDeg,
+        'manual_offset_m': manualOffsetM,
         'target_rate': targetRate,
         'tank_volume': tankVolume,
         'unit': unit,
@@ -120,6 +130,7 @@ class TaskPlan {
         overlapM: (map['overlap_m'] as num?)?.toDouble() ?? 0.0,
         headlandLaps: (map['headland_laps'] as num?)?.toInt() ?? 0,
         swathAngleDeg: (map['swath_angle_deg'] as num?)?.toDouble() ?? 0.0,
+        manualOffsetM: (map['manual_offset_m'] as num?)?.toDouble() ?? 0.0,
         targetRate: (map['target_rate'] as num?)?.toDouble(),
         tankVolume: (map['tank_volume'] as num?)?.toDouble(),
         unit: map['unit'] as String?,

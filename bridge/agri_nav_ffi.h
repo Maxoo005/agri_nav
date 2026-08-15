@@ -118,6 +118,60 @@ FfiPlanResult* agrinav_plan_full(
 /// Releases all memory allocated by agrinav_plan_full().
 void agrinav_free_plan(FfiPlanResult* result);
 
+// ── Angle optimization (automatic swath bearing search) ───────────────────────
+
+/// Result of agrinav_optimize_angle(). Same memory layout as FfiPlanResult
+/// for the first 32 bytes, with bestAngleDeg/totalLengthM appended (both
+/// 8-byte doubles, offset 32 is already 8-byte aligned — no padding).
+///
+///   swathData[swathCount × 4]          — startLat, startLon, endLat, endLon
+///   ringPointData[totalPoints × 2]     — consecutive lat/lon pairs, all rings
+///   ringPointCounts[ringCount]         — vertex count per ring
+///
+/// Struct layout on 64-bit:
+///   +0   double*   swathData        (8 bytes)
+///   +8   double*   ringPointData    (8 bytes)
+///   +16  int32_t*  ringPointCounts  (8 bytes — pointer)
+///   +24  int32_t   swathCount       (4 bytes)
+///   +28  int32_t   ringCount        (4 bytes)
+///   +32  double    bestAngleDeg     (8 bytes)
+///   +40  double    totalLengthM     (8 bytes)
+///   total = 48 bytes
+typedef struct {
+    double*   swathData;        ///< swathCount × 4 doubles
+    double*   ringPointData;    ///< (sum of ringPointCounts) × 2 doubles
+    int32_t*  ringPointCounts;  ///< ringCount int32 values
+    int32_t   swathCount;
+    int32_t   ringCount;
+    double    bestAngleDeg;     ///< winning swath bearing [deg], folded to [0,180)
+    double    totalLengthM;     ///< sum of all swath segment lengths [m] at bestAngleDeg
+} FfiOptimizeResult;
+
+/// Searches swath bearings [0,180) for the one minimising total work time
+/// (approximated as travel distance + a per-turn distance penalty), via a
+/// coarse-to-fine sweep. See SwathPlanner::optimizeAngle() for the algorithm.
+///
+/// @param workingWidth     Machine working width [m].
+/// @param overlapM         Strip overlap [m] (0 = no overlap).
+/// @param headlandLaps     Concentric headland passes to generate (0 = full-field).
+/// @param turnPenaltyFactor Per-turn cost as a multiple of workingWidth added
+///                          to the score for every extra swath (default 3.0
+///                          if unsure — see SwathPlanner::optimizeAngle doc).
+/// @return                 Heap-allocated FfiOptimizeResult; release with
+///                         agrinav_free_optimize_result(). Never NULL
+///                         (failure → swathCount == 0).
+FfiOptimizeResult* agrinav_optimize_angle(
+    const double* polygon,
+    int32_t       vertexCount,
+    double        workingWidth,
+    double        overlapM,
+    int32_t       headlandLaps,
+    double        turnPenaltyFactor
+);
+
+/// Releases all memory allocated by agrinav_optimize_angle().
+void agrinav_free_optimize_result(FfiOptimizeResult* result);
+
 // ── Snap-to-nearest-swath guidance ───────────────────────────────────────────
 
 /// Opaque handle to a SwathGuidance instance.

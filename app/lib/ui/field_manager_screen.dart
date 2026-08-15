@@ -338,6 +338,7 @@ class _FieldTile extends StatelessWidget {
         FieldSource.uldk => Icons.satellite_alt,
         FieldSource.lpis => Icons.grid_on,
         FieldSource.file => Icons.upload_file,
+        FieldSource.walked => Icons.directions_walk,
       };
 
   String _sourceLabel(FieldSource s) => switch (s) {
@@ -345,5 +346,6 @@ class _FieldTile extends StatelessWidget {
         FieldSource.uldk => 'Import ULDK/GUGiK',
         FieldSource.lpis => 'Import LPIS',
         FieldSource.file => 'Import z pliku (KML/GeoJSON)',
+        FieldSource.walked => 'Obejście z RTK',
       };
 }

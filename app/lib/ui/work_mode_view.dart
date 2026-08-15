@@ -29,6 +29,10 @@ const _kActiveHeadland = Color(0xFFFF9800); // pomarańcz bez transparentności
 const _kSwath = Color(0x55E0E0E0);
 const _kActiveSwath = Color(0xFFFFD600);
 const _kCoverage = Color(0x5500BCD4);
+// Przerywane linie krawędziowe pokazujące rzeczywisty fizyczny zasięg
+// maszyny (±workingWidthM/2 od aktywnej ścieżki) — odróżnia je od _kCoverage
+// (ślad już przejechany) i _kActiveSwath (linia środkowa/AB).
+const _kMachineExtent = Color(0xCC29B6F6);
 
 /// Tryb prowadzenia maszyny.
 enum _GuidanceMode { swath, headland }
@@ -58,6 +62,7 @@ class WorkModeView extends StatefulWidget {
     this.machineName,
     this.overlapM = 0.0,
     this.swathAngleDeg = 0.0,
+    this.onOffsetStep,
   });
 
   /// Równoległe ścieżki uprawowe z C++ SwathPlanner.
@@ -95,6 +100,14 @@ class WorkModeView extends StatefulWidget {
 
   /// Kierunek ścieżek (azymut) [°] — do zapisu historii.
   final double swathAngleDeg;
+
+  /// Wywoływany po każdej ręcznej korekcie przesunięcia ścieżek dokonanej
+  /// NA ŻYWO w Trybie Pracy (np. ominięcie przeszkody) — [deltaCm] to krok
+  /// względem bieżącej wartości (+ = w prawo), nie wartość bezwzględna.
+  /// MapView doda go do swojego [manualOffsetM] i zapisze do [TaskPlan].
+  /// Null = brak zadania w SQLite do zapisania korekty (offset działa
+  /// wtedy tylko lokalnie, do zamknięcia ekranu).
+  final void Function(int deltaCm)? onOffsetStep;
 
   @override
   State<WorkModeView> createState() => _WorkModeViewState();
@@ -204,9 +217,20 @@ class _WorkModeViewState extends State<WorkModeView> {
   /// Skala widoku: pikseli na metr (zarządzana gestem pinch-to-zoom).
   double _pixelsPerMeter = 5.0;
 
+  /// Ścieżki faktycznie renderowane/prowadzone — [widget.swaths] (już
+  /// zawierające korektę [_liveOffsetDeltaCm] z MapView na moment wejścia)
+  /// przesunięte o dodatkową korektę dokonaną NA ŻYWO w tym ekranie.
+  late List<Swath> _swaths;
+
+  /// Dodatkowa korekta [cm] dokonana w tym ekranie, WZGLĘDEM tego, co już
+  /// zawierał [widget.swaths] przy wejściu — nie wartość bezwzględna (tę
+  /// śledzi MapView, patrz [WorkModeView.onOffsetStep]).
+  int _liveOffsetDeltaCm = 0;
+
   @override
   void initState() {
     super.initState();
+    _swaths = widget.swaths;
     _tractorPos = widget.initialPos;
     _tractorHeading = widget.initialHeading;
     _mapRotationDeg = widget.initialHeading;
@@ -300,6 +324,30 @@ class _WorkModeViewState extends State<WorkModeView> {
     _fixStatusSub?.cancel();
     _deviationCtrl.close();
     super.dispose();
+  }
+
+  // ── Ręczna korekta przesunięcia ścieżek (na żywo, np. ominięcie przeszkody) ─
+
+  /// Przesuwa [_swaths] o [deltaCm] WZGLĘDEM aktualnego stanu (+ = w prawo),
+  /// od razu karmi [SwathGuidanceBridge] nową geometrią — tak samo tanie i
+  /// bezpieczne wywołanie jak przy zwykłym (re)generowaniu ścieżek w
+  /// MapView, patrz SwathGuidance::setSwaths() (O(n), bez indeksu
+  /// przestrzennego, chronione mutexem) — żeby odchylenie cross-track
+  /// natychmiast odzwierciedlało korektę, i zgłasza krok w górę do MapView
+  /// przez [WorkModeView.onOffsetStep], żeby korekta przetrwała wyjście z
+  /// Trybu Pracy.
+  void _adjustLiveOffset(int deltaCm) {
+    setState(() {
+      _liveOffsetDeltaCm += deltaCm;
+      _swaths =
+          GeoUtils.offsetSwaths(widget.swaths, _liveOffsetDeltaCm / 100.0);
+    });
+    if (_swaths.isNotEmpty) {
+      final origin = _swaths.first;
+      SwathGuidanceBridge.instance
+          .setSwaths(_swaths, origin.startLat, origin.startLon);
+    }
+    widget.onOffsetStep?.call(deltaCm);
   }
 
   // ── GPS callback (real device or simulator, ~100 ms) ───────────────────────
@@ -847,7 +895,7 @@ class _WorkModeViewState extends State<WorkModeView> {
                         _orientationMode == MapOrientationMode.headingUp
                             ? _mapRotationDeg
                             : 0.0,
-                    swaths: widget.swaths,
+                    swaths: _swaths,
                     headlandRings: widget.headlandRings,
                     fieldBoundary: widget.fieldBoundary,
                     coverageTrack: coverageTrack,
@@ -924,6 +972,13 @@ class _WorkModeViewState extends State<WorkModeView> {
                           _orientationMode;
                     }),
                   ),
+                  if (widget.swaths.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _LiveOffsetControl(
+                      totalOffsetCm: _liveOffsetDeltaCm,
+                      onStep: _adjustLiveOffset,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1131,6 +1186,27 @@ class _FieldCanvasPainter extends CustomPainter {
           s0, s1, i == activeSwathIndex ? activeSwathPaint : swathPaint);
     }
 
+    // ── Zasięg maszyny (przerywane krawędzie ±workingWidthM/2 od aktywnej
+    // ścieżki) — pokazuje kierowcy, dokąd fizycznie sięga maszyna z tyłu
+    // ciągnika, niezależnie od śladu już przejechanego pokrycia.
+    if (activeSwathIndex >= 0 && activeSwathIndex < swaths.length) {
+      final s = swaths[activeSwathIndex];
+      final s0 = _toLocal(LatLng(s.startLat, s.startLon));
+      final s1 = _toLocal(LatLng(s.endLat, s.endLon));
+      final delta = s1 - s0;
+      final len = delta.distance;
+      if (len > 1e-6) {
+        final dir = delta / len;
+        final perp = Offset(-dir.dy, dir.dx);
+        final halfWidthOffset = perp * (workingWidthM / 2.0 * pixelsPerMeter);
+        final extentPaint = Paint()
+          ..color = _kMachineExtent
+          ..strokeWidth = 1.5;
+        _drawDashedLine(canvas, s0 + halfWidthOffset, s1 + halfWidthOffset, extentPaint);
+        _drawDashedLine(canvas, s0 - halfWidthOffset, s1 - halfWidthOffset, extentPaint);
+      }
+    }
+
     // ── Znaczniki wstrzymania (miejsca uzupełnienia materiału) ───────────────
     for (final marker in pauseMarkers) {
       final o = _toLocal(marker);
@@ -1169,6 +1245,22 @@ class _FieldCanvasPainter extends CustomPainter {
     canvas.translate(cx, cy);
     _drawTractorCursor(canvas);
     canvas.restore();
+  }
+
+  /// Rysuje odcinek [p0]-[p1] jako linię przerywaną (Canvas nie ma
+  /// natywnego wsparcia dla dasha — iterujemy segmentami wzdłuż odcinka).
+  void _drawDashedLine(Canvas canvas, Offset p0, Offset p1, Paint paint,
+      {double dashLength = 8.0, double gapLength = 6.0}) {
+    final delta = p1 - p0;
+    final distance = delta.distance;
+    if (distance < 1e-6) return;
+    final dir = delta / distance;
+    var drawn = 0.0;
+    while (drawn < distance) {
+      final segEnd = math.min(drawn + dashLength, distance);
+      canvas.drawLine(p0 + dir * drawn, p0 + dir * segEnd, paint);
+      drawn += dashLength + gapLength;
+    }
   }
 
   void _drawTractorCursor(Canvas canvas) {
@@ -1947,6 +2039,107 @@ class _GuidanceModeButton extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kompaktowa kontrolka przesunięcia ścieżek na żywo
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Ominięcie przeszkody, drobna korekta do granicy — patrz
+/// [WorkModeView.onOffsetStep]. [totalOffsetCm] to korekta dokonana W TYM
+/// ekranie (relatywna do stanu wejściowego); tapnięcie etykiety zeruje ją
+/// z powrotem do tego stanu wejściowego.
+class _LiveOffsetControl extends StatelessWidget {
+  const _LiveOffsetControl({
+    required this.totalOffsetCm,
+    required this.onStep,
+  });
+
+  final int totalOffsetCm;
+  final void Function(int deltaCm) onStep;
+
+  static const _stepCm = 5;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasOffset = totalOffsetCm != 0;
+    final color = hasOffset ? Colors.orangeAccent : Colors.white70;
+    final label = totalOffsetCm == 0
+        ? '0 cm'
+        : totalOffsetCm > 0
+            ? '+$totalOffsetCm cm'
+            : '$totalOffsetCm cm';
+
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: const Color(0xCC0D0D0D),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: hasOffset ? Colors.orangeAccent : Colors.white24,
+          width: hasOffset ? 1.5 : 0.8,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _tapZone(
+              icon: Icons.chevron_left,
+              tooltip: 'Przesuń w lewo o $_stepCm cm',
+              onTap: () => onStep(-_stepCm),
+            ),
+            Tooltip(
+              message: 'Zeruj korektę z tego ekranu',
+              child: InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: hasOffset ? () => onStep(-totalOffsetCm) : null,
+                child: SizedBox(
+                  width: 58,
+                  height: 32,
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            _tapZone(
+              icon: Icons.chevron_right,
+              tooltip: 'Przesuń w prawo o $_stepCm cm',
+              onTap: () => onStep(_stepCm),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _tapZone({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: SizedBox(
+          width: 32,
+          height: 32,
+          child: Icon(icon, color: Colors.white70, size: 20),
         ),
       ),
     );
