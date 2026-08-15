@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 
+import '../ffi/guidance_bridge.dart';
 import '../models/field_model.dart';
 import '../models/machine_model.dart';
 import '../models/task_plan.dart';
@@ -9,7 +10,6 @@ import '../models/work_task.dart';
 import '../services/field_service.dart';
 import '../services/machine_service.dart';
 import '../services/task_database.dart';
-import '../utils/geo_utils.dart';
 import 'field_schema_preview.dart';
 import 'machine_manager_screen.dart';
 import 'map_view.dart';
@@ -63,6 +63,8 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
   double _overlap = 0.0;
   int _laps = 0;
   double _angle = 0.0;
+  bool _optimizingAngle = false;
+  int? _optimizedPassCount;
 
   // ── Zapisywanie ───────────────────────────────────────────────────────────
   bool _saving = false;
@@ -115,12 +117,13 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
 
   // ── Selekcje ──────────────────────────────────────────────────────────────
 
-  void _selectField(FieldModel f) {
+  Future<void> _selectField(FieldModel f) async {
     setState(() {
       _field = f;
       _width = _machine?.workingWidthM ?? f.workingWidthM;
-      _angle = GeoUtils.minPassesBearing(f.boundary);
+      _optimizedPassCount = null;
     });
+    await _optimizeAngle(f);
   }
 
   void _selectMachine(MachineModel m) {
@@ -538,21 +541,85 @@ class _NewTaskScreenState extends State<NewTaskScreen> {
               ),
             ),
             TextButton(
-              onPressed: () => setState(
-                  () => _angle = GeoUtils.minPassesBearing(field.boundary)),
-              child: const Text('Auto',
-                  style: TextStyle(
-                      color: Colors.greenAccent, fontWeight: FontWeight.w600)),
+              onPressed: _optimizingAngle ? null : () => _optimizeAngle(field),
+              child: _optimizingAngle
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.tealAccent),
+                    )
+                  : const Text('Zoptymalizuj kierunek',
+                      style: TextStyle(
+                          color: Colors.tealAccent,
+                          fontWeight: FontWeight.w600)),
             ),
           ],
         ),
         DegreeAngleInput(
           value: _angle,
           color: Colors.tealAccent,
-          onChanged: (v) => setState(() => _angle = v),
+          onChanged: (v) => setState(() {
+            _angle = v;
+            _optimizedPassCount = null;
+          }),
         ),
+        if (_optimizedPassCount != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              'Znaleziono: $_optimizedPassCount przejazdów',
+              style: const TextStyle(color: Colors.tealAccent, fontSize: 12),
+            ),
+          ),
       ],
     );
+  }
+
+  /// Uruchamia SwathPlanner::optimizeAngle() (w tle, przez Isolate.run) i po
+  /// zakończeniu ustawia [_angle] na znaleziony kąt — sam schematyczny
+  /// podgląd ([FieldSchemaPreview]) odświeży się automatycznie, bo jest
+  /// reaktywny na [_angle]. Ten ekran nie ma jeszcze prawdziwej mapy ani
+  /// podpięcia SwathGuidanceBridge (to dzieje się dopiero w MapView przy
+  /// otwarciu zadania), więc wystarczy zaktualizować stan + pokazać liczbę
+  /// przejazdów.
+  Future<void> _optimizeAngle(FieldModel field) async {
+    setState(() => _optimizingAngle = true);
+
+    OptimizeAngleResult result;
+    try {
+      result = await OptimizeAngleBridge.optimizeAsync(
+        polygon:
+            field.boundary.map((ll) => (ll.latitude, ll.longitude)).toList(),
+        workingWidthM: _width,
+        overlapM: _overlap,
+        headlandLaps: _laps,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _optimizingAngle = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd optymalizacji kierunku: $e'),
+        backgroundColor: Colors.red[800],
+      ));
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _optimizingAngle = false;
+      if (result.swaths.isNotEmpty) {
+        _angle = result.bestAngleDeg;
+        _optimizedPassCount = result.swathCount;
+      }
+    });
+
+    if (result.swaths.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Nie znaleziono poprawnego układu ścieżek dla tego pola'),
+        backgroundColor: Colors.orange,
+      ));
+    }
   }
 
   // ── Krok 5: Podsumowanie / zapis ───────────────────────────────────────────

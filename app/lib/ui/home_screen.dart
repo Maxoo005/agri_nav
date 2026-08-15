@@ -127,6 +127,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       },
                     ),
                     _MenuTile(
+                      icon: Icons.directions_walk,
+                      label: 'Obejdź granicę (RTK)',
+                      tooltip: 'Najdokładniejsza metoda — obejdź granicę '
+                          'pola pieszo lub maszyną z aktywnym modułem RTK.',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              const MapView(startBoundaryWalk: true),
+                        ),
+                      ),
+                    ),
+                    _MenuTile(
                       icon: Icons.gps_fixed,
                       label: 'Ustawienia GPS',
                       onTap: () => Navigator.push(
@@ -157,34 +170,42 @@ class _MenuTile extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
+    this.tooltip,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
 
+  /// Krótki opis metody, np. kiedy jej użyć — pokazywany na long-press/hover.
+  /// Domyślnie [label], gdy nie podano nic bardziej szczegółowego.
+  final String? tooltip;
+
   @override
   Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: AppColors.success, size: 32),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: const TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: 13,
+    return Tooltip(
+      message: tooltip ?? label,
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: AppColors.success, size: 32),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 13,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

@@ -140,7 +140,18 @@ class MapView extends StatefulWidget {
   /// parametry ścieżek i śledzenie pokrycia są konfigurowane z planu.
   final TaskPlan? initialTask;
 
-  const MapView({super.key, this.initialField, this.initialTask});
+  /// Gdy true, nagrywanie granicy przez obejście/przejazd RTK startuje
+  /// automatycznie zaraz po uruchomieniu GPS — używane przez kafelek
+  /// "Obejdź granicę (RTK)" na ekranie głównym, żeby użytkownik nie musiał
+  /// szukać przycisku po wejściu na mapę.
+  final bool startBoundaryWalk;
+
+  const MapView({
+    super.key,
+    this.initialField,
+    this.initialTask,
+    this.startBoundaryWalk = false,
+  });
 
   @override
   State<MapView> createState() => _MapViewState();
@@ -171,12 +182,44 @@ class _MapViewState extends State<MapView> {
   bool _abRecording = false;
   final List<LatLng> _abRecordedPoints = [];
 
+  // ── Tworzenie granicy przez obejście/przejazd RTK ───────────────────────────
+  bool _boundaryRecording = false;
+  final List<LatLng> _boundaryRecordedPoints = [];
+  int _boundaryFixedCount = 0;
+  int _boundaryFloatCount = 0;
+
+  static const int _kMinBoundaryRecordedPoints = 10;
+  static const double _kMinBoundaryAreaHa = 0.01; // 100 m²
+  static const double _kBoundaryMinPointDistanceM = 0.2; // decymacja wejścia
+  static const double _kBoundaryCloseWarnM = 25.0; // próg ostrzeżenia domknięcia
+  static const double _kBoundarySimplifyEpsilonM = 0.15; // RDP (patrz processLpis)
+
   // ── Granice pola (PolygonLayer — gotowe do podpięcia) ───────────────────────
   final List<LatLng> _fieldBoundary = [];
 
   // ── Wygenerowane ścieżki uprawowe ────────────────────────────────────
+  /// Ścieżki gotowe do wyświetlenia/prowadzenia — surowy wynik plannera
+  /// (patrz [_rawSwaths]) przesunięty o [_manualOffsetM]. To pole (nie
+  /// [_rawSwaths]) jest tym, co czyta reszta ekranu (rendering, guidance,
+  /// Tryb Pracy).
   List<Swath> _swaths = [];
   List<List<LatLng>> _headlandRings = [];
+
+  /// Surowy wynik SwathPlannera (ręcznego generowania lub optymalizatora),
+  /// PRZED zastosowaniem [_manualOffsetM]. Trzymany osobno, żeby ręczna
+  /// korekta przesunięcia nie kumulowała się przy każdym ponownym
+  /// wygenerowaniu/optymalizacji — zawsze liczona od tego surowego wyniku.
+  List<Swath> _rawSwaths = [];
+
+  /// Punkt A użyty jako ENU-origin przy ostatnim (re)generowaniu ścieżek —
+  /// potrzebny do ponownego nakarmienia [SwathGuidanceBridge] po zmianie
+  /// [_manualOffsetM] bez konieczności ponownego wywołania plannera.
+  LatLng? _swathOrigin;
+
+  /// Ręczna korekta wygenerowanych ścieżek [m], prostopadle do kierunku
+  /// jazdy (+ = w prawo). Patrz [TaskPlan.manualOffsetM].
+  double _manualOffsetM = 0.0;
+  bool _swathOffsetPanelVisible = false;
 
   // ── Snapowanie do ścieżki ────────────────────────────────────────────────────
   SnapInfo _snapInfo = SnapInfo.none;
@@ -196,6 +239,7 @@ class _MapViewState extends State<MapView> {
   double _overlapM = 0.0; // zakładka [m]
   int _headlandLaps = 0; // liczba objazdów uwrociowych
   double _swathAngleDeg = 0.0; // kierunek ścieżek [°], auto z granicy
+  bool _optimizingAngle = false; // trwa SwathPlanner::optimizeAngle() w tle
 
   // ── Tryb śledzenia ciągnika ─────────────────────────────────────────────────
   bool _followTractor = true;
@@ -293,6 +337,12 @@ class _MapViewState extends State<MapView> {
     // Poproś o uprawnienia i uruchom GPS po załadowaniu drzewa widgetów
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await GpsLocationService.instance.start(context);
+      // Kafelek "Obejdź granicę (RTK)" na ekranie głównym wchodzi wprost tu
+      // z tą flagą — po starcie GPS od razu włącz nagrywanie, żeby
+      // użytkownik nie musiał szukać przycisku w panelu POLE.
+      if (widget.startBoundaryWalk && mounted) {
+        _toggleBoundaryWalk();
+      }
     });
 
     _gpsSub = GpsLocationService.instance.positionStream.listen(_onGpsPosition);
@@ -349,6 +399,32 @@ class _MapViewState extends State<MapView> {
     if (_abRecording &&
         GpsLocationService.instance.fixStatus == GpsFixStatus.rtkFixed) {
       _abRecordedPoints.add(newPos); // rebuild via setState() poniżej
+    }
+
+    // ── Nagrywanie granicy przez obejście/przejazd RTK ──────────────────────
+    // Szerszy filtr niż AB (Fixed LUB Float) — pojedynczy wierzchołek
+    // obrysu nie musi mieć precyzji nagłówka AB, dokładność Float
+    // (dm-level) wystarcza dla granicy pola. Dodatkowa decymacja
+    // odległościowa, żeby nie gromadzić tysięcy niemal identycznych
+    // punktów przy wolnym chodzie/postoju (RDP i tak by je usunął przy
+    // zapisie — to tylko oszczędność pamięci w trakcie nagrywania).
+    if (_boundaryRecording) {
+      final fs = GpsLocationService.instance.fixStatus;
+      if (fs == GpsFixStatus.rtkFixed || fs == GpsFixStatus.rtkFloat) {
+        final last = _boundaryRecordedPoints.isEmpty
+            ? null
+            : _boundaryRecordedPoints.last;
+        final moved = last == null ||
+            _enuDistanceM(last, newPos) >= _kBoundaryMinPointDistanceM;
+        if (moved) {
+          _boundaryRecordedPoints.add(newPos); // rebuild via setState() poniżej
+          if (fs == GpsFixStatus.rtkFixed) {
+            _boundaryFixedCount++;
+          } else {
+            _boundaryFloatCount++;
+          }
+        }
+      }
     }
 
     // Kurs: używaj heading z GPS jeśli dostępny (speed-gated by service),
@@ -473,17 +549,19 @@ class _MapViewState extends State<MapView> {
 
   // ── Granica pola (DrawingMode) ────────────────────────────────────────────
 
-  void _toggleDrawingMode() {
-    if (!_drawingMode && _abRecording) {
+  Future<void> _toggleDrawingMode() async {
+    if (!_drawingMode && (_abRecording || _boundaryRecording)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:
-              Text('Zatrzymaj nagrywanie linii AB przed rysowaniem granicy'),
+        SnackBar(
+          content: Text(_abRecording
+              ? 'Zatrzymaj nagrywanie linii AB przed rysowaniem granicy'
+              : 'Zakończ obejście granicy przed rysowaniem'),
           backgroundColor: Colors.orange,
         ),
       );
       return;
     }
+    final finishingBoundary = _drawingMode && _fieldBoundary.length >= 3;
     setState(() {
       _drawingMode = !_drawingMode;
       if (_drawingMode) {
@@ -496,17 +574,22 @@ class _MapViewState extends State<MapView> {
         NavBridge.instance.resetAbLine();
         _fieldBoundary.clear();
         _swaths = [];
+        _rawSwaths = [];
+        _swathOrigin = null;
+        // Ta sama zasada co przy AB powyżej — nowo rysowana granica nie
+        // powinna dziedziczyć korekty przesunięcia z poprzedniego pola.
+        _manualOffsetM = 0.0;
         _headlandRings = [];
         _snapInfo = SnapInfo.none;
         _activeField = null;
-      } else {
-        if (_fieldBoundary.length >= 3) {
-          _swathAngleDeg = GeoUtils.minPassesBearing(_fieldBoundary);
-          WidgetsBinding.instance
-              .addPostFrameCallback((_) => _showSaveFieldDialog());
-        }
       }
     });
+    if (finishingBoundary) {
+      await _autoSetSwathAngle(_fieldBoundary);
+      if (!mounted) return;
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _showSaveFieldDialog());
+    }
   }
 
   LatLng _screenToLatLng(Offset offset) => _mapController.camera.pointToLatLng(
@@ -682,12 +765,18 @@ class _MapViewState extends State<MapView> {
         ..addAll(field.boundary);
       _activeField = field;
       _swaths = [];
+      _rawSwaths = [];
+      _swathOrigin = null;
       _headlandRings = [];
       _snapInfo = SnapInfo.none;
-      _swathAngleDeg =
-          plan?.swathAngleDeg ?? GeoUtils.minPassesBearing(field.boundary);
+      if (plan?.swathAngleDeg != null) _swathAngleDeg = plan!.swathAngleDeg;
       _overlapM = plan?.overlapM ?? 0.0;
       _headlandLaps = plan?.headlandLaps ?? 0;
+      // Zawsze przypisz (również gdy plan==null/pole bez zadania) — inaczej
+      // korekta przesunięcia poprzednio wczytanego zadania "przecieka" do
+      // pola, które żadnej korekty nie ma (ten sam wzorzec co _pointA/_pointB
+      // poniżej).
+      _manualOffsetM = plan?.manualOffsetM ?? 0.0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
       _rawMaterialAreaHa =
@@ -707,6 +796,11 @@ class _MapViewState extends State<MapView> {
       );
     } else {
       NavBridge.instance.resetAbLine();
+    }
+    // Plan bez zapisanego kąta (świeże pole) -> dolicz precyzyjny domyślny
+    // kierunek, zanim wygenerujemy ścieżki poniżej.
+    if (plan?.swathAngleDeg == null) {
+      await _autoSetSwathAngle(_fieldBoundary);
     }
     // Ścieżki od razu gotowe (z zapisanej linii AB, jeśli jest, inaczej z
     // autokąta) — bez tego Tryb Pracy startowałby z pustą siatką, dopóki
@@ -889,7 +983,7 @@ class _MapViewState extends State<MapView> {
     // przeciągnięcie nie zgubiło precyzyjnie wyznaczonego kąta po cichu.
     final hasAbLine = _pointA != null && _pointB != null;
 
-    final ok = await showDialog<bool>(
+    final action = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlg) => AlertDialog(
@@ -974,11 +1068,17 @@ class _MapViewState extends State<MapView> {
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
+                onPressed: () => Navigator.pop(ctx, null),
                 child: const Text('Anuluj')),
+            TextButton(
+              onPressed:
+                  hasAbLine ? null : () => Navigator.pop(ctx, 'optimize'),
+              child: const Text('Zoptymalizuj kierunek',
+                  style: TextStyle(color: Colors.tealAccent)),
+            ),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
-              onPressed: () => Navigator.pop(ctx, true),
+              onPressed: () => Navigator.pop(ctx, 'generate'),
               child: const Text('Generuj'),
             ),
           ],
@@ -986,7 +1086,20 @@ class _MapViewState extends State<MapView> {
       ),
     );
 
-    if (ok != true || !mounted) return;
+    if (action == null || !mounted) return;
+
+    if (action == 'optimize') {
+      setState(() {
+        _overlapM = overlap;
+        _headlandLaps = laps;
+      });
+      await _optimizeAndApplySwaths(
+        workingWidthM: width,
+        overlapM: overlap,
+        headlandLaps: laps,
+      );
+      return;
+    }
 
     setState(() {
       _overlapM = overlap;
@@ -994,6 +1107,107 @@ class _MapViewState extends State<MapView> {
       _swathAngleDeg = angle;
     });
     await _planSwaths(workingWidthM: width);
+  }
+
+  /// Uruchamia SwathPlanner::optimizeAngle() (przeszukiwanie coarse-to-fine
+  /// kierunku ścieżek w tle, przez Isolate.run) i od razu aplikuje gotowy
+  /// wynik do stanu mapy — identycznie jak [_planSwaths], ale bez drugiego
+  /// wywołania FFI (wynik optymalizatora już zawiera gotowy plan).
+  Future<void> _optimizeAndApplySwaths({
+    required double workingWidthM,
+    required double overlapM,
+    required int headlandLaps,
+  }) async {
+    if (_fieldBoundary.length < 3) return;
+
+    setState(() => _optimizingAngle = true);
+
+    final polygon =
+        _fieldBoundary.map((ll) => (ll.latitude, ll.longitude)).toList();
+
+    OptimizeAngleResult result;
+    try {
+      result = await OptimizeAngleBridge.optimizeAsync(
+        polygon: polygon,
+        workingWidthM: workingWidthM,
+        overlapM: overlapM,
+        headlandLaps: headlandLaps,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _optimizingAngle = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd optymalizacji kierunku: $e'),
+        backgroundColor: Colors.red[800],
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    if (!mounted) return;
+
+    if (result.swaths.isEmpty) {
+      setState(() => _optimizingAngle = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Nie znaleziono poprawnego układu ścieżek dla tego pola'),
+        backgroundColor: Colors.orange,
+      ));
+      return;
+    }
+
+    final (a, _) = _abFromAngle(result.bestAngleDeg);
+
+    setState(() {
+      _rawSwaths = result.swaths;
+      _swathOrigin = a;
+      _swaths = GeoUtils.offsetSwaths(_rawSwaths, _manualOffsetM);
+      _headlandRings = result.headlandRings
+          .map((ring) => ring.map((p) => LatLng(p.$1, p.$2)).toList())
+          .toList();
+      _swathAngleDeg = result.bestAngleDeg;
+      _snapInfo = SnapInfo.none;
+      _optimizingAngle = false;
+    });
+
+    SwathGuidanceBridge.instance.setSwaths(_swaths, a.latitude, a.longitude);
+    if (_headlandRings.isNotEmpty) {
+      HeadlandGuidanceBridge.instance
+          .setRings(_headlandRings, a.latitude, a.longitude);
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+          'Znaleziono: ${result.swathCount} przejazdów (kierunek ${result.bestAngleDeg.toStringAsFixed(2)}°)'),
+      backgroundColor: Colors.green[700],
+      duration: const Duration(seconds: 4),
+    ));
+  }
+
+  /// Ustawia [_swathAngleDeg] na precyzyjny wynik SwathPlanner::optimizeAngle()
+  /// (C++, dokładność 0.01°) dla [boundary], z bieżącymi parametrami
+  /// szerokości/zakładki/uwrocia. Zastępuje dawny natychmiastowy, ale
+  /// niedokładny (co 1°) `GeoUtils.minPassesBearing` we wszystkich miejscach,
+  /// gdzie kąt jest ustawiany automatycznie (bez jawnego kliknięcia
+  /// "Zoptymalizuj kierunek"). Po niepowodzeniu/pustym wyniku zostawia
+  /// poprzednią wartość [_swathAngleDeg] — tak samo jak przycisk optymalizacji.
+  Future<void> _autoSetSwathAngle(List<LatLng> boundary) async {
+    if (boundary.length < 3) return;
+    final polygon = boundary.map((ll) => (ll.latitude, ll.longitude)).toList();
+
+    OptimizeAngleResult result;
+    try {
+      result = await OptimizeAngleBridge.optimizeAsync(
+        polygon: polygon,
+        workingWidthM: _activeWorkingWidth,
+        overlapM: _overlapM,
+        headlandLaps: _headlandLaps,
+      );
+    } catch (_) {
+      return;
+    }
+    if (!mounted || result.swaths.isEmpty) return;
+    setState(() => _swathAngleDeg = result.bestAngleDeg);
   }
 
   /// Generates swaths via SwathPlannerFullBridge.planFull().
@@ -1045,7 +1259,9 @@ class _MapViewState extends State<MapView> {
     if (!mounted) return;
 
     setState(() {
-      _swaths = result.swaths;
+      _rawSwaths = result.swaths;
+      _swathOrigin = a;
+      _swaths = GeoUtils.offsetSwaths(_rawSwaths, _manualOffsetM);
       _headlandRings = result.headlandRings
           .map((ring) => ring.map((p) => LatLng(p.$1, p.$2)).toList())
           .toList();
@@ -1053,8 +1269,8 @@ class _MapViewState extends State<MapView> {
     });
 
     // Feed new swaths into the guidance engine
-    if (result.swaths.isNotEmpty) {
-      SwathGuidanceBridge.instance.setSwaths(result.swaths, ax, ay);
+    if (_swaths.isNotEmpty) {
+      SwathGuidanceBridge.instance.setSwaths(_swaths, ax, ay);
     }
 
     // Feed headland rings into the headland guidance engine
@@ -1082,6 +1298,69 @@ class _MapViewState extends State<MapView> {
       LatLng(lat - dLat, lon - dLon), // A
       LatLng(lat + dLat, lon + dLon), // B
     );
+  }
+
+  // ── Ręczne przesunięcie wygenerowanych ścieżek ────────────────────────────
+
+  /// Zmienia [_manualOffsetM] o [deltaCm] (w prawo dodatnie), przelicza
+  /// [_swaths] od [_rawSwaths] (planner nigdy nie jest wołany ponownie),
+  /// od razu karmi nim [SwathGuidanceBridge] (tak samo jak przy zwykłym
+  /// generowaniu) i zapisuje korektę do [_loadedTaskPlan], jeśli zadanie jest
+  /// zapisane w SQLite. Wywoływane zarówno z panelu na mapie, jak i (przez
+  /// [WorkModeView]'s onOffsetChanged) na żywo w Trybie Pracy.
+  void _adjustSwathOffset(int deltaCm) => _setSwathOffsetM(
+      double.parse((_manualOffsetM + deltaCm / 100.0).toStringAsFixed(2)));
+
+  void _resetSwathOffset() => _setSwathOffsetM(0.0);
+
+  void _setSwathOffsetM(double newOffsetM) {
+    setState(() {
+      _manualOffsetM = newOffsetM;
+      _swaths = GeoUtils.offsetSwaths(_rawSwaths, _manualOffsetM);
+    });
+    final origin = _swathOrigin;
+    if (origin != null && _swaths.isNotEmpty) {
+      SwathGuidanceBridge.instance
+          .setSwaths(_swaths, origin.latitude, origin.longitude);
+    }
+    unawaited(_persistManualOffset());
+  }
+
+  /// Zapisuje bieżący [_manualOffsetM] do zadania w SQLite — no-op, gdy
+  /// ścieżki zostały wygenerowane bez zapisanego [TaskPlan] (np. pole
+  /// ad-hoc bez przejścia przez kreator zadania); wtedy korekta obowiązuje
+  /// tylko do zamknięcia ekranu, tak samo jak np. [_overlapM] w tym samym
+  /// scenariuszu.
+  Future<void> _persistManualOffset() async {
+    final plan = _loadedTaskPlan;
+    if (plan == null) return;
+    final updated = TaskPlan(
+      id: plan.id,
+      name: plan.name,
+      fieldId: plan.fieldId,
+      fieldName: plan.fieldName,
+      boundaryLats: plan.boundaryLats,
+      boundaryLons: plan.boundaryLons,
+      lineALat: plan.lineALat,
+      lineALon: plan.lineALon,
+      lineBLat: plan.lineBLat,
+      lineBLon: plan.lineBLon,
+      machineId: plan.machineId,
+      machineName: plan.machineName,
+      machineType: plan.machineType,
+      taskType: plan.taskType,
+      workingWidthM: plan.workingWidthM,
+      overlapM: plan.overlapM,
+      headlandLaps: plan.headlandLaps,
+      swathAngleDeg: plan.swathAngleDeg,
+      manualOffsetM: _manualOffsetM,
+      targetRate: plan.targetRate,
+      tankVolume: plan.tankVolume,
+      unit: plan.unit,
+      createdAt: plan.createdAt,
+    );
+    _loadedTaskPlan = updated;
+    await TaskDatabase.instance.save(updated);
   }
 
   // ── Coverage tracking ────────────────────────────────────────────────────────
@@ -1137,6 +1416,7 @@ class _MapViewState extends State<MapView> {
             machineName: _activeMachine?.name,
             overlapM: _overlapM,
             swathAngleDeg: _swathAngleDeg,
+            onOffsetStep: _adjustSwathOffset,
           ),
           transitionsBuilder: (_, anim, __, child) => SlideTransition(
             position: Tween<Offset>(
@@ -1269,11 +1549,12 @@ class _MapViewState extends State<MapView> {
   }
 
   void _toggleControlPointsMode() {
-    if (!_controlPointsMode && _abRecording) {
+    if (!_controlPointsMode && (_abRecording || _boundaryRecording)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              'Zatrzymaj nagrywanie linii AB przed korektą punktami kontrolnymi'),
+        SnackBar(
+          content: Text(_abRecording
+              ? 'Zatrzymaj nagrywanie linii AB przed korektą punktami kontrolnymi'
+              : 'Zakończ obejście granicy przed korektą punktami kontrolnymi'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -1576,11 +1857,12 @@ class _MapViewState extends State<MapView> {
       _finalizeAbRecording();
       return;
     }
-    if (_drawingMode || _controlPointsMode) {
+    if (_drawingMode || _controlPointsMode || _boundaryRecording) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              'Zakończ rysowanie/korektę granicy przed nagrywaniem linii AB'),
+        SnackBar(
+          content: Text(_boundaryRecording
+              ? 'Zakończ obejście granicy przed nagrywaniem linii AB'
+              : 'Zakończ rysowanie/korektę granicy przed nagrywaniem linii AB'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -1780,11 +2062,10 @@ class _MapViewState extends State<MapView> {
       _abTapPending = null;
       _abRecording = false;
       _abRecordedPoints.clear();
-      if (_fieldBoundary.length >= 3) {
-        _swathAngleDeg = GeoUtils.minPassesBearing(_fieldBoundary);
-      }
     });
     NavBridge.instance.resetAbLine();
+    await _autoSetSwathAngle(_fieldBoundary);
+    if (!mounted) return;
 
     if (field != null) {
       field
@@ -1801,6 +2082,298 @@ class _MapViewState extends State<MapView> {
     if (_fieldBoundary.length >= 3) {
       await _planSwaths(workingWidthM: _activeWorkingWidth);
     }
+  }
+
+  // ── Tworzenie granicy przez obejście/przejazd RTK ───────────────────────────
+
+  /// Odległość [m] między dwoma punktami w lokalnym ENU — używana tylko do
+  /// decymacji wejścia podczas nagrywania obejścia (patrz [_onGpsPosition]).
+  double _enuDistanceM(LatLng a, LatLng b) {
+    final d = GeoUtils.toEnu(a, b);
+    return math.sqrt(d.e * d.e + d.n * d.n);
+  }
+
+  /// Tekst statusu pokazywany w panelu "POLE" podczas nagrywania obejścia —
+  /// analogiczny do [_abStatusLabel], aktualizowany na każdą klatkę GPS.
+  String _boundaryWalkStatusLabel() {
+    final n = _boundaryRecordedPoints.length;
+    final areaHa =
+        n >= 3 ? GeoUtils.polygonAreaHa(_boundaryRecordedPoints) : 0.0;
+    final areaPart =
+        areaHa > 0 ? ' • ok. ${areaHa.toStringAsFixed(2)} ha' : '';
+    return 'Obejście: $n pkt (Fixed $_boundaryFixedCount, '
+        'Float $_boundaryFloatCount)$areaPart';
+  }
+
+  void _toggleBoundaryWalk() {
+    if (_boundaryRecording) {
+      _finalizeBoundaryWalk();
+      return;
+    }
+    if (_drawingMode || _abRecording || _controlPointsMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('Zakończ rysowanie/korektę granicy przed obejściem pola'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _boundaryRecording = true;
+      _boundaryRecordedPoints.clear();
+      _boundaryFixedCount = 0;
+      _boundaryFloatCount = 0;
+      // Ten tryb zawsze tworzy NOWE pole — ta sama zasada co przy "Rysuj":
+      // nie powinien dziedziczyć aktywnego pola/AB/ścieżek z poprzedniego.
+      _clearControlPointsState();
+      _abTapMode = false;
+      _abTapPending = null;
+      _pointA = null;
+      _pointB = null;
+      NavBridge.instance.resetAbLine();
+      _fieldBoundary.clear();
+      _swaths = [];
+      _rawSwaths = [];
+      _swathOrigin = null;
+      _manualOffsetM = 0.0;
+      _headlandRings = [];
+      _snapInfo = SnapInfo.none;
+      _activeField = null;
+      _nudgePanelVisible = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+            'Nagrywanie granicy rozpoczęte — obejdź/objedź pole i wróć '
+            'blisko punktu startowego, potem naciśnij "Zakończ".'),
+        backgroundColor: Colors.blueGrey,
+        duration: Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// Wywoływane przez [PopScope], gdy użytkownik próbuje zejść z ekranu w
+  /// trakcie obejścia granicy (np. gestem "wstecz") — pyta, czy odrzucić
+  /// zebrane punkty, zamiast po cichu je tracić (patrz
+  /// [_handleAbRecordingPopAttempt]).
+  Future<void> _handleBoundaryWalkPopAttempt() async {
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title:
+            const Text('Obejście w toku', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'Trwa nagrywanie granicy pola. Wyjście teraz odrzuci zebrane punkty.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Zostań'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red[800]),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Odrzuć i wyjdź'),
+          ),
+        ],
+      ),
+    );
+    if (discard != true) return;
+    _cancelBoundaryWalk();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  void _cancelBoundaryWalk() {
+    setState(() {
+      _boundaryRecording = false;
+      _boundaryRecordedPoints.clear();
+      _boundaryFixedCount = 0;
+      _boundaryFloatCount = 0;
+    });
+  }
+
+  /// Zatrzymuje zbieranie i waliduje trasę. Gdy punktów jest za mało albo
+  /// zamknięta pętla ma zbyt mały obszar, NIE przerywa nagrywania — bufor
+  /// zostaje, użytkownik idzie/jedzie dalej i naciska "Zakończ" ponownie
+  /// (ten sam wzorzec co [_finalizeAbRecording]).
+  Future<void> _finalizeBoundaryWalk() async {
+    final points = List<LatLng>.from(_boundaryRecordedPoints);
+
+    if (points.length < _kMinBoundaryRecordedPoints) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Za mało punktów o jakości RTK Fixed/Float (zebrano: '
+            '${points.length}, wymagane min. $_kMinBoundaryRecordedPoints). '
+            'Sprawdź połączenie z odbiornikiem RTK i idź dalej — '
+            'nagrywanie trwa.'),
+        backgroundColor: Colors.red[800],
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    final rawAreaHa = GeoUtils.polygonAreaHa(points);
+    if (rawAreaHa < _kMinBoundaryAreaHa) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Trasa nie tworzy jeszcze zamkniętej pętli o sensownym '
+            'obszarze (${(rawAreaHa * 10000).toStringAsFixed(0)} m²) — '
+            'obejdź dalej granicę pola i spróbuj ponownie.'),
+        backgroundColor: Colors.orange,
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    final closeGapM = _enuDistanceM(points.first, points.last);
+
+    setState(() => _boundaryRecording = false);
+    await _showBoundaryWalkConfirmDialog(points, closeGapM);
+  }
+
+  /// Upraszcza surową trasę przez [LpisProcessorBridge] (union + RDP —
+  /// ten sam natywny procesor geometrii co import LPIS, wywołany z jednym
+  /// wielokątem i `bufferM: 0.0`, bez buforowania) i pyta o nazwę pola przed
+  /// zapisem. Odrzucenie NIE czyści bufora nagrania — spójnie z
+  /// [_showAbRecordingConfirmDialog].
+  Future<void> _showBoundaryWalkConfirmDialog(
+    List<LatLng> rawPoints,
+    double closeGapM,
+  ) async {
+    MergeFieldResult result;
+    try {
+      result = await LpisProcessorBridge.instance.processAsync(
+        [rawPoints],
+        bufferM: 0.0,
+        simplifyEpsilonM: _kBoundarySimplifyEpsilonM,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Błąd przetwarzania granicy: $e'),
+        backgroundColor: Colors.red[800],
+      ));
+      return;
+    }
+    if (!mounted) return;
+
+    final boundary = result.primaryBoundary;
+    if (boundary.length < 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Przetwarzanie geometrii nie zwróciło poprawnej granicy — '
+              'spróbuj obejść pole ponownie.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final nameCtrl = TextEditingController(
+        text: 'Pole (obejście) ${FieldService.instance.getAll().length + 1}');
+    final areaHa = GeoUtils.polygonAreaHa(boundary);
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: const Text('Granica z obejścia RTK',
+            style: TextStyle(color: Colors.white)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Nazwa pola',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white38)),
+                  focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.greenAccent)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text('Powierzchnia: ${areaHa.toStringAsFixed(2)} ha',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 4),
+              Text(
+                  'Punkty RTK: ${rawPoints.length} '
+                  '(Fixed: $_boundaryFixedCount, Float: $_boundaryFloatCount)',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 4),
+              Text(
+                  'Wierzchołki: ${rawPoints.length} → ${boundary.length} '
+                  '(uproszczenie RDP, ε=${_kBoundarySimplifyEpsilonM.toStringAsFixed(2)} m)',
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              if (closeGapM > _kBoundaryCloseWarnM) ...[
+                const SizedBox(height: 8),
+                Text(
+                    '⚠ Pętla nie została w pełni domknięta (rozstaw '
+                    '${closeGapM.toStringAsFixed(0)} m) — granica zostanie '
+                    'automatycznie domknięta linią prostą między punktem '
+                    'startowym i końcowym.',
+                    style: const TextStyle(
+                        color: Colors.orangeAccent, fontSize: 12)),
+              ],
+              if (result.isMultipart) ...[
+                const SizedBox(height: 8),
+                const Text(
+                    '⚠ Trasa się przecięła — użyto największego wykrytego '
+                    'obszaru. Sprawdź podgląd przed zapisem.',
+                    style:
+                        TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Odrzuć')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Zapisz'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) {
+      nameCtrl.dispose();
+      return;
+    }
+    final rawName = nameCtrl.text.trim();
+    nameCtrl.dispose();
+
+    _boundaryRecordedPoints.clear();
+    _boundaryFixedCount = 0;
+    _boundaryFloatCount = 0;
+
+    final field = FieldModel(
+      id: const Uuid().v4(),
+      name: rawName.isEmpty ? 'Pole (obejście)' : rawName,
+      boundaryLats: boundary.map((p) => p.latitude).toList(),
+      boundaryLons: boundary.map((p) => p.longitude).toList(),
+      source: FieldSource.walked,
+      areaHa: areaHa,
+    );
+    await FieldService.instance.save(field);
+    if (!mounted) return;
+
+    await _loadField(field);
+    if (!mounted) return;
+    setState(() => _savedFields = FieldService.instance.getAll());
   }
 
   void _toggleCoverage() {
@@ -2000,6 +2573,17 @@ class _MapViewState extends State<MapView> {
             ),
             const SizedBox(height: 8),
           ],
+          if (_boundaryRecording) ...[
+            Text(
+              _boundaryWalkStatusLabel(),
+              style: const TextStyle(
+                color: Colors.greenAccent,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           Wrap(
             spacing: 8, runSpacing: 8,
             children: [
@@ -2039,6 +2623,18 @@ class _MapViewState extends State<MapView> {
                 onPressed: _toggleDrawingMode,
               ),
               _ActionTile(
+                icon: _boundaryRecording
+                    ? Icons.flag_circle_outlined
+                    : Icons.directions_walk,
+                label: _boundaryRecording ? 'Zakończ' : 'Obejdź pole',
+                tooltip: _boundaryRecording
+                    ? 'Zakończ obejście i zapisz granicę'
+                    : 'Najdokładniejsza metoda — obejdź granicę pola pieszo '
+                        'lub maszyną z aktywnym modułem RTK',
+                isActive: _boundaryRecording,
+                onPressed: _toggleBoundaryWalk,
+              ),
+              _ActionTile(
                 icon: _swaths.isNotEmpty || _headlandRings.isNotEmpty
                     ? Icons.grid_on
                     : Icons.grid_off,
@@ -2049,6 +2645,15 @@ class _MapViewState extends State<MapView> {
                 isActive: _swaths.isNotEmpty || _headlandRings.isNotEmpty,
                 onPressed: _showSwathParamsDialog,
               ),
+              if (_rawSwaths.isNotEmpty)
+                _ActionTile(
+                  icon: Icons.swap_horiz,
+                  label: 'Przesuń',
+                  tooltip: 'Przesuń wygenerowane ścieżki w bok (cm)',
+                  isActive: _swathOffsetPanelVisible || _manualOffsetM != 0.0,
+                  onPressed: () => setState(
+                      () => _swathOffsetPanelVisible = !_swathOffsetPanelVisible),
+                ),
               if (_activeField != null)
                 _ActionTile(
                   icon: Icons.touch_app_outlined,
@@ -2420,12 +3025,17 @@ class _MapViewState extends State<MapView> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // Nagrywanie linii AB trwa zwykle kilka minut fizycznego przejazdu —
-      // przypadkowe zejście z ekranu (gest "wstecz") nie powinno po cichu
-      // gubić zebranych punktów.
-      canPop: !_abRecording,
+      // Nagrywanie linii AB / obejścia granicy trwa zwykle kilka minut
+      // fizycznego przejazdu — przypadkowe zejście z ekranu (gest "wstecz")
+      // nie powinno po cichu gubić zebranych punktów.
+      canPop: !_abRecording && !_boundaryRecording,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) _handleAbRecordingPopAttempt();
+        if (didPop) return;
+        if (_abRecording) {
+          _handleAbRecordingPopAttempt();
+        } else if (_boundaryRecording) {
+          _handleBoundaryWalkPopAttempt();
+        }
       },
       child: Scaffold(
         backgroundColor: _mapMode == MapLayerMode.work
@@ -2645,6 +3255,31 @@ class _MapViewState extends State<MapView> {
                   ],
                 ),
 
+              // ── Granica pola — obejście RTK, nagrywanie na żywo ─────────────
+              if (_boundaryRecording && _boundaryRecordedPoints.length >= 2)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _boundaryRecordedPoints,
+                      color: Colors.greenAccent,
+                      strokeWidth: 3.5,
+                    ),
+                    // Podgląd domknięcia pętli — pokazuje, jaki kształt
+                    // przyjmie granica, gdyby użytkownik zakończył teraz.
+                    if (_boundaryRecordedPoints.length >= 3)
+                      Polyline(
+                        points: [
+                          _boundaryRecordedPoints.last,
+                          _boundaryRecordedPoints.first,
+                        ],
+                        color: Colors.greenAccent.withValues(alpha: 0.45),
+                        strokeWidth: 2.0,
+                        pattern:
+                            StrokePattern.dashed(segments: const [6, 6]),
+                      ),
+                  ],
+                ),
+
               // ── Linia AB — zatwierdzona (stuknięcia lub przejazd) ───────────
               if (_pointA != null && _pointB != null)
                 PolylineLayer(
@@ -2709,6 +3344,41 @@ class _MapViewState extends State<MapView> {
             ],
           ),
 
+          // ── Wskaźnik trwającej optymalizacji kierunku ścieżek ─────────────────
+          if (_optimizingAngle)
+            Positioned(
+              top: 80,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF2A2A2A),
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black45, blurRadius: 8),
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.tealAccent),
+                      ),
+                      SizedBox(width: 10),
+                      Text('Szukam optymalnego kierunku…',
+                          style: TextStyle(color: Colors.white)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           // ── Panel korekty przesunięcia (Nudge) ──────────────────────────────
           if (_nudgePanelVisible && _activeField != null)
             Positioned(
@@ -2719,6 +3389,20 @@ class _MapViewState extends State<MapView> {
                 onNudge: (dx, dy) => _nudgeActive(dx, dy),
                 onReset: _resetActiveNudge,
                 onClose: () => setState(() => _nudgePanelVisible = false),
+              ),
+            ),
+
+          // ── Panel ręcznego przesunięcia wygenerowanych ścieżek ───────────────
+          if (_swathOffsetPanelVisible && _rawSwaths.isNotEmpty)
+            Positioned(
+              left: 12,
+              bottom: 200,
+              child: _SwathOffsetPanel(
+                offsetCm: (_manualOffsetM * 100).round(),
+                onStep: _adjustSwathOffset,
+                onReset: _resetSwathOffset,
+                onClose: () =>
+                    setState(() => _swathOffsetPanelVisible = false),
               ),
             ),
 
@@ -3303,6 +3987,119 @@ class _TractorArrow extends CustomPainter {
 // Przesuwa WSZYSTKIE działki LPIS o stały delta w stopniach (0.00001° ≈ 1.1 m).
 // Offset jest czysto wizualny i nie jest zapisywany do bazy.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Panel ręcznego przesunięcia wygenerowanych ścieżek (offset boczny) ────────
+//
+// W przeciwieństwie do _ManualOffsetPanel powyżej: przesuwa SAME wygenerowane
+// ścieżki (prostopadle do kierunku jazdy), nie warstwę LPIS. Wartość jest
+// zapisywana do TaskPlan.manualOffsetM (patrz _persistManualOffset) — ma
+// przetrwać zamknięcie/otwarcie zadania, w odróżnieniu od kalibracji LPIS.
+class _SwathOffsetPanel extends StatelessWidget {
+  const _SwathOffsetPanel({
+    required this.offsetCm,
+    required this.onStep,
+    required this.onReset,
+    required this.onClose,
+  });
+
+  /// Bieżące przesunięcie w cm (+ = w prawo względem kierunku jazdy).
+  final int offsetCm;
+  final void Function(int deltaCm) onStep;
+  final VoidCallback onReset;
+  final VoidCallback onClose;
+
+  static const _stepCm = 5;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasOffset = offsetCm != 0;
+    final label = offsetCm == 0
+        ? '0 cm'
+        : offsetCm > 0
+            ? '$offsetCm cm →'
+            : '${-offsetCm} cm ←';
+    return Container(
+      width: 150,
+      decoration: BoxDecoration(
+        color: const Color(0xEE0D1B2A),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: hasOffset
+              ? Colors.orangeAccent.withValues(alpha: 0.8)
+              : Colors.tealAccent.withValues(alpha: 0.5),
+          width: 1,
+        ),
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 8)],
+      ),
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.swap_horiz, color: Colors.tealAccent, size: 13),
+              const SizedBox(width: 4),
+              const Expanded(
+                child: Text(
+                  'Przesuń ścieżki',
+                  style: TextStyle(
+                    color: Colors.tealAccent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: onClose,
+                child: const Icon(Icons.close, color: Colors.white38, size: 15),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: hasOffset ? Colors.orangeAccent : Colors.white38,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _ArrowButton(
+                icon: Icons.keyboard_arrow_left_rounded,
+                tooltip: 'Przesuń w lewo o $_stepCm cm',
+                onTap: () => onStep(-_stepCm),
+              ),
+              const SizedBox(width: 4),
+              _ArrowButton(
+                icon: Icons.restart_alt,
+                tooltip: 'Wyzeruj przesunięcie',
+                onTap: onReset,
+                color: hasOffset ? Colors.orangeAccent : Colors.white24,
+              ),
+              const SizedBox(width: 4),
+              _ArrowButton(
+                icon: Icons.keyboard_arrow_right_rounded,
+                tooltip: 'Przesuń w prawo o $_stepCm cm',
+                onTap: () => onStep(_stepCm),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            '1 krok = $_stepCm cm',
+            style: TextStyle(color: Colors.white24, fontSize: 8.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _ManualOffsetPanel extends StatelessWidget {
   const _ManualOffsetPanel({

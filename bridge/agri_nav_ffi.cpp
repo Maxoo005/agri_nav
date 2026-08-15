@@ -156,6 +156,92 @@ void agrinav_free_plan(FfiPlanResult* r) {
     std::free(r);
 }
 
+// ── Angle optimization (automatic swath bearing search) ───────────────────────
+
+FfiOptimizeResult* agrinav_optimize_angle(
+    const double* polygon,
+    int32_t       vertexCount,
+    double        workingWidth,
+    double        overlapM,
+    int32_t       headlandLaps,
+    double        turnPenaltyFactor
+) {
+    // Decode flat polygon buffer [lat₀,lon₀, lat₁,lon₁, ...]
+    std::vector<agrinav::LatLon> pts;
+    pts.reserve(static_cast<size_t>(vertexCount));
+    for (int32_t i = 0; i < vertexCount; ++i)
+        pts.push_back({ polygon[i * 2], polygon[i * 2 + 1] });
+
+    const auto opt = agrinav::SwathPlanner::optimizeAngle(
+        pts,
+        workingWidth,
+        overlapM,
+        static_cast<int>(headlandLaps),
+        turnPenaltyFactor
+    );
+
+    auto* r = static_cast<FfiOptimizeResult*>(std::malloc(sizeof(FfiOptimizeResult)));
+
+    // ── Swaths ────────────────────────────────────────────────────────────────
+    r->swathCount = static_cast<int32_t>(opt.plan.swaths.size());
+    if (r->swathCount > 0) {
+        r->swathData = static_cast<double*>(
+            std::malloc(sizeof(double) * 4 * static_cast<size_t>(r->swathCount)));
+        for (int32_t i = 0; i < r->swathCount; ++i) {
+            const auto& s = opt.plan.swaths[static_cast<size_t>(i)];
+            r->swathData[i * 4 + 0] = s.start.lat;
+            r->swathData[i * 4 + 1] = s.start.lon;
+            r->swathData[i * 4 + 2] = s.end.lat;
+            r->swathData[i * 4 + 3] = s.end.lon;
+        }
+    } else {
+        r->swathData = nullptr;
+    }
+
+    // ── Headland rings ────────────────────────────────────────────────────────
+    r->ringCount = static_cast<int32_t>(opt.plan.headlandRings.size());
+    if (r->ringCount > 0) {
+        r->ringPointCounts = static_cast<int32_t*>(
+            std::malloc(sizeof(int32_t) * static_cast<size_t>(r->ringCount)));
+
+        size_t totalPts = 0;
+        for (int32_t k = 0; k < r->ringCount; ++k) {
+            const auto cnt =
+                static_cast<int32_t>(opt.plan.headlandRings[static_cast<size_t>(k)].size());
+            r->ringPointCounts[k] = cnt;
+            totalPts += static_cast<size_t>(cnt);
+        }
+
+        r->ringPointData = static_cast<double*>(
+            std::malloc(sizeof(double) * 2 * totalPts));
+
+        size_t offset = 0;
+        for (int32_t k = 0; k < r->ringCount; ++k) {
+            for (const auto& ll : opt.plan.headlandRings[static_cast<size_t>(k)]) {
+                r->ringPointData[offset * 2 + 0] = ll.lat;
+                r->ringPointData[offset * 2 + 1] = ll.lon;
+                ++offset;
+            }
+        }
+    } else {
+        r->ringPointData   = nullptr;
+        r->ringPointCounts = nullptr;
+    }
+
+    r->bestAngleDeg = opt.bestAngleDeg;
+    r->totalLengthM = opt.totalLengthM;
+
+    return r;
+}
+
+void agrinav_free_optimize_result(FfiOptimizeResult* r) {
+    if (!r) return;
+    std::free(r->swathData);
+    std::free(r->ringPointData);
+    std::free(r->ringPointCounts);
+    std::free(r);
+}
+
 // ── Snap-to-nearest-swath guidance ───────────────────────────────────────────
 
 GuidanceHandle agrinav_guidance_create() {

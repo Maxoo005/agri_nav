@@ -18,6 +18,12 @@ enum FieldSource {
   /// narysowane w Google Earth Pro / QGIS na ortofotomapie i wyeksportowane)
   /// — patrz `FileImportSheet`.
   file,
+
+  /// Nagrane obejściem/przejazdem pieszo lub maszyną z aktywnym modułem RTK
+  /// — strumień pozycji filtrowany po jakości fixa (RTK Fixed/Float) i
+  /// uproszczony algorytmem Ramer–Douglas–Peucker przed zapisem. Patrz
+  /// `MapView._toggleBoundaryWalk`.
+  walked,
 }
 
 /// Metoda wyznaczenia linii AB ([FieldModel.lineA]/[FieldModel.lineB]).

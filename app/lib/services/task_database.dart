@@ -47,7 +47,7 @@ class TaskDatabase {
     final path = await getDatabasePath();
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await db.execute('''
@@ -68,6 +68,7 @@ class TaskDatabase {
             overlap_m       REAL,
             headland_laps   INTEGER,
             swath_angle_deg REAL,
+            manual_offset_m REAL DEFAULT 0.0,
             target_rate     REAL,
             tank_volume     REAL,
             unit            TEXT,
@@ -76,6 +77,16 @@ class TaskDatabase {
         ''');
         await db.execute(
             'CREATE INDEX idx_tasks_created ON $_table (created_at)');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // v1 -> v2: ręczna korekta (offset) wygenerowanych ścieżek [m].
+        // Addytywna, nieniszcząca zmiana — SQLite dopisuje kolumnę i
+        // wypełnia ją wartością domyślną dla wszystkich istniejących
+        // wierszy; żadna inna kolumna/wiersz nie jest dotykana.
+        if (oldVersion < 2) {
+          await db.execute(
+              'ALTER TABLE $_table ADD COLUMN manual_offset_m REAL DEFAULT 0.0');
+        }
       },
     );
   }
