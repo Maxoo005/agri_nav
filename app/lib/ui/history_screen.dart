@@ -3,16 +3,40 @@ import 'package:flutter/material.dart';
 import '../models/history_record.dart';
 import '../services/history_database.dart';
 import '../services/work_session_service.dart';
+import 'history_export_screen.dart';
+import 'manual_history_entry_sheet.dart';
 
 /// Ekran Historii: pola → wszystkie zakończone zadania danego pola w jednym
 /// miejscu (bez podziału na lata czy typ zadania).
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
   static Future<void> open(BuildContext context) => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const HistoryScreen()),
       );
+
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  late Future<List<HistoryFieldSummary>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = HistoryDatabase.instance.getFields();
+  }
+
+  void _reload() => setState(() {
+        _future = HistoryDatabase.instance.getFields();
+      });
+
+  Future<void> _addManualEntry() async {
+    final added = await ManualHistoryEntrySheet.show(context);
+    if (added == true) _reload();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -22,9 +46,25 @@ class HistoryScreen extends StatelessWidget {
         backgroundColor: const Color(0xFF1E1E1E),
         foregroundColor: Colors.white,
         title: const Text('Historia'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            tooltip: 'Eksportuj do PDF',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const HistoryExportScreen()),
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addManualEntry,
+        icon: const Icon(Icons.edit_note),
+        label: const Text('Dodaj wpis ręczny'),
+        backgroundColor: Colors.green[700],
       ),
       body: FutureBuilder<List<HistoryFieldSummary>>(
-        future: HistoryDatabase.instance.getFields(),
+        future: _future,
         builder: (context, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(
@@ -39,7 +79,7 @@ class HistoryScreen extends StatelessWidget {
                   Icon(Icons.history_rounded, size: 64, color: Colors.white24),
                   SizedBox(height: 12),
                   Text(
-                    'Brak zakończonych prac.\nKażde "Zakończ pracę" zapisze zadanie w historii.',
+                    'Brak zakończonych prac.\nKażde "Zakończ pracę" zapisze zadanie w historii,\nalbo dopisz wpis ręcznie.',
                     style: TextStyle(color: Colors.white38, fontSize: 14),
                     textAlign: TextAlign.center,
                   ),
@@ -139,6 +179,7 @@ class _HistoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final note = record.note?.trim() ?? '';
+    final isManual = record.entrySource == HistoryEntrySource.manual;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -151,8 +192,15 @@ class _HistoryCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.assignment_turned_in_outlined,
-                  color: Colors.greenAccent, size: 18),
+              Tooltip(
+                message:
+                    isManual ? 'Wpis ręczny' : 'Zarejestrowane z nawigacji',
+                child: Icon(
+                  isManual ? Icons.edit_note : Icons.gps_fixed,
+                  color: isManual ? Colors.amberAccent : Colors.greenAccent,
+                  size: 18,
+                ),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -169,7 +217,9 @@ class _HistoryCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            _formatDate(record.completedAt),
+            isManual
+                ? _formatDateOnly(record.completedAt)
+                : _formatDate(record.completedAt),
             style: const TextStyle(color: Colors.white54, fontSize: 12),
           ),
           const SizedBox(height: 8),
@@ -177,15 +227,21 @@ class _HistoryCard extends StatelessWidget {
             spacing: 12,
             runSpacing: 4,
             children: [
-              _chip('Szerokość', '${record.workingWidthM.toStringAsFixed(1)} m'),
-              _chip('Zakładka', '${record.overlapM.toStringAsFixed(2)} m'),
-              _chip('Kierunek', '${record.swathAngleDeg.toStringAsFixed(2)}°'),
-              _chip('Czas pracy', formatWorkDuration(record.workDuration)),
+              if (!isManual) ...[
+                _chip('Szerokość',
+                    '${record.workingWidthM.toStringAsFixed(1)} m'),
+                _chip('Zakładka', '${record.overlapM.toStringAsFixed(2)} m'),
+                _chip(
+                    'Kierunek', '${record.swathAngleDeg.toStringAsFixed(2)}°'),
+              ],
+              if (record.workDuration != null) ...[
+                _chip('Czas pracy', formatWorkDuration(record.workDuration!)),
+                _chip(
+                  'Wydajność',
+                  '${_productivityOf(record).toStringAsFixed(2)} ha/h',
+                ),
+              ],
               _chip('Zrobione', '${record.coveredHa.toStringAsFixed(2)} ha'),
-              _chip(
-                'Wydajność',
-                '${_productivityOf(record).toStringAsFixed(2)} ha/h',
-              ),
               if (record.materialConsumed != null)
                 _chip(
                   'Zużyto',
@@ -242,8 +298,11 @@ class _HistoryCard extends StatelessWidget {
 
 /// Wydajność rekordu — zapisana w momencie zakończenia pracy, a dla starszych
 /// rekordów (bez tej wartości) przeliczona ze zrobionych ha i czasu pracy.
+/// Wywoływana tylko gdy [HistoryRecord.workDuration] nie jest null (patrz
+/// warunek w `_HistoryCard`).
 double _productivityOf(HistoryRecord r) =>
-    r.productivityHaPerHour ?? hectaresPerHourOf(r.coveredHa, r.workDuration);
+    r.productivityHaPerHour ??
+    hectaresPerHourOf(r.coveredHa, r.workDuration!);
 
 /// Rzeczywista dawka [jednostka/ha]: zużyty materiał / zrobione hektary.
 /// Null gdy zadanie nie miało monitorowania materiału albo nic nie zrobiono
@@ -255,9 +314,15 @@ double? _materialRateOf(HistoryRecord r) {
 }
 
 String _formatDate(DateTime d) {
-  final dd = d.day.toString().padLeft(2, '0');
-  final mm = d.month.toString().padLeft(2, '0');
   final hh = d.hour.toString().padLeft(2, '0');
   final mi = d.minute.toString().padLeft(2, '0');
-  return '$dd.$mm.${d.year}  $hh:$mi';
+  return '${_formatDateOnly(d)}  $hh:$mi';
+}
+
+/// Sama data, bez godziny — używana dla wpisów ręcznych, gdzie godzina jest
+/// sztuczna (nikt jej nie podaje przy dopisywaniu wpisu).
+String _formatDateOnly(DateTime d) {
+  final dd = d.day.toString().padLeft(2, '0');
+  final mm = d.month.toString().padLeft(2, '0');
+  return '$dd.$mm.${d.year}';
 }

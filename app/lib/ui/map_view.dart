@@ -1073,7 +1073,7 @@ class _MapViewState extends State<MapView> {
             TextButton(
               onPressed:
                   hasAbLine ? null : () => Navigator.pop(ctx, 'optimize'),
-              child: const Text('Kierunek wg granicy',
+              child: const Text('Zoptymalizuj kierunek',
                   style: TextStyle(color: Colors.tealAccent)),
             ),
             FilledButton(
@@ -1109,10 +1109,10 @@ class _MapViewState extends State<MapView> {
     await _planSwaths(workingWidthM: width);
   }
 
-  /// Uruchamia SwathPlanner::optimizeAngle() (deterministyczny kierunek wg
-  /// najdłuższej krawędzi granicy, w tle przez Isolate.run) i od razu
-  /// aplikuje gotowy wynik do stanu mapy — identycznie jak [_planSwaths], ale
-  /// bez drugiego wywołania FFI (wynik już zawiera gotowy plan).
+  /// Uruchamia SwathPlanner::optimizeAngle() (przeszukiwanie coarse-to-fine
+  /// kierunku ścieżek w tle, przez Isolate.run) i od razu aplikuje gotowy
+  /// wynik do stanu mapy — identycznie jak [_planSwaths], ale bez drugiego
+  /// wywołania FFI (wynik optymalizatora już zawiera gotowy plan).
   Future<void> _optimizeAndApplySwaths({
     required double workingWidthM,
     required double overlapM,
@@ -1185,12 +1185,12 @@ class _MapViewState extends State<MapView> {
   }
 
   /// Ustawia [_swathAngleDeg] na precyzyjny wynik SwathPlanner::optimizeAngle()
-  /// (C++, kierunek wg najdłuższej krawędzi granicy, dokładność 0.01°) dla
-  /// [boundary], z bieżącymi parametrami szerokości/zakładki/uwrocia. Używane
-  /// we wszystkich miejscach, gdzie kąt jest ustawiany automatycznie (bez
-  /// jawnego kliknięcia "Kierunek wg granicy"). Po niepowodzeniu/pustym
-  /// wyniku zostawia poprzednią wartość [_swathAngleDeg] — tak samo jak
-  /// przycisk.
+  /// (C++, dokładność 0.01°) dla [boundary], z bieżącymi parametrami
+  /// szerokości/zakładki/uwrocia. Zastępuje dawny natychmiastowy, ale
+  /// niedokładny (co 1°) `GeoUtils.minPassesBearing` we wszystkich miejscach,
+  /// gdzie kąt jest ustawiany automatycznie (bez jawnego kliknięcia
+  /// "Zoptymalizuj kierunek"). Po niepowodzeniu/pustym wyniku zostawia
+  /// poprzednią wartość [_swathAngleDeg] — tak samo jak przycisk optymalizacji.
   Future<void> _autoSetSwathAngle(List<LatLng> boundary) async {
     if (boundary.length < 3) return;
     final polygon = boundary.map((ll) => (ll.latitude, ll.longitude)).toList();

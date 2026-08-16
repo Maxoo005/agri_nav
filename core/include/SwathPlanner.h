@@ -26,8 +26,8 @@ struct SwathPlan {
     std::vector<std::vector<LatLon>> headlandRings;
 };
 
-/// Result of [SwathPlanner::optimizeAngle]: the swath plan at the field's
-/// longest-edge bearing, plus the angle and summary stats that produced it.
+/// Result of [SwathPlanner::optimizeAngle]: the best-scoring swath plan found
+/// plus the angle and summary stats that produced it.
 struct SwathAngleResult {
     /// Full plan (swaths + headland rings) at [bestAngleDeg].
     SwathPlan plan;
@@ -77,22 +77,49 @@ public:
         int                        headlandLaps = 0
     );
 
-    /// Deterministic swath bearing: the bearing of the field boundary's
-    /// single longest edge (between adjacent vertices), folded to [0, 180)
-    /// with full double precision. No search, no scoring — the same input
-    /// polygon always yields the same angle.
+    /// Searches swath bearings in [0, 180) for the one minimising total work
+    /// time (travel distance + a per-turn penalty + a coverage-gap penalty),
+    /// using a coarse-to-fine sweep: a cheap 1° blind sweep (plus a rotating-
+    /// calipers candidate) picks a starting neighbourhood on distance/turns
+    /// alone, then two refine passes (±1° @ 0.1°, ±0.1° @ 0.01° — ~42
+    /// candidates) pick the final angle, additionally scoring each
+    /// candidate's TRUE uncovered area (field polygon minus the union of
+    /// every generated headland-band and swath footprint, via Clipper2
+    /// boolean ops). A cheap length×width area estimate was tried first and
+    /// found to be actively misleading on concave/many-vertex offset
+    /// boundaries (see SwathPlanner.cpp), so refine spends a bounded number
+    /// of exact boolean-union evaluations instead of a fast-but-wrong proxy.
+    /// Headland ring geometry is computed once and reused across all
+    /// candidate angles.
     ///
-    /// @param polygon           Field boundary vertices (WGS-84).
-    /// @param workingWidthM     Machine working width [m].
-    /// @param overlapM          Strip overlap [m] (see [plan]).
-    /// @param headlandLaps      Headland passes (see [plan]).
-    /// @return                  Longest-edge angle + its plan + summary stats.
-    ///                          Empty plan / swathCount==0 on invalid input.
+    /// @param polygon                Field boundary vertices (WGS-84).
+    /// @param workingWidthM          Machine working width [m].
+    /// @param overlapM               Strip overlap [m] (see [plan]).
+    /// @param headlandLaps           Headland passes (see [plan]).
+    /// @param turnPenaltyFactor      Per-turn cost, expressed as a multiple
+    ///                               of workingWidthM added to the score for
+    ///                               every extra swath (headland U-turn ≈ a
+    ///                               few machine widths of "wasted"
+    ///                               equivalent distance).
+    /// @param coveragePenaltyFactor  Per-refine-candidate coverage-gap cost,
+    ///                               expressed as a multiple of
+    ///                               (trueGapAreaM2 / effectiveWidth) —
+    ///                               i.e. the gap converted to an equivalent
+    ///                               length of missing pass — added to the
+    ///                               score during the refine passes only
+    ///                               (default 10 — gains above this factor
+    ///                               were marginal on test fields, see
+    ///                               SwathPlanner.cpp).
+    /// @return                       Best angle found + its plan + summary
+    ///                               stats. Empty plan / swathCount==0 on
+    ///                               invalid input.
     static SwathAngleResult optimizeAngle(
         const std::vector<LatLon>& polygon,
         double                     workingWidthM,
-        double                     overlapM     = 0.0,
-        int                        headlandLaps = 0
+        double                     overlapM              = 0.0,
+        int                        headlandLaps          = 0,
+        double                     turnPenaltyFactor      = 3.0,
+        double                     coveragePenaltyFactor  = 10.0
     );
 };
 
