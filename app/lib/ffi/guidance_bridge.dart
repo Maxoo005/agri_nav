@@ -175,7 +175,7 @@ final class FfiOptimizeResult extends Struct {
 }
 
 typedef _OptimizeAngleNative = Pointer<FfiOptimizeResult> Function(
-    Pointer<Double>, Int32, Double, Double, Int32);
+    Pointer<Double>, Int32, Double, Double, Int32, Double, Double);
 typedef _FreeOptimizeResultNative = Void Function(Pointer<FfiOptimizeResult>);
 
 /// Result of automatic angle optimization: best-scoring plan + summary stats.
@@ -212,10 +212,10 @@ class OptimizeAngleResult {
   );
 }
 
-/// Singleton wrapping `agrinav_optimize_angle` — deterministic swath bearing
-/// equal to the field boundary's longest edge (see SwathPlanner::optimizeAngle).
-/// Always call via [optimizeAsync], which runs the native call inside
-/// `Isolate.run`.
+/// Singleton wrapping `agrinav_optimize_angle` — searches swath bearings
+/// [0,180) for the one minimising total work time (coarse-to-fine sweep, see
+/// SwathPlanner::optimizeAngle). Always call via [optimizeAsync], which runs
+/// the native search inside `Isolate.run`.
 ///
 /// Must follow the [LpisProcessorBridge]-proven pattern (see
 /// field_processor_bridge.dart), NOT the abandoned attempt noted in
@@ -229,7 +229,7 @@ class OptimizeAngleBridge {
     _optimize = lib.lookupFunction<
         _OptimizeAngleNative,
         Pointer<FfiOptimizeResult> Function(
-            Pointer<Double>, int, double, double, int)>(
+            Pointer<Double>, int, double, double, int, double, double)>(
       'agrinav_optimize_angle',
     );
     _free = lib.lookupFunction<_FreeOptimizeResultNative,
@@ -241,22 +241,28 @@ class OptimizeAngleBridge {
   static final instance = OptimizeAngleBridge._();
 
   late final Pointer<FfiOptimizeResult> Function(
-      Pointer<Double>, int, double, double, int) _optimize;
+      Pointer<Double>, int, double, double, int, double, double) _optimize;
   late final void Function(Pointer<FfiOptimizeResult>) _free;
 
-  /// Computes the deterministic longest-edge swath bearing and its plan.
+  /// Searches for the swath bearing minimising total work time.
   ///
   /// [polygon]            — field boundary (lat/lon, ≥ 3 points).
   /// [overlapM]           — strip overlap [m] (see [SwathPlannerFullBridge]).
   /// [headlandLaps]       — number of headland passes (see [SwathPlannerFullBridge]).
+  /// [turnPenaltyFactor]  — per-turn cost as a multiple of [workingWidthM]
+  ///                        (default 3.0 — see SwathPlanner::optimizeAngle doc).
+  /// [coveragePenaltyFactor] — per-refine-candidate coverage-gap cost (see
+  ///                        SwathPlanner::optimizeAngle doc; default 10.0).
   ///
   /// Runs in `Isolate.run` — safe to call from async UI code, does not block
-  /// the UI thread.
+  /// the UI thread regardless of search duration.
   static Future<OptimizeAngleResult> optimizeAsync({
     required List<(double lat, double lon)> polygon,
     required double workingWidthM,
     double overlapM = 0.0,
     int headlandLaps = 0,
+    double turnPenaltyFactor = 3.0,
+    double coveragePenaltyFactor = 10.0,
   }) {
     if (polygon.length < 3) return Future.value(OptimizeAngleResult.empty);
 
@@ -270,6 +276,8 @@ class OptimizeAngleBridge {
         workingWidthM: workingWidthM,
         overlapM: overlapM,
         headlandLaps: headlandLaps,
+        turnPenaltyFactor: turnPenaltyFactor,
+        coveragePenaltyFactor: coveragePenaltyFactor,
       );
     });
   }
@@ -279,6 +287,8 @@ class OptimizeAngleBridge {
     required double workingWidthM,
     required double overlapM,
     required int headlandLaps,
+    required double turnPenaltyFactor,
+    required double coveragePenaltyFactor,
   }) {
     final buf = calloc<Double>(flatPolygon.length);
     try {
@@ -286,8 +296,8 @@ class OptimizeAngleBridge {
         buf[i] = flatPolygon[i];
       }
 
-      final r = _optimize(
-          buf, flatPolygon.length ~/ 2, workingWidthM, overlapM, headlandLaps);
+      final r = _optimize(buf, flatPolygon.length ~/ 2, workingWidthM,
+          overlapM, headlandLaps, turnPenaltyFactor, coveragePenaltyFactor);
       if (r == nullptr) return OptimizeAngleResult.empty;
 
       try {

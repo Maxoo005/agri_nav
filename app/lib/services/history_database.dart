@@ -43,7 +43,7 @@ class HistoryDatabase {
     final path = await getDatabasePath();
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE $_table (
@@ -61,7 +61,8 @@ class HistoryDatabase {
             material_consumed        REAL,
             material_unit            TEXT,
             note                     TEXT,
-            completed_at             TEXT
+            completed_at             TEXT,
+            entry_source              TEXT
           )
         ''');
         await db.execute(
@@ -77,6 +78,10 @@ class HistoryDatabase {
               'ALTER TABLE $_table ADD COLUMN material_consumed REAL');
           await db
               .execute('ALTER TABLE $_table ADD COLUMN material_unit TEXT');
+        }
+        if (oldVersion < 4) {
+          await db
+              .execute('ALTER TABLE $_table ADD COLUMN entry_source TEXT');
         }
       },
     );
@@ -132,6 +137,44 @@ class HistoryDatabase {
       where: 'field_id = ?',
       whereArgs: [fieldId],
       orderBy: 'completed_at DESC',
+    );
+    return rows.map(HistoryRecord.fromMap).toList();
+  }
+
+  /// Wpisy historii filtrowane po zakresie dat i/lub liście pól — używane
+  /// przez podgląd liczby pozycji i generator PDF w eksporcie (jedno źródło
+  /// prawdy dla obu). Posortowane wg pola, a w jego obrębie chronologicznie
+  /// — dokładnie w kolejności potrzebnej do grupowania w raporcie.
+  ///
+  /// [from]/[to] są inkluzywne; `to` obejmuje cały dzień (do 23:59:59.999).
+  /// `fieldIds == null` albo pusta lista = brak filtra po polu (wszystkie).
+  Future<List<HistoryRecord>> getRecords({
+    DateTime? from,
+    DateTime? to,
+    List<String>? fieldIds,
+  }) async {
+    final db = await _database;
+    final where = <String>[];
+    final args = <Object?>[];
+    if (from != null) {
+      where.add('completed_at >= ?');
+      args.add(DateTime(from.year, from.month, from.day).toIso8601String());
+    }
+    if (to != null) {
+      where.add('completed_at <= ?');
+      final endOfDay =
+          DateTime(to.year, to.month, to.day, 23, 59, 59, 999);
+      args.add(endOfDay.toIso8601String());
+    }
+    if (fieldIds != null && fieldIds.isNotEmpty) {
+      where.add('field_id IN (${List.filled(fieldIds.length, '?').join(',')})');
+      args.addAll(fieldIds);
+    }
+    final rows = await db.query(
+      _table,
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: where.isEmpty ? null : args,
+      orderBy: 'field_name ASC, completed_at ASC',
     );
     return rows.map(HistoryRecord.fromMap).toList();
   }

@@ -1,10 +1,24 @@
 import 'work_task.dart';
 
+/// Źródło pochodzenia wpisu historii.
+enum HistoryEntrySource {
+  /// Zapisany automatycznie przez "Zakończ pracę" (Tryb Pracy/nawigacja) —
+  /// czas pracy, ścieżki i powierzchnia pochodzą z rejestracji GPS.
+  navigation,
+
+  /// Dopisany ręcznie przez rolnika (np. praca bez telefonu w kabinie albo
+  /// inną maszyną bez GPS) — patrz `ManualHistoryEntrySheet`. Deklaracja, nie
+  /// rejestracja: brak czasu pracy/wydajności/parametrów ścieżek.
+  manual,
+}
+
 /// Jeden wpis historii — migawka zakończonej pracy: pole, maszyna, rodzaj
 /// zadania, parametry ścieżek, czas pracy, powierzchnia i notatka operatora.
 ///
 /// Zapisywany do SQLite (`agrinav_history.db`, tabela `history`) w momencie
-/// kliknięcia "Zakończ pracę".
+/// kliknięcia "Zakończ pracę" ([HistoryEntrySource.navigation]) albo ręcznie
+/// przez `ManualHistoryEntrySheet` ([HistoryEntrySource.manual]) — patrz
+/// [entrySource].
 class HistoryRecord {
   final String id;
   final String fieldId;
@@ -24,8 +38,10 @@ class HistoryRecord {
   /// Kierunek ścieżek (azymut) [°].
   final double swathAngleDeg;
 
-  /// Czas pracy (bez przerw) w momencie zakończenia.
-  final Duration workDuration;
+  /// Czas pracy (bez przerw) w momencie zakończenia. Null dla wpisów
+  /// ręcznych ([HistoryEntrySource.manual]) — nie ma z czego go policzyć bez
+  /// zmyślania danych.
+  final Duration? workDuration;
 
   /// Powierzchnia zrobiona w momencie zakończenia [ha].
   final double coveredHa;
@@ -47,6 +63,11 @@ class HistoryRecord {
   /// Data zakończenia pracy (pełny znacznik czasu).
   final DateTime completedAt;
 
+  /// Źródło wpisu — patrz [HistoryEntrySource]. Domyślnie [navigation], bo
+  /// dotychczasowy jedyny sposób zapisu ("Zakończ pracę") pozostaje bez
+  /// zmian i nie musi jawnie podawać tego pola.
+  final HistoryEntrySource entrySource;
+
   HistoryRecord({
     required this.id,
     required this.fieldId,
@@ -56,13 +77,14 @@ class HistoryRecord {
     required this.workingWidthM,
     required this.overlapM,
     required this.swathAngleDeg,
-    required this.workDuration,
+    this.workDuration,
     required this.coveredHa,
     this.productivityHaPerHour,
     this.materialConsumed,
     this.materialUnit,
     this.note,
     required this.completedAt,
+    this.entrySource = HistoryEntrySource.navigation,
   });
 
   /// Rok kalendarzowy zakończenia pracy.
@@ -77,13 +99,14 @@ class HistoryRecord {
         'working_width_m': workingWidthM,
         'overlap_m': overlapM,
         'swath_angle_deg': swathAngleDeg,
-        'work_duration_ms': workDuration.inMilliseconds,
+        'work_duration_ms': workDuration?.inMilliseconds,
         'covered_ha': coveredHa,
         'productivity_ha_per_hour': productivityHaPerHour,
         'material_consumed': materialConsumed,
         'material_unit': materialUnit,
         'note': note,
         'completed_at': completedAt.toIso8601String(),
+        'entry_source': entrySource.name,
       };
 
   factory HistoryRecord.fromMap(Map<String, Object?> map) => HistoryRecord(
@@ -99,8 +122,10 @@ class HistoryRecord {
         overlapM: (map['overlap_m'] as num?)?.toDouble() ?? 0.0,
         swathAngleDeg:
             (map['swath_angle_deg'] as num?)?.toDouble() ?? 0.0,
-        workDuration: Duration(
-            milliseconds: (map['work_duration_ms'] as num?)?.toInt() ?? 0),
+        workDuration: map['work_duration_ms'] != null
+            ? Duration(
+                milliseconds: (map['work_duration_ms'] as num).toInt())
+            : null,
         coveredHa: (map['covered_ha'] as num?)?.toDouble() ?? 0.0,
         productivityHaPerHour:
             (map['productivity_ha_per_hour'] as num?)?.toDouble(),
@@ -108,6 +133,10 @@ class HistoryRecord {
         materialUnit: map['material_unit'] as String?,
         note: map['note'] as String?,
         completedAt: DateTime.parse(map['completed_at'] as String),
+        entrySource: HistoryEntrySource.values.firstWhere(
+          (e) => e.name == map['entry_source'],
+          orElse: () => HistoryEntrySource.navigation,
+        ),
       );
 }
 
