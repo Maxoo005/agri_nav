@@ -1,0 +1,17 @@
+All Rights Reserved
+
+Copyright (c) 2026 Maksymilian Maxoo005
+
+Wszelkie prawa zastrzeżone. Ten kod źródłowy jest udostępniony
+publicznie wyłącznie w celach demonstracyjnych/portfolio.
+Kopiowanie, modyfikowanie, dystrybucja lub wykorzystywanie tego
+kodu w jakiejkolwiek formie, w całości lub części, bez pisemnej
+zgody autora, jest zabronione.
+
+---
+
+Wyjątek: katalog `third_party/clipper2/` zawiera kod biblioteki
+Clipper2 (Angus Johnson), rozpowszechniany na własnej licencji
+(Boost Software License 1.0) — patrz nagłówki plików źródłowych
+w tym katalogu. Powyższe zastrzeżenie praw dotyczy wyłącznie kodu
+autorskiego tego repozytorium, nie bibliotek zewnętrznych.
