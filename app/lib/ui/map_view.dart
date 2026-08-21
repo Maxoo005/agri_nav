@@ -188,6 +188,16 @@ class _MapViewState extends State<MapView> {
   int _boundaryFixedCount = 0;
   int _boundaryFloatCount = 0;
 
+  /// Wstrzymuje dopisywanie punktów bez przerywania obejścia — pozwala
+  /// ominąć przeszkodę albo poprawić ułożenie sprzętu, żeby lepiej ułożyć i
+  /// zaznaczyć całą powierzchnię pola, bez zaśmiecania trasy przypadkowymi
+  /// punktami z tego odcinka. Bufor [_boundaryRecordedPoints] nie jest
+  /// czyszczony; po wznowieniu kolejny punkt dokleja się do ostatniego
+  /// zebranego dokładnie tak samo jak przy ciągłym nagrywaniu (patrz
+  /// [_onGpsPosition]) — więc segment przez wstrzymany odcinek po prostu
+  /// łączy się linią prostą, tak jak każdy inny odcinek trasy.
+  bool _boundaryPaused = false;
+
   static const int _kMinBoundaryRecordedPoints = 10;
   static const double _kMinBoundaryAreaHa = 0.01; // 100 m²
   static const double _kBoundaryMinPointDistanceM = 0.2; // decymacja wejścia
@@ -408,7 +418,7 @@ class _MapViewState extends State<MapView> {
     // odległościowa, żeby nie gromadzić tysięcy niemal identycznych
     // punktów przy wolnym chodzie/postoju (RDP i tak by je usunął przy
     // zapisie — to tylko oszczędność pamięci w trakcie nagrywania).
-    if (_boundaryRecording) {
+    if (_boundaryRecording && !_boundaryPaused) {
       final fs = GpsLocationService.instance.fixStatus;
       if (fs == GpsFixStatus.rtkFixed || fs == GpsFixStatus.rtkFloat) {
         final last = _boundaryRecordedPoints.isEmpty
@@ -2101,8 +2111,28 @@ class _MapViewState extends State<MapView> {
         n >= 3 ? GeoUtils.polygonAreaHa(_boundaryRecordedPoints) : 0.0;
     final areaPart =
         areaHa > 0 ? ' • ok. ${areaHa.toStringAsFixed(2)} ha' : '';
+    final pausedPart = _boundaryPaused ? ' • WSTRZYMANE' : '';
     return 'Obejście: $n pkt (Fixed $_boundaryFixedCount, '
-        'Float $_boundaryFloatCount)$areaPart';
+        'Float $_boundaryFloatCount)$areaPart$pausedPart';
+  }
+
+  /// Wstrzymuje/wznawia dopisywanie punktów podczas aktywnego obejścia —
+  /// patrz [_boundaryPaused]. Nie przerywa nagrywania: [_toggleBoundaryWalk]
+  /// (Zakończ) i [_handleBoundaryWalkPopAttempt] działają tak samo, dostępne
+  /// niezależnie od stanu wstrzymania.
+  void _toggleBoundaryPause() {
+    if (!_boundaryRecording) return;
+    setState(() => _boundaryPaused = !_boundaryPaused);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_boundaryPaused
+            ? 'Wstrzymano zbieranie punktów — obejście trwa, ale nowe '
+                'punkty nie są dopisywane.'
+            : 'Wznowiono zbieranie punktów granicy.'),
+        backgroundColor: Colors.blueGrey,
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   void _toggleBoundaryWalk() {
@@ -2122,6 +2152,7 @@ class _MapViewState extends State<MapView> {
     }
     setState(() {
       _boundaryRecording = true;
+      _boundaryPaused = false;
       _boundaryRecordedPoints.clear();
       _boundaryFixedCount = 0;
       _boundaryFloatCount = 0;
@@ -2191,6 +2222,7 @@ class _MapViewState extends State<MapView> {
   void _cancelBoundaryWalk() {
     setState(() {
       _boundaryRecording = false;
+      _boundaryPaused = false;
       _boundaryRecordedPoints.clear();
       _boundaryFixedCount = 0;
       _boundaryFloatCount = 0;
@@ -2232,7 +2264,10 @@ class _MapViewState extends State<MapView> {
 
     final closeGapM = _enuDistanceM(points.first, points.last);
 
-    setState(() => _boundaryRecording = false);
+    setState(() {
+      _boundaryRecording = false;
+      _boundaryPaused = false;
+    });
     await _showBoundaryWalkConfirmDialog(points, closeGapM);
   }
 
@@ -2576,8 +2611,10 @@ class _MapViewState extends State<MapView> {
           if (_boundaryRecording) ...[
             Text(
               _boundaryWalkStatusLabel(),
-              style: const TextStyle(
-                color: Colors.greenAccent,
+              style: TextStyle(
+                color: _boundaryPaused
+                    ? Colors.orangeAccent
+                    : Colors.greenAccent,
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -2634,6 +2671,20 @@ class _MapViewState extends State<MapView> {
                 isActive: _boundaryRecording,
                 onPressed: _toggleBoundaryWalk,
               ),
+              if (_boundaryRecording)
+                _ActionTile(
+                  icon: _boundaryPaused
+                      ? Icons.play_circle_outline
+                      : Icons.pause_circle_outline,
+                  label: _boundaryPaused ? 'Wznów' : 'Wstrzymaj',
+                  tooltip: _boundaryPaused
+                      ? 'Wznów zbieranie punktów granicy'
+                      : 'Wstrzymaj zbieranie punktów bez przerywania '
+                          'obejścia — np. żeby ominąć przeszkodę',
+                  isActive: _boundaryPaused,
+                  activeColor: Colors.orangeAccent,
+                  onPressed: _toggleBoundaryPause,
+                ),
               _ActionTile(
                 icon: _swaths.isNotEmpty || _headlandRings.isNotEmpty
                     ? Icons.grid_on
@@ -3636,6 +3687,7 @@ class _ActionTile extends StatelessWidget {
     required this.tooltip,
     required this.onPressed,
     this.isActive = false,
+    this.activeColor = AppColors.success,
   });
 
   final IconData icon;
@@ -3643,10 +3695,11 @@ class _ActionTile extends StatelessWidget {
   final String tooltip;
   final VoidCallback onPressed;
   final bool isActive;
+  final Color activeColor;
 
   @override
   Widget build(BuildContext context) {
-    final color = isActive ? AppColors.success : AppColors.textSecondary;
+    final color = isActive ? activeColor : AppColors.textSecondary;
     return Tooltip(
       message: tooltip,
       child: SizedBox(

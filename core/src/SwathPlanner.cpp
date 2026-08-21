@@ -267,23 +267,55 @@ static EnuSweepResult sweepSwathsEnu(
     const double span = tMax - tMin;
     int    nLines;
     double c1;
+    double pitch = effectiveWidth;
 
     if (flushNearSide) {
         // headlandLaps > 0: the pass nearest tMin MUST be flush against
         // innerPoly — its outer edge (centreline − W/2) has to land exactly
         // on tMin, zero tolerance (this is what makes the machine's outer
         // edge touch the headland's inner edge with no gap and no overlap).
-        // Any leftover slack that doesn't divide evenly into whole passes is
-        // pushed entirely onto the far (tMax) side, and only ever as a GAP —
-        // nLines is floor()'d, never ceil()'d, so the far-side pass can
-        // never cross tMax either (consistent with "swaths must not cross
-        // innerPoly" below). Worst case the far side is left with an
-        // uncovered strip up to just under one effectiveWidth; that's the
-        // accepted trade-off for guaranteeing the near-side flush touch.
-        nLines = (span < effectiveWidth)
-            ? 1
-            : std::max(1, static_cast<int>(std::floor(span / effectiveWidth + 1e-9)));
+        // That first pass's position never changes below.
+        //
+        // The remaining span doesn't generally divide evenly into whole
+        // effectiveWidth-wide passes. Rather than dropping the leftover as
+        // an uncovered gap on the far (tMax) side (the previous floor()
+        // behaviour — could strand up to just under one effectiveWidth of
+        // the field, e.g. up to ~89% of the implement width, completely
+        // unworked), add one more pass whenever the leftover is non-trivial
+        // and redistribute the pitch evenly across every gap so the LAST
+        // pass also lands flush — this time against tMax. Only the pitch
+        // between passes shrinks (bounded by effectiveWidth, i.e. it can
+        // only ever add overlap, never a gap); pass 0 is untouched.
+        constexpr double kEps = 1e-9;
+        constexpr double kMinGapM = 0.10;  // below this, accept the small gap
+                                            // rather than add a near-duplicate
+                                            // pass (well under typical RTK
+                                            // accuracy / steering deadband).
         c1 = tMin + effectiveWidth * 0.5;
+        if (span < effectiveWidth) {
+            // The remaining strip is narrower than the implement itself —
+            // one pass will straddle both edges of it regardless of exact
+            // placement, so there's no real "flush" side left to honour.
+            // Centre it instead of keeping the tMin-flush position: that
+            // position (tMin + effectiveWidth/2) can land at or past tMax
+            // whenever effectiveWidth > 2*span, which makes the scanline
+            // miss the polygon entirely (0 crossings — a silent full-width
+            // coverage gap, not just an off-centre pass). A field-wide
+            // scenario this actually hits: 45 m field, 18 m implement, 1
+            // headland lap -> inner span 9 m, c1 lands exactly on tMax.
+            nLines = 1;
+            c1 = (tMin + tMax) * 0.5;
+        } else {
+            const int nFloor = std::max(
+                1, static_cast<int>(std::floor(span / effectiveWidth + kEps)));
+            const double leftoverGap = span - nFloor * effectiveWidth;
+            if (leftoverGap > kMinGapM) {
+                nLines = nFloor + 1;
+                pitch = (span - effectiveWidth) / static_cast<double>(nLines - 1);
+            } else {
+                nLines = nFloor;
+            }
+        }
     } else {
         // headlandLaps == 0: no headland ring exists, so there is nothing to
         // flush against — keep the symmetric, span-centred fixed-pitch grid
@@ -299,7 +331,7 @@ static EnuSweepResult sweepSwathsEnu(
     }
 
     for (int k = 0; k < nLines; ++k) {
-        const double tK = c1 + static_cast<double>(k) * effectiveWidth;
+        const double tK = c1 + static_cast<double>(k) * pitch;
 
         const std::vector<double> sVals = clipScanLine(innerPoly, d, p, tK);
 
