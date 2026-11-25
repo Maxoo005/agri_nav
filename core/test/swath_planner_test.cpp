@@ -214,9 +214,9 @@ TEST_F(SwathPlannerTest, XfailDatelineField) {
                   EXPECT_NEAR(len, 200.0, 1.0));
 }
 
-TEST_F(SwathPlannerTest, XfailDumbbellFieldLosesOneHalf) {
+TEST_F(SwathPlannerTest, DumbbellFieldKeepsBothParts) {
     // Dwa kwadraty ~100x100 połączone przesmykiem 8 m. Uwrocie 10 m rozcina
-    // wnętrze na dwie części; offsetPolygon zostawia tylko największą.
+    // wnętrze na dwie części — obie muszą dostać ścieżki i uwrocia.
     const Ring db = f.ring({{0, 0}, {100, 0}, {100, 46}, {150, 46}, {150, 0},
                             {251, 0}, {251, 100}, {150, 100}, {150, 54},
                             {100, 54}, {100, 100}, {0, 100}});
@@ -226,9 +226,13 @@ TEST_F(SwathPlannerTest, XfailDumbbellFieldLosesOneHalf) {
         if (f.en(s.start).first < 100) west = true;
         if (f.en(s.start).first > 150) eastSide = true;
     }
-    EXPECT_TRUE(west || eastSide);
-    AGRINAV_XFAIL("offset rozcinający pole gubi wszystkie części poza największą",
-                  EXPECT_TRUE(west && eastSide));
+    EXPECT_TRUE(west && eastSide);
+    EXPECT_EQ(p.headlandRings.size(), 2u);
+    const auto opt = SwathPlanner::optimizeAngle(db, 10, 0, 1);
+    EXPECT_EQ(opt.plan.headlandRings.size(), 2u);
+    EXPECT_EQ(opt.plan.swaths.size(), static_cast<size_t>(opt.swathCount));
+    // Dwa wnętrza ok. 80x80 m → ok. 2·6400 m² / 10 m.
+    EXPECT_NEAR(opt.totalLengthM, 1290.0, 60.0);
 }
 
 TEST_F(SwathPlannerTest, XfailScanlineThroughReflexVertex) {

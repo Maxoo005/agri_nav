@@ -64,10 +64,12 @@ static void ensureCCW(std::vector<Vec2>& p) {
 /// keeps the vertex count low for typical field polygons.
 ///
 /// Contract: input must be CCW (enforced by ensureCCW before every call).
-/// Returns an empty vector when the polygon fully collapses (area ≤ 0 after
-/// shrinking — field is too narrow for this offset value).
-static std::vector<Vec2> offsetPolygon(const std::vector<Vec2>& poly,
-                                       double                    offset) {
+/// Returns EVERY surviving part, largest first: a field with a narrow neck is
+/// cut into several pieces and each of them still has to be worked.
+/// Empty when the polygon fully collapses (area ≤ 0 after shrinking — field
+/// is too narrow for this offset value).
+static std::vector<std::vector<Vec2>> offsetPolygon(const std::vector<Vec2>& poly,
+                                                    double                   offset) {
     if (static_cast<int>(poly.size()) < 3 || offset <= 0.0) return {};
 
     // Build a Clipper2 PathD from ENU metres (x = east, y = north).
@@ -90,32 +92,19 @@ static std::vector<Vec2> offsetPolygon(const std::vector<Vec2>& poly,
 
     if (result.empty()) return {};
 
-    // Use the largest output ring (InflatePaths may return multiple rings for
-    // self-intersecting inputs; we want the outermost valid contraction).
-    const PathD* best = &result[0];
-    double bestArea = 0.0;
+    std::vector<std::vector<Vec2>> out;
     for (const auto& r : result) {
-        double area = 0.0;
-        const int n  = static_cast<int>(r.size());
-        for (int i = 0; i < n; ++i) {
-            const auto& a = r[static_cast<size_t>(i)];
-            const auto& b = r[static_cast<size_t>((i + 1) % n)];
-            area += a.x * b.y - b.x * a.y;
-        }
-        area = std::abs(area) * 0.5;
-        if (area > bestArea) { bestArea = area; best = &r; }
+        std::vector<Vec2> ring;
+        ring.reserve(r.size());
+        for (const auto& pt : r) ring.push_back({pt.x, pt.y});
+        if (std::abs(signedArea(ring)) < 1e-4) continue;  // collapsed sliver
+        // Clipper2 preserves winding, but guard defensively.
+        ensureCCW(ring);
+        out.push_back(std::move(ring));
     }
-    if (bestArea < 1e-4) return {};    // polygon collapsed
-
-    std::vector<Vec2> out;
-    out.reserve(best->size());
-    for (const auto& pt : *best)
-        out.push_back({pt.x, pt.y});
-
-    // Ensure the ring is still CCW after the offset (Clipper2 preserves winding
-    // but we guard defensively).
-    if (signedArea(out) < 0.0) std::reverse(out.begin(), out.end());
-
+    std::stable_sort(out.begin(), out.end(), [](const auto& x, const auto& y) {
+        return signedArea(x) > signedArea(y);
+    });
     return out;
 }
 
@@ -165,8 +154,8 @@ static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
 /// once per call.
 struct FieldGeometry {
     std::vector<Vec2> outerPoly;                        // ENU, CCW
-    std::vector<Vec2> innerPoly;                         // ENU, CCW — swath clip boundary
-    std::vector<std::vector<Vec2>> headlandRingsEnu;     // ENU, lap 1..k order
+    std::vector<std::vector<Vec2>> innerPolys;           // ENU, CCW — swath clip boundaries (one per part)
+    std::vector<std::vector<Vec2>> headlandRingsEnu;     // ENU, lap 1..k order (several rings per lap when the field splits)
     double effectiveWidth = 0.1;
     bool   valid = false;
 };
@@ -204,9 +193,9 @@ static FieldGeometry buildFieldGeometry(
     for (int k = 1; k <= headlandLaps; ++k) {
         const double antennaOffset =
             (static_cast<double>(k) - 0.5) * geo.effectiveWidth;
-        std::vector<Vec2> ring = offsetPolygon(geo.outerPoly, antennaOffset);
-        if (ring.empty()) break;  // field too narrow — stop generating more laps
-        geo.headlandRingsEnu.push_back(std::move(ring));
+        auto rings = offsetPolygon(geo.outerPoly, antennaOffset);
+        if (rings.empty()) break;  // field too narrow — stop generating more laps
+        for (auto& ring : rings) geo.headlandRingsEnu.push_back(std::move(ring));
     }
 
     // Inner clipping boundary = full-width inset after all headland laps.
@@ -214,12 +203,12 @@ static FieldGeometry buildFieldGeometry(
     if (headlandLaps > 0) {
         const double clipOffset =
             static_cast<double>(headlandLaps) * geo.effectiveWidth;
-        geo.innerPoly = offsetPolygon(geo.outerPoly, clipOffset);
+        geo.innerPolys = offsetPolygon(geo.outerPoly, clipOffset);
     }
     // Fallback: no headland or field too narrow to clip — use outer boundary.
-    if (geo.innerPoly.empty()) geo.innerPoly = geo.outerPoly;
+    if (geo.innerPolys.empty()) geo.innerPolys = {geo.outerPoly};
 
-    geo.valid = geo.innerPoly.size() >= 3;
+    geo.valid = geo.innerPolys.front().size() >= 3;
     return geo;
 }
 
@@ -346,6 +335,22 @@ static EnuSweepResult sweepSwathsEnu(
         }
     }
 
+    return out;
+}
+
+/// Sweeps every part of a split field independently, so each part gets its own
+/// edge-flush grid (a shared grid could miss a part narrower than the pitch).
+static EnuSweepResult sweepSwathsEnu(
+    const std::vector<std::vector<Vec2>>& innerPolys, const Vec2& d, const Vec2& p,
+    double effectiveWidth, bool flushNearSide
+) {
+    EnuSweepResult out;
+    for (const auto& poly : innerPolys) {
+        EnuSweepResult part = sweepSwathsEnu(poly, d, p, effectiveWidth, flushNearSide);
+        out.segments.insert(out.segments.end(), part.segments.begin(), part.segments.end());
+        out.totalLengthM += part.totalLengthM;
+        out.swathCount   += part.swathCount;
+    }
     return out;
 }
 
@@ -476,18 +481,17 @@ static PathsD buildHeadlandBandPieces(
     const std::vector<Vec2>& outerPoly, double effectiveWidth, int headlandLaps
 ) {
     PathsD pieces;
-    std::vector<Vec2> prevBoundary = outerPoly;
+    PathsD prevBoundary{toPathD(outerPoly)};
     for (int k = 1; k <= headlandLaps; ++k) {
-        const std::vector<Vec2> nextBoundary = offsetPolygon(outerPoly, k * effectiveWidth);
-        const PathD subj = toPathD(prevBoundary);
-        PathsD clip;
-        if (!nextBoundary.empty()) clip.push_back(toPathD(nextBoundary));
-        const PathsD band = clip.empty()
-            ? PathsD{subj}
-            : Difference(PathsD{subj}, clip, FillRule::NonZero, 4);
-        for (const auto& b : band) pieces.push_back(b);
+        PathsD nextBoundary;
+        for (const auto& part : offsetPolygon(outerPoly, k * effectiveWidth))
+            nextBoundary.push_back(toPathD(part));
+        const PathsD band = nextBoundary.empty()
+            ? prevBoundary
+            : Difference(prevBoundary, nextBoundary, FillRule::NonZero, 4);
+        pieces.insert(pieces.end(), band.begin(), band.end());
         if (nextBoundary.empty()) break;
-        prevBoundary = nextBoundary;
+        prevBoundary = std::move(nextBoundary);
     }
     return pieces;
 }
@@ -545,7 +549,7 @@ SwathPlan SwathPlanner::plan(
     if (!geo.valid) return result;
 
     const EnuSweepResult sweep = sweepSwathsEnu(
-        geo.innerPoly, d, p, geo.effectiveWidth, headlandLaps > 0);
+        geo.innerPolys, d, p, geo.effectiveWidth, headlandLaps > 0);
     result.swaths = materializeSwaths(sweep, d, p, oLat, oLon);
     result.headlandRings = ringsToLatLon(geo.headlandRingsEnu, oLat, oLon);
     return result;
@@ -590,7 +594,7 @@ SwathAngleResult SwathPlanner::optimizeAngle(
         const Vec2 d = { std::sin(rad), std::cos(rad) };
         const Vec2 p = { -d.n, d.e };
         EnuSweepResult sweep = sweepSwathsEnu(
-            geo.innerPoly, d, p, geo.effectiveWidth, headlandLaps > 0);
+            geo.innerPolys, d, p, geo.effectiveWidth, headlandLaps > 0);
 
         const double score = (sweep.swathCount == 0)
             ? std::numeric_limits<double>::max()
@@ -629,7 +633,7 @@ SwathAngleResult SwathPlanner::optimizeAngle(
         const Vec2 d = { std::sin(rad), std::cos(rad) };
         const Vec2 p = { -d.n, d.e };
         EnuSweepResult sweep = sweepSwathsEnu(
-            geo.innerPoly, d, p, geo.effectiveWidth, headlandLaps > 0);
+            geo.innerPolys, d, p, geo.effectiveWidth, headlandLaps > 0);
         if (sweep.swathCount == 0) return;
 
         const double deficitM2 = trueCoverageDeficitM2(
