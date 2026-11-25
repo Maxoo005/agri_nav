@@ -373,10 +373,10 @@ class BluetoothGnssService {
     }
 
     final now = DateTime.now();
-    final rmc = (_lastRmcTime != null &&
-            now.difference(_lastRmcTime!) <= _rmcMaxAge)
-        ? _lastRmc
-        : null;
+    final rmc =
+        (_lastRmcTime != null && now.difference(_lastRmcTime!) <= _rmcMaxAge)
+            ? _lastRmc
+            : null;
 
     final position = GnssPosition(
       latitude: gga.latitude!,

@@ -35,7 +35,8 @@ class ParsedPolygon {
   }) {
     final points = <LatLng>[];
     for (final p in raw) {
-      if (p.longitude.abs() > 180.0 || p.latitude.abs() > 90.0) {
+      // Zanegowane `<=`, żeby odrzucić także NaN.
+      if (!(p.longitude.abs() <= 180.0 && p.latitude.abs() <= 90.0)) {
         throw FormatException(
             'Współrzędne (${p.longitude}, ${p.latitude}) poza zakresem '
             'WGS-84 w pliku $formatLabel — sprawdź układ współrzędnych '
@@ -44,13 +45,18 @@ class ParsedPolygon {
       if (points.isNotEmpty &&
           points.last.latitude == p.latitude &&
           points.last.longitude == p.longitude) {
-        continue; // punkt zamykający pierścień, identyczny z pierwszym
+        continue; // powtórzony sąsiedni wierzchołek
       }
       points.add(p);
     }
+    // Punkt zamykający pierścień, identyczny z pierwszym.
+    if (points.length > 1 &&
+        points.last.latitude == points.first.latitude &&
+        points.last.longitude == points.first.longitude) {
+      points.removeLast();
+    }
     if (points.length < 3) {
-      throw FormatException(
-          'Za mało punktów w wielokącie z pliku $formatLabel '
+      throw FormatException('Za mało punktów w wielokącie z pliku $formatLabel '
           '(znaleziono ${points.length}, wymagane min. 3).');
     }
     return points;

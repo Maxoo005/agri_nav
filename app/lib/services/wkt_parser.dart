@@ -66,17 +66,24 @@ class WktParser {
       // Przekroczenie oznacza, że serwer zwrócił dane w układzie projected
       // (np. EPSG:2180, gdzie X≈500 000, Y≈5 600 000) zamiast EPSG:4326.
       // Rozwiązanie: dodaj parametr srid=4326 / outSR=4326 do żądania.
-      if (lon.abs() > 180.0 || lat.abs() > 90.0) {
+      // Zanegowane `<=`, żeby odrzucić także NaN.
+      if (!(lon.abs() <= 180.0 && lat.abs() <= 90.0)) {
         throw FormatException('Współrzędne ($lon, $lat) poza zakresem WGS-84 — '
             'wymuś re-projekcję przez parametr srid=4326 w żądaniu do serwera');
       }
-      // Pomijamy punkt zamykający identyczny z pierwszym
+      // Pomijamy powtórzony sąsiedni wierzchołek
       if (points.isNotEmpty &&
           points.last.latitude == lat &&
           points.last.longitude == lon) {
         continue;
       }
       points.add(LatLng(lat, lon));
+    }
+    // Pomijamy punkt zamykający identyczny z pierwszym
+    if (points.length > 1 &&
+        points.last.latitude == points.first.latitude &&
+        points.last.longitude == points.first.longitude) {
+      points.removeLast();
     }
     if (points.length < 3) {
       throw FormatException('Za mało punktów w pierścieniu WKT: $ring');

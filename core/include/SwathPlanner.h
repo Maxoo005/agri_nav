@@ -21,8 +21,8 @@ struct SwathPlan {
     std::vector<Swath> swaths;
 
     /// Headland rings as closed polygons (ready to render as polylines).
-    /// Index 0 = nearest to field boundary (lap 1),
-    /// index n-1 = innermost lap (adjacent to inner field).
+    /// Ordered from the field boundary inwards (lap 1 first). A lap may yield
+    /// several consecutive rings when a narrow neck splits the field.
     std::vector<std::vector<LatLon>> headlandRings;
 };
 

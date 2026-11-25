@@ -313,8 +313,7 @@ class _HistoryExportScreenState extends State<HistoryExportScreen> {
                                       color: Colors.white54, fontSize: 12)),
                               activeColor: Colors.greenAccent,
                               checkColor: Colors.black,
-                              controlAffinity:
-                                  ListTileControlAffinity.leading,
+                              controlAffinity: ListTileControlAffinity.leading,
                               contentPadding: EdgeInsets.zero,
                             ),
                         ],
@@ -427,8 +426,8 @@ class _DateButton extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(label,
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 11)),
+                      style:
+                          const TextStyle(color: Colors.white38, fontSize: 11)),
                   Text(
                     _fmt(date),
                     style: const TextStyle(

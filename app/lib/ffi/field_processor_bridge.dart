@@ -372,6 +372,7 @@ class LpisProcessorBridge {
   }) {
     final polyData = calloc<Double>(flatCoords.length);
     final vertCounts = calloc<Int32>(counts.length);
+    final opts = calloc<_FfiLpisOptions>();
 
     try {
       for (int i = 0; i < flatCoords.length; i++) {
@@ -381,15 +382,15 @@ class LpisProcessorBridge {
         vertCounts[i] = counts[i];
       }
 
-      final opts = calloc<_FfiLpisOptions>();
       opts.ref.bufferM = bufferM;
       opts.ref.simplifyEpsilonM = simplifyEpsilonM;
       opts.ref.minRingVertices = 3;
       opts.ref.pad = 0;
-      final optsVal = opts.ref;
-      calloc.free(opts);
 
-      final result = _processLpis(polyData, vertCounts, counts.length, optsVal);
+      // `opts.ref` to widok na pamięć natywną, nie kopia — bufor musi żyć
+      // do końca wywołania (zwalniany w finally).
+      final result =
+          _processLpis(polyData, vertCounts, counts.length, opts.ref);
       if (result == nullptr) {
         throw StateError('agrinav_process_lpis zwrócił NULL');
       }
@@ -402,6 +403,7 @@ class LpisProcessorBridge {
     } finally {
       calloc.free(polyData);
       calloc.free(vertCounts);
+      calloc.free(opts);
     }
   }
 

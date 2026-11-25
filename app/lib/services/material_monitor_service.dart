@@ -137,6 +137,7 @@ class MaterialMonitorService {
   /// Detach the active task (e.g. when leaving work mode).
   void stop() {
     _task = null;
+    _totalAdded = 0.0; // bez zadania nie ma zużycia (patrz [totalConsumed])
     _state = MaterialMonitorState.empty;
     _stateController.add(_state);
   }
@@ -170,7 +171,8 @@ class MaterialMonitorService {
 
   /// Completely refill to [maxCapacity] (machine's physical tank capacity)
   /// and reset baseline.
-  void fullRefill({required double currentAreaHa, required double maxCapacity}) {
+  void fullRefill(
+      {required double currentAreaHa, required double maxCapacity}) {
     if (_task == null) return;
     final actualAdded = maxCapacity - _state.remainingVolume;
     if (actualAdded > 0) _totalAdded += actualAdded;

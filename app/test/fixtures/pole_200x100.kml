@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Prostokat 200 m (E) x 100 m (N), 2 ha, poczatek 52N 17E -->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>Pole testowe</name>
+      <Polygon><outerBoundaryIs><LinearRing><coordinates>
+        17.0,52.0,0
+        17.002918198429,52.0,0
+        17.002918198429,52.000898311175,0
+        17.0,52.000898311175,0
+        17.0,52.0,0
+      </coordinates></LinearRing></outerBoundaryIs></Polygon>
+    </Placemark>
+  </Document>
+</kml>

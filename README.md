@@ -2,6 +2,7 @@
 
 **Nawigacja precyzyjna dla maszyn rolniczych — Flutter + C++, z obsługą RTK.**
 
+[![CI](https://github.com/Maxoo005/agri_nav/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Maxoo005/agri_nav/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white)
 ![Flutter](https://img.shields.io/badge/Flutter-3-02569B?logo=flutter&logoColor=white)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
@@ -20,6 +21,7 @@ AgriNav to aplikacja nawigacyjna do jazdy równoległymi pasami po polu — z ko
 6. [Historia rozwoju projektu](#6-historia-rozwoju-projektu)
 7. [Stan projektu i ograniczenia](#7-stan-projektu-i-ograniczenia)
 8. [Moje autorskie podejście i podsumowanie](#8-moje-autorskie-podejście-i-podsumowanie)
+9. [Testy](#9-testy)
 
 ---
 
@@ -276,7 +278,7 @@ Dalej dochodzi korekta granic punktami kontrolnymi i wyznaczanie linii AB przeja
 
 **Zależność od zasięgu komórkowego.** Poprawki NTRIP wymagają aktywnego połączenia internetowego. Bez zasięgu (typowe na części pól w terenie) odbiornik RTK degraduje się do zwykłego GPS/DGPS — nie ma trybu offline ani obsługi własnej stacji bazowej.
 
-**Brak automatycznych testów i CI.** W repozytorium nie ma testów jednostkowych ani integracyjnych, ani pipeline'u CI — poprawność jest dziś weryfikowana ręcznie, w terenie.
+**Testy automatyczne obejmują logikę, nie interfejs.** Rdzeń C++, most FFI, parsery, modele i serwisy mają testy uruchamiane w CI (patrz [rozdział 9](#9-testy)); ekrany Fluttera i praca z prawdziwym sprzętem są nadal weryfikowane ręcznie, w terenie. Znane błędy są w testach oznaczone jako XFAIL.
 
 **Tylko Android.** Projekt buduje się wyłącznie na Android; nie ma konfiguracji iOS/desktop/web.
 
@@ -302,3 +304,26 @@ Kluczowe kierunki dalszego rozwoju:
 - **Planowanie zabiegów wspierane sztuczną inteligencją** — docelowo połączenie danych pogodowych, glebowych i historii prac w system rekomendujący optymalny termin i sposób wykonania zabiegu, tak by każda interwencja (oprysk, nawożenie, siew) była maksymalnie trafiona — mniej strat, lepsze wykorzystanie zasobów, wyższa wydajność pracy.
 
 To ambitny, wieloletni kierunek — obecna wersja AgriNav (precyzyjna nawigacja RTK) jest jego pierwszym, praktycznym filarem: bez dokładnej, cyfrowej wiedzy o tym, gdzie i jak dokładnie pracuje maszyna, trudno byłoby budować cokolwiek bardziej inteligentnego na tym fundamencie. Kolejne etapy będą rozwijane w miarę potrzeb gospodarstwa i dostępnego czasu.
+
+## 9. Testy
+
+**Rdzeń C++** (GoogleTest; wymaga CMake ≥ 3.21, Ninja i GCC/Clang — na Windows MinGW):
+
+```bash
+cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++       -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DAGRINAV_BUILD_TESTS=ON -DAGRINAV_COVERAGE=ON
+cmake --build build/tests
+ctest --test-dir build/tests --output-on-failure
+```
+
+**Aplikacja** (Flutter 3.32.8):
+
+```bash
+cd app
+flutter test --coverage
+```
+
+Testy integracyjne w `app/test/integration` wołają prawdziwą bibliotekę C++. Bez niej są pomijane; żeby je włączyć, skopiuj `build/tests/bin/libagri_nav_ffi.dll` do `app/agri_nav_ffi.dll` (Windows) albo `libagri_nav_ffi.so` pod nazwą `agri_nav_ffi.dll` do katalogu z `LD_LIBRARY_PATH` (Linux). Na Linuksie testy SQLite potrzebują `libsqlite3-dev`.
+
+Testy są deterministyczne: bez sieci zewnętrznej (ULDK na mocku HTTP, NTRIP na loopbacku) i bez sprzętu GPS. Dane testowe leżą w `core/test/fixtures` i `app/test/fixtures`. Test oznaczony `XFAIL` opisuje poprawne zachowanie, którego kod jeszcze nie spełnia — po naprawie błędu zacznie się wywalać i trzeba go zamienić na zwykły test.
+
+**CI** ([ci.yml](.github/workflows/ci.yml)) działa na każdym pull requeście i pushu do `main`: buduje i testuje rdzeń na GCC (z pokryciem) oraz Clang (ASan + UBSan), a dla aplikacji sprawdza format `lib/` i testów, uruchamia `flutter analyze` i testy razem z FFI. Raporty pokrycia są artefaktami przebiegu (`coverage-cpp`, `coverage-dart`).

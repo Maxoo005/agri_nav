@@ -152,8 +152,7 @@ class NtripClientService {
       socket.write(request);
 
       final bytes = BytesBuilder(copy: false);
-      await for (final chunk
-          in socket.timeout(const Duration(seconds: 10))) {
+      await for (final chunk in socket.timeout(const Duration(seconds: 10))) {
         bytes.add(chunk);
       }
 
@@ -341,9 +340,15 @@ class NtripClientService {
       return;
     }
 
-    if (!firstLine.contains('200')) {
+    // Kod statusu jako pole, nie dowolne "200" gdzieś w linii.
+    final statusCode =
+        RegExp(r'^\S+\s+(\d{3})(?:\s|$)').firstMatch(firstLine)?.group(1);
+    if (statusCode != '200') {
       lastError = 'Nieoczekiwana odpowiedź serwera NTRIP: $firstLine';
       _setState(NtripState.networkError);
+      // Zamknij gniazdo: treść odpowiedzi błędu (np. HTML przy 404) nie może
+      // trafić na rtcmStream, a stamtąd do odbiornika GNSS.
+      _teardownSocket();
       _scheduleReconnect();
       return;
     }

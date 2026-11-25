@@ -186,7 +186,8 @@ class WorkSessionService {
   /// Nagrywanie pokrycia zatrzymuje wywołujący (CoverageService).
   void finish() {
     if (_runningSince != null) {
-      _accumulatedMs += DateTime.now().difference(_runningSince!).inMilliseconds;
+      _accumulatedMs +=
+          DateTime.now().difference(_runningSince!).inMilliseconds;
     }
     _runningSince = null;
     _paused = false;

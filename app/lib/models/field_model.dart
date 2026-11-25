@@ -231,7 +231,10 @@ class FieldModel {
       case FieldCorrectionMode.elastic:
         // Dane niekompletne (np. ręcznie edytowany zapis) — zachowaj się
         // jak brak korekty, zamiast wywalić się na assercie w fit().
-        if (elasticSrcLats.length < ElasticWarp.minControlPoints) {
+        if (elasticSrcLats.length < ElasticWarp.minControlPoints ||
+            elasticSrcLons.length != elasticSrcLats.length ||
+            elasticTgtLats.length != elasticSrcLats.length ||
+            elasticTgtLons.length != elasticSrcLats.length) {
           return List.generate(
             boundaryLats.length,
             (i) => LatLng(
@@ -270,8 +273,12 @@ class FieldModel {
     }
   }
 
-  LatLng? get lineA => lineALat != null ? LatLng(lineALat!, lineALon!) : null;
-  LatLng? get lineB => lineBLat != null ? LatLng(lineBLat!, lineBLon!) : null;
+  LatLng? get lineA => lineALat != null && lineALon != null
+      ? LatLng(lineALat!, lineALon!)
+      : null;
+  LatLng? get lineB => lineBLat != null && lineBLon != null
+      ? LatLng(lineBLat!, lineBLon!)
+      : null;
 
   /// Kierunek linii AB [°], liczony na żądanie z [lineA]/[lineB] — nie jest
   /// osobno przechowywany, żeby nie powstało drugie, ręcznie synchronizowane
@@ -291,6 +298,10 @@ class FieldModel {
     final lon = boundaryLons.reduce((a, b) => a + b) / boundaryLons.length;
     return LatLng(lat, lon);
   }
+
+  /// Lista liczb z JSON-a — akceptuje też liczby całkowite (`52` zamiast `52.0`).
+  static List<double>? _doubles(Object? raw) =>
+      (raw as List?)?.map((e) => (e as num).toDouble()).toList();
 
   // ── Serializacja ─────────────────────────────────────────────────────────────
 
@@ -330,8 +341,8 @@ class FieldModel {
   factory FieldModel.fromJson(Map<dynamic, dynamic> map) => FieldModel(
         id: map['id'] as String,
         name: map['name'] as String,
-        boundaryLats: (map['boundaryLats'] as List).cast<double>(),
-        boundaryLons: (map['boundaryLons'] as List).cast<double>(),
+        boundaryLats: _doubles(map['boundaryLats'])!,
+        boundaryLons: _doubles(map['boundaryLons'])!,
         workingWidthM: (map['workingWidthM'] as num).toDouble(),
         lineALat: (map['lineALat'] as num?)?.toDouble(),
         lineALon: (map['lineALon'] as num?)?.toDouble(),
@@ -343,9 +354,8 @@ class FieldModel {
         // zgadywać "ręcznie" czy "przejazd".
         abSource: AbSource.values.firstWhere(
           (e) => e.name == (map['abSource'] as String?),
-          orElse: () => map['lineALat'] != null
-              ? AbSource.unknown
-              : AbSource.none,
+          orElse: () =>
+              map['lineALat'] != null ? AbSource.unknown : AbSource.none,
         ),
         uLDKParcelId: map['uLDKParcelId'] as String?,
         terytCode: map['terytCode'] as String?,
@@ -354,12 +364,13 @@ class FieldModel {
             : null,
         sourceParcelIds: (map['sourceParcelIds'] as List?)?.cast<String>(),
         // Wsteczna kompatybilność: starsze zapisy używały klucza 'arimrParcelIds'.
-        lpisParcelIds: ((map['lpisParcelIds'] ?? map['arimrParcelIds'])
-                as List?)
-            ?.cast<String>(),
+        lpisParcelIds:
+            ((map['lpisParcelIds'] ?? map['arimrParcelIds']) as List?)
+                ?.cast<String>(),
         // Wsteczna kompatybilność: starsze zapisy używały nazwy 'arimr'.
         source: FieldSource.values.firstWhere(
-          (e) => e.name == (map['source'] as String?) ||
+          (e) =>
+              e.name == (map['source'] as String?) ||
               ((map['source'] == 'arimr') && e == FieldSource.lpis),
           orElse: () => FieldSource.manual,
         ),
@@ -384,10 +395,10 @@ class FieldModel {
                   ? FieldCorrectionMode.similarity
                   : FieldCorrectionMode.none,
         ),
-        elasticSrcLats: (map['elasticSrcLats'] as List?)?.cast<double>(),
-        elasticSrcLons: (map['elasticSrcLons'] as List?)?.cast<double>(),
-        elasticTgtLats: (map['elasticTgtLats'] as List?)?.cast<double>(),
-        elasticTgtLons: (map['elasticTgtLons'] as List?)?.cast<double>(),
+        elasticSrcLats: _doubles(map['elasticSrcLats']),
+        elasticSrcLons: _doubles(map['elasticSrcLons']),
+        elasticTgtLats: _doubles(map['elasticTgtLats']),
+        elasticTgtLons: _doubles(map['elasticTgtLons']),
         areaHa: (map['areaHa'] as num?)?.toDouble(),
         parcelNumbersNote: map['parcelNumbersNote'] as String?,
       );

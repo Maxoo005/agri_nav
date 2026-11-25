@@ -36,6 +36,13 @@ int64_t SectionControl::_key(int64_t row, int64_t col) {
 std::vector<int64_t> SectionControl::_footprintKeys(
         double eE, double eN, double headingDeg, double toolWidthM) const
 {
+    // Invalid input marks nothing: this is called through FFI, where a C++
+    // exception (e.g. reserve() with a negative size) would kill the app.
+    if (!std::isfinite(eE) || !std::isfinite(eN) ||
+        !std::isfinite(headingDeg) || !std::isfinite(toolWidthM) ||
+        toolWidthM <= 0.0)
+        return {};
+
     // Perpendicular-to-heading unit vector in (E, N).
     const double rad   = headingDeg * kPi / 180.0;
     const double perpE =  std::cos(rad);   // 90° CCW of (sinθ, cosθ)
@@ -92,6 +99,7 @@ float SectionControl::checkOverlap(double lat, double lon,
 float SectionControl::addStrip(double lat, double lon,
                                 double headingDeg, double toolWidthM)
 {
+    _newCellsLastStrip = 0;
     if (!_hasOrigin) return 0.f;
     const auto [eE, eN] = _toEnu(lat, lon);
     const auto keys     = _footprintKeys(eE, eN, headingDeg, toolWidthM);

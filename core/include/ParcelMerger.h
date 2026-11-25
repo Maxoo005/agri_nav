@@ -1,5 +1,6 @@
 #pragma once
 #include "SwathPlanner.h"  // for agrinav::LatLon
+#include <cstdint>
 #include <vector>
 
 namespace agrinav {

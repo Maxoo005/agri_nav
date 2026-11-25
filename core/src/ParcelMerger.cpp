@@ -80,6 +80,9 @@ MergeResult ParcelMerger::merge(
         path.reserve(poly.size());
         for (const auto& pt : poly)
             path.push_back(ref.toLocal(pt));
+        // Kierunek obiegu wejścia jest dowolny — działka CW obok CCW byłaby
+        // potraktowana przez Clipper2 jak otwór i zniknęłaby z wyniku.
+        if (signedArea(path) < 0.0) std::reverse(path.begin(), path.end());
         localPaths.push_back(std::move(path));
     }
 
@@ -122,9 +125,11 @@ MergeResult ParcelMerger::merge(
         // Ustal numer "grupy" (do jakiej zewnętrznej należy otwór)
         size_t groupIdx = 0;
         if (!isOuter) {
-            // Otwór należy do najbliższej outer (heurystyka: po indeksie)
+            // Otwór należy do tej części, wewnątrz której leży
             for (size_t k = 0; k < outerIndices.size(); ++k) {
-                if (outerIndices[k].first < i) groupIdx = k;
+                if (Clipper2Lib::PointInPolygon(rawPath.front(), unioned[outerIndices[k].first])
+                        != Clipper2Lib::PointInPolygonResult::IsOutside)
+                    groupIdx = k;  // malejąco po polu → zostaje najmniejsza obejmująca
             }
         } else {
             // Znajdź pozycję tego outer w posortowanej liście

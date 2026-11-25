@@ -243,8 +243,7 @@ class _LpisImportSheetState extends State<LpisImportSheet> {
       }
 
       _mergeResult = result;
-      _nameCtrl.text =
-          'Pole LPIS ${FieldService.instance.getAll().length + 1}';
+      _nameCtrl.text = 'Pole LPIS ${FieldService.instance.getAll().length + 1}';
 
       setState(() => _step = _ImportStep.done);
     } catch (e, st) {
@@ -343,8 +342,7 @@ class _LpisImportSheetState extends State<LpisImportSheet> {
       _ImportStep.done: 'Nazwa pola',
     };
 
-    final canGoBack =
-        _step == _ImportStep.preview || _step == _ImportStep.done;
+    final canGoBack = _step == _ImportStep.preview || _step == _ImportStep.done;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -430,7 +428,8 @@ class _LpisImportSheetState extends State<LpisImportSheet> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.crop_free, color: Colors.greenAccent, size: 20),
+                const Icon(Icons.crop_free,
+                    color: Colors.greenAccent, size: 20),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -438,8 +437,7 @@ class _LpisImportSheetState extends State<LpisImportSheet> {
                     '${widget.mapBounds!.west.toStringAsFixed(4)}°E → '
                     '${widget.mapBounds!.north.toStringAsFixed(4)}°N, '
                     '${widget.mapBounds!.east.toStringAsFixed(4)}°E',
-                    style:
-                        const TextStyle(color: Colors.white60, fontSize: 12),
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
                   ),
                 ),
               ],

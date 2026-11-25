@@ -95,8 +95,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
             itemBuilder: (context, i) {
               final f = fields[i];
               return ListTile(
-                leading: const Icon(Icons.agriculture, color: Colors.greenAccent),
-                title: Text(f.fieldName, style: const TextStyle(color: Colors.white)),
+                leading:
+                    const Icon(Icons.agriculture, color: Colors.greenAccent),
+                title: Text(f.fieldName,
+                    style: const TextStyle(color: Colors.white)),
                 subtitle: Text(
                   f.lastCompleted != null
                       ? '${f.recordCount} prac • ostatnia ${_formatDate(f.lastCompleted!)}'
@@ -286,7 +288,8 @@ class _HistoryCard extends StatelessWidget {
             TextSpan(
               text: value,
               style: const TextStyle(
-                  color: Colors.white, fontSize: 12,
+                  color: Colors.white,
+                  fontSize: 12,
                   fontWeight: FontWeight.w600),
             ),
           ],
@@ -301,8 +304,7 @@ class _HistoryCard extends StatelessWidget {
 /// Wywoływana tylko gdy [HistoryRecord.workDuration] nie jest null (patrz
 /// warunek w `_HistoryCard`).
 double _productivityOf(HistoryRecord r) =>
-    r.productivityHaPerHour ??
-    hectaresPerHourOf(r.coveredHa, r.workDuration!);
+    r.productivityHaPerHour ?? hectaresPerHourOf(r.coveredHa, r.workDuration!);
 
 /// Rzeczywista dawka [jednostka/ha]: zużyty materiał / zrobione hektary.
 /// Null gdy zadanie nie miało monitorowania materiału albo nic nie zrobiono

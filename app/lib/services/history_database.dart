@@ -74,14 +74,12 @@ class HistoryDatabase {
               'ALTER TABLE $_table ADD COLUMN productivity_ha_per_hour REAL');
         }
         if (oldVersion < 3) {
-          await db.execute(
-              'ALTER TABLE $_table ADD COLUMN material_consumed REAL');
           await db
-              .execute('ALTER TABLE $_table ADD COLUMN material_unit TEXT');
+              .execute('ALTER TABLE $_table ADD COLUMN material_consumed REAL');
+          await db.execute('ALTER TABLE $_table ADD COLUMN material_unit TEXT');
         }
         if (oldVersion < 4) {
-          await db
-              .execute('ALTER TABLE $_table ADD COLUMN entry_source TEXT');
+          await db.execute('ALTER TABLE $_table ADD COLUMN entry_source TEXT');
         }
       },
     );
@@ -162,8 +160,7 @@ class HistoryDatabase {
     }
     if (to != null) {
       where.add('completed_at <= ?');
-      final endOfDay =
-          DateTime(to.year, to.month, to.day, 23, 59, 59, 999);
+      final endOfDay = DateTime(to.year, to.month, to.day, 23, 59, 59, 999);
       args.add(endOfDay.toIso8601String());
     }
     if (fieldIds != null && fieldIds.isNotEmpty) {

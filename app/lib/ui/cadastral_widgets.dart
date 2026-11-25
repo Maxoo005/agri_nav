@@ -196,9 +196,13 @@ class ControlPointsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            pairCount >= 2 ? 'Par: $pairCount ✓ gotowe' : 'Par: $pairCount (min. 2)',
+            pairCount >= 2
+                ? 'Par: $pairCount ✓ gotowe'
+                : 'Par: $pairCount (min. 2)',
             style: TextStyle(
-              color: pairCount >= 2 ? Colors.lightGreenAccent : Colors.orangeAccent,
+              color: pairCount >= 2
+                  ? Colors.lightGreenAccent
+                  : Colors.orangeAccent,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -259,14 +263,16 @@ class ControlPointsPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: (pairCount > 0 || hasPendingSource) ? onUndo : null,
+                  onPressed:
+                      (pairCount > 0 || hasPendingSource) ? onUndo : null,
                   child: const Text('Cofnij'),
                 ),
               ),
               const SizedBox(width: 6),
               Expanded(
                 child: OutlinedButton(
-                  onPressed: (pairCount > 0 || hasPendingSource) ? onReset : null,
+                  onPressed:
+                      (pairCount > 0 || hasPendingSource) ? onReset : null,
                   child: const Text('Reset'),
                 ),
               ),
@@ -286,8 +292,7 @@ class ControlPointsPanel extends StatelessWidget {
                 child: FilledButton(
                   onPressed: onConfirm,
                   style: FilledButton.styleFrom(
-                    backgroundColor:
-                        pairCount >= 2 ? null : Colors.white24,
+                    backgroundColor: pairCount >= 2 ? null : Colors.white24,
                   ),
                   child: const Text('Zatwierdź'),
                 ),
@@ -393,7 +398,8 @@ class AbRecordingPanel extends StatelessWidget {
               Expanded(
                 child: FilledButton(
                   onPressed: onStop,
-                  style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+                  style: FilledButton.styleFrom(
+                      backgroundColor: Colors.green[700]),
                   child: const Text('Zakończ'),
                 ),
               ),

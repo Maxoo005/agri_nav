@@ -120,11 +120,9 @@ class HistoryRecord {
         ),
         workingWidthM: (map['working_width_m'] as num?)?.toDouble() ?? 0.0,
         overlapM: (map['overlap_m'] as num?)?.toDouble() ?? 0.0,
-        swathAngleDeg:
-            (map['swath_angle_deg'] as num?)?.toDouble() ?? 0.0,
+        swathAngleDeg: (map['swath_angle_deg'] as num?)?.toDouble() ?? 0.0,
         workDuration: map['work_duration_ms'] != null
-            ? Duration(
-                milliseconds: (map['work_duration_ms'] as num).toInt())
+            ? Duration(milliseconds: (map['work_duration_ms'] as num).toInt())
             : null,
         coveredHa: (map['covered_ha'] as num?)?.toDouble() ?? 0.0,
         productivityHaPerHour:

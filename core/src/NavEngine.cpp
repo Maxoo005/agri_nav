@@ -57,6 +57,8 @@ GuidanceOutput NavEngine::update() {
 
     const double abLen = std::sqrt(b.e * b.e + b.n * b.n);
     if (abLen < 0.01) return out; // guard: A == B
+    // Pozycja lub linia AB NaN/Inf — brak prowadzenia zamiast XTE=NaN.
+    if (!std::isfinite(abLen) || !std::isfinite(p.e) || !std::isfinite(p.n)) return out;
 
     // Poprawkowe odchylenie od linii AB (signed):
     //   + prawo gdy jedzie A→B, − lewo

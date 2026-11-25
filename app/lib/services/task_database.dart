@@ -75,8 +75,8 @@ class TaskDatabase {
             created_at      TEXT
           )
         ''');
-        await db.execute(
-            'CREATE INDEX idx_tasks_created ON $_table (created_at)');
+        await db
+            .execute('CREATE INDEX idx_tasks_created ON $_table (created_at)');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // v1 -> v2: ręczna korekta (offset) wygenerowanych ścieżek [m].

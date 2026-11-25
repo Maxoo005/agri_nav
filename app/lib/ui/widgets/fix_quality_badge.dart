@@ -56,7 +56,8 @@ class FixQualityBadge extends StatelessWidget {
         const SizedBox(width: 6),
         Text(
           label,
-          style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
+          style: TextStyle(
+              color: color, fontWeight: FontWeight.bold, fontSize: 12),
         ),
       ],
     );

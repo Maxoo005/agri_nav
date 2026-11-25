@@ -311,8 +311,7 @@ abstract final class GeoUtils {
       final xj = polygon[j].longitude, yj = polygon[j].latitude;
       final crosses = (yi > pt.latitude) != (yj > pt.latitude);
       if (crosses &&
-          pt.longitude <
-              (xj - xi) * (pt.latitude - yi) / (yj - yi) + xi) {
+          pt.longitude < (xj - xi) * (pt.latitude - yi) / (yj - yi) + xi) {
         inside = !inside;
       }
     }
