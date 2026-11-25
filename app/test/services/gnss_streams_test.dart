@@ -327,6 +327,36 @@ void main() {
       }
     });
 
+    group('v2 chunked', () {
+      final header = ascii.encode('HTTP/1.1 200 OK\r\n'
+          'Content-Type: gnss/data\r\nTransfer-Encoding: chunked\r\n\r\n');
+
+      test('do odbiornika trafiają same dane, bez długości porcji', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('A\r\n'), ...frame.sublist(0, 4)],
+          [...frame.sublist(4), 13],
+          [10, ...ascii.encode('2;x=1\r\n'), 7, 8, ...ascii.encode('\r\n')],
+        ], NtripState.connected);
+        expect(got, [...frame, 7, 8]);
+      });
+
+      test('porcja 0 kończy strumień i ponawia połączenie', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('1\r\nx\r\n0\r\n\r\n')],
+        ], NtripState.reconnecting);
+        expect(got, ascii.encode('x'));
+        expect(n.lastError, contains('zakończył'));
+      });
+
+      test('zły rozmiar porcji przerywa strumień', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('zz\r\nabc')],
+        ], NtripState.reconnecting);
+        expect(got, isEmpty);
+        expect(n.lastError, contains('Uszkodzony'));
+      });
+    });
+
     group('odpowiedź niebędąca strumieniem', () {
       const table = 'STR;RTN;Polska;RTCM 3.2\r\nENDSOURCETABLE\r\n';
 

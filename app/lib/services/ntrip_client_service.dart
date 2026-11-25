@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../models/gnss_position.dart';
+import '../utils/chunked_decoder.dart';
 
 /// Stan połączenia z serwerem (casterem) NTRIP.
 ///
@@ -110,6 +111,9 @@ class NtripClientService {
 
   /// Odpowiedź 200 bez Content-Type — czekamy na pierwszy bajt treści.
   bool _awaitingPreamble = false;
+
+  /// Niepuste, gdy strumień v2 idzie z `Transfer-Encoding: chunked`.
+  ChunkedDecoder? _chunked;
 
   /// Pierwszy bajt każdej ramki RTCM3.
   static const _kRtcm3Preamble = 0xD3;
@@ -217,6 +221,7 @@ class NtripClientService {
     _socket = null;
     _headerParsed = false;
     _awaitingPreamble = false;
+    _chunked = null;
     _headerBuffer.clear();
   }
 
@@ -383,6 +388,9 @@ class NtripClientService {
       return;
     }
 
+    final encoding = _headerValue(headerText, 'transfer-encoding');
+    _chunked = encoding?.toLowerCase() == 'chunked' ? ChunkedDecoder() : null;
+
     // v1 (ICY) nie podaje typu treści. Odpowiedź HTTP bez typu jest
     // niejednoznaczna — akceptujemy ją dopiero po preambule RTCM3.
     _awaitingPreamble = contentType == null && !firstLine.startsWith('ICY ');
@@ -408,8 +416,25 @@ class NtripClientService {
     _startGgaTimer();
   }
 
-  void _onStreamData(Uint8List data) {
-    if (data.isEmpty) return;
+  void _onStreamData(Uint8List raw) {
+    var data = raw;
+    final chunked = _chunked;
+    if (chunked != null) {
+      try {
+        data = chunked.add(raw);
+      } on FormatException catch (e) {
+        _rejectResponse('Uszkodzony strumień NTRIP: ${e.message}');
+        return;
+      }
+    }
+    if (data.isNotEmpty) _emitStreamData(data);
+    if (chunked != null && chunked.isDone && identical(_chunked, chunked)) {
+      lastError = 'Serwer NTRIP zakończył strumień poprawek';
+      _handleUnexpectedDisconnect();
+    }
+  }
+
+  void _emitStreamData(Uint8List data) {
     if (_awaitingPreamble) {
       if (data.first != _kRtcm3Preamble) {
         _rejectResponse('Serwer NTRIP odpowiedział 200, ale bez typu treści '
