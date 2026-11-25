@@ -124,6 +124,7 @@ TEST_F(NavEngineTest, NearPoleIsFinite) {
 
 // ── Znane błędy ──────────────────────────────────────────────────────────────
 
+// poza zakresem: obsługiwane tylko współrzędne w Polsce
 TEST_F(NavEngineTest, XfailDatelineCrossing) {
     // A tuż przed 180°E, ciągnik 2 m dalej na wschód (po drugiej stronie).
     f = Frame{0.0, 179.99999};

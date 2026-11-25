@@ -89,6 +89,7 @@ TEST_F(SwathGuidanceTest, NaNPositionFindsNothing) {
     EXPECT_EQ(g.query(kNaN, kNaN, 0).swathIndex, -1);
 }
 
+// poza zakresem: obsługiwane tylko współrzędne w Polsce
 TEST_F(SwathGuidanceTest, XfailDateline) {
     f = Frame{0, 179.99999};
     g.setSwaths({{f.at(0, 0), f.at(0, 100)}}, f.at(0, 0));

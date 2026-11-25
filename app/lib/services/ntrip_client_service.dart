@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../models/gnss_position.dart';
+import '../utils/chunked_decoder.dart';
 
 /// Stan połączenia z serwerem (casterem) NTRIP.
 ///
@@ -107,6 +108,16 @@ class NtripClientService {
   bool _stopRequested = true;
 
   bool _headerParsed = false;
+
+  /// Odpowiedź 200 bez Content-Type — czekamy na pierwszy bajt treści.
+  bool _awaitingPreamble = false;
+
+  /// Niepuste, gdy strumień v2 idzie z `Transfer-Encoding: chunked`.
+  ChunkedDecoder? _chunked;
+
+  /// Pierwszy bajt każdej ramki RTCM3.
+  static const _kRtcm3Preamble = 0xD3;
+
   final BytesBuilder _headerBuffer = BytesBuilder(copy: false);
 
   /// Ostatnia znana pozycja — źródło dla wysyłanych zdań GGA. Aktualizowane
@@ -209,6 +220,8 @@ class NtripClientService {
     _socket?.destroy();
     _socket = null;
     _headerParsed = false;
+    _awaitingPreamble = false;
+    _chunked = null;
     _headerBuffer.clear();
   }
 
@@ -293,13 +306,25 @@ class NtripClientService {
 
   void _onSocketData(Uint8List chunk) {
     if (_headerParsed) {
-      if (!_rtcmController.isClosed) _rtcmController.add(chunk);
+      _onStreamData(chunk);
       return;
     }
 
     _headerBuffer.add(chunk);
     final buffered = _headerBuffer.toBytes();
-    final sepIndex = _indexOfCrLfCrLf(buffered);
+    var sepIndex = _indexOfCrLfCrLf(buffered);
+    var sepLength = 4;
+
+    // NTRIP v1: część casterów wysyła samo "ICY 200 OK\r\n" i od razu ramkę
+    // RTCM3 (preambuła 0xD3) — bez pustej linii kończącej nagłówek.
+    const icy = 'ICY 200 OK\r\n';
+    if (buffered.length > icy.length &&
+        buffered[icy.length] == _kRtcm3Preamble &&
+        ascii.decode(buffered.sublist(0, icy.length), allowInvalid: true) ==
+            icy) {
+      sepIndex = icy.length - 2;
+      sepLength = 2;
+    }
 
     if (sepIndex == -1) {
       if (buffered.length > _kMaxHeaderBytes) {
@@ -312,7 +337,7 @@ class NtripClientService {
 
     final headerText =
         ascii.decode(buffered.sublist(0, sepIndex), allowInvalid: true);
-    final remainder = Uint8List.sublistView(buffered, sepIndex + 4);
+    final remainder = Uint8List.sublistView(buffered, sepIndex + sepLength);
     _headerBuffer.clear();
     _headerParsed = true;
 
@@ -323,7 +348,11 @@ class NtripClientService {
     final firstLine = headerText.split('\r\n').first.trim();
     debugPrint('[NtripClientService] odpowiedź serwera: $firstLine');
 
-    if (firstLine.contains('401')) {
+    // Kod statusu jako pole, nie dowolne "200" gdzieś w linii.
+    final statusCode =
+        RegExp(r'^\S+\s+(\d{3})(?:\s|$)').firstMatch(firstLine)?.group(1);
+
+    if (statusCode == '401') {
       lastError = 'Serwer NTRIP odrzucił login/hasło (401 Unauthorized). '
           'Sprawdź format loginu (Firma/Użytkownik) i hasło.';
       _setState(NtripState.authError);
@@ -331,7 +360,15 @@ class NtripClientService {
       return;
     }
 
-    if (firstLine.startsWith('SOURCETABLE')) {
+    final contentType = _headerValue(headerText, 'content-type')
+        ?.split(';')
+        .first
+        .trim()
+        .toLowerCase();
+
+    // v1: linia "SOURCETABLE 200 OK"; v2: zwykłe 200 z typem gnss/sourcetable.
+    if (firstLine.startsWith('SOURCETABLE') ||
+        (statusCode == '200' && contentType == 'gnss/sourcetable')) {
       lastError = 'Serwer zwrócił listę mountpointów zamiast strumienia '
           'poprawek — sprawdź, czy mountpoint "${_config?.mountpoint}" '
           'faktycznie istnieje na tym serwerze.';
@@ -340,27 +377,85 @@ class NtripClientService {
       return;
     }
 
-    // Kod statusu jako pole, nie dowolne "200" gdzieś w linii.
-    final statusCode =
-        RegExp(r'^\S+\s+(\d{3})(?:\s|$)').firstMatch(firstLine)?.group(1);
     if (statusCode != '200') {
-      lastError = 'Nieoczekiwana odpowiedź serwera NTRIP: $firstLine';
-      _setState(NtripState.networkError);
-      // Zamknij gniazdo: treść odpowiedzi błędu (np. HTML przy 404) nie może
-      // trafić na rtcmStream, a stamtąd do odbiornika GNSS.
-      _teardownSocket();
-      _scheduleReconnect();
+      _rejectResponse('Nieoczekiwana odpowiedź serwera NTRIP: $firstLine');
       return;
     }
 
-    // Sukces — od teraz to czysty strumień RTCM3.
+    if (contentType != null && contentType != 'gnss/data') {
+      _rejectResponse('Serwer NTRIP zwrócił „$contentType” zamiast strumienia '
+          'poprawek (gnss/data) — sprawdź adres, port i mountpoint.');
+      return;
+    }
+
+    final encoding = _headerValue(headerText, 'transfer-encoding');
+    _chunked = encoding?.toLowerCase() == 'chunked' ? ChunkedDecoder() : null;
+
+    // v1 (ICY) nie podaje typu treści. Odpowiedź HTTP bez typu jest
+    // niejednoznaczna — akceptujemy ją dopiero po preambule RTCM3.
+    _awaitingPreamble = contentType == null && !firstLine.startsWith('ICY ');
+    if (!_awaitingPreamble) _onStreamAccepted();
+    if (remainder.isNotEmpty) _onStreamData(remainder);
+  }
+
+  /// Odpowiedź, która nie jest strumieniem GNSS. Zamyka gniazdo: jej treść
+  /// (np. HTML przy 404) nie może trafić na [rtcmStream], a stamtąd do
+  /// odbiornika.
+  void _rejectResponse(String message) {
+    lastError = message;
+    _setState(NtripState.networkError);
+    _teardownSocket();
+    _scheduleReconnect();
+  }
+
+  /// Sukces — od teraz to czysty strumień RTCM3.
+  void _onStreamAccepted() {
     lastError = null;
     _nextReconnectDelay = _initialReconnectDelay;
     _setState(NtripState.connected);
     _startGgaTimer();
-    if (remainder.isNotEmpty && !_rtcmController.isClosed) {
-      _rtcmController.add(remainder);
+  }
+
+  void _onStreamData(Uint8List raw) {
+    var data = raw;
+    final chunked = _chunked;
+    if (chunked != null) {
+      try {
+        data = chunked.add(raw);
+      } on FormatException catch (e) {
+        _rejectResponse('Uszkodzony strumień NTRIP: ${e.message}');
+        return;
+      }
     }
+    if (data.isNotEmpty) _emitStreamData(data);
+    if (chunked != null && chunked.isDone && identical(_chunked, chunked)) {
+      lastError = 'Serwer NTRIP zakończył strumień poprawek';
+      _handleUnexpectedDisconnect();
+    }
+  }
+
+  void _emitStreamData(Uint8List data) {
+    if (_awaitingPreamble) {
+      if (data.first != _kRtcm3Preamble) {
+        _rejectResponse('Serwer NTRIP odpowiedział 200, ale bez typu treści '
+            'i bez danych RTCM3 — sprawdź adres, port i mountpoint.');
+        return;
+      }
+      _awaitingPreamble = false;
+      _onStreamAccepted();
+    }
+    if (!_rtcmController.isClosed) _rtcmController.add(data);
+  }
+
+  /// Wartość nagłówka [name] (małymi literami) albo `null`.
+  static String? _headerValue(String headerText, String name) {
+    for (final line in headerText.split('\r\n').skip(1)) {
+      final colon = line.indexOf(':');
+      if (colon > 0 && line.substring(0, colon).trim().toLowerCase() == name) {
+        return line.substring(colon + 1).trim();
+      }
+    }
+    return null;
   }
 
   /// Szuka bajtowej sekwencji `\r\n\r\n` (koniec nagłówków HTTP/NTRIP).

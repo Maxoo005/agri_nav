@@ -135,10 +135,28 @@ void main() {
     });
 
     // u-blox zostawia kurs pusty na postoju — obecnie tracimy też prędkość.
-    xfail('postój: pusty kurs nie kasuje prędkości', () {
+    test('postój: pusty kurs nie kasuje prędkości', () {
       final r = parseRmc(nmea('GNRMC,1,A,5200.0,N,01700.0,E,0.01,,010525,,,A'));
       expect(r?.speed, closeTo(0.01 * 0.514444, 1e-9));
-    }, reason: 'RMC z pustym polem COG jest w całości odrzucane');
+      expect(r?.heading, closeTo(-1, 1e-12)); // nieznany
+    });
+
+    test('uszkodzony kurs lub prędkość, NaN → null', () {
+      for (final (speed, course) in [
+        ('1.0', 'abc'),
+        ('1.0', 'NaN'),
+        ('1.0', 'Infinity'),
+        ('NaN', '45.0'),
+        ('', '45.0'),
+        ('', ''),
+      ]) {
+        expect(
+            parseRmc(
+                nmea('GNRMC,1,A,5200.0,N,01700.0,E,$speed,$course,010525,,,A')),
+            isNull,
+            reason: '$speed/$course');
+      }
+    });
   });
 
   group('buildGgaSentence', () {

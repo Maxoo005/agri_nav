@@ -74,6 +74,15 @@ void main() {
       expect(out.single.fixQuality, GnssFixQuality.rtkFixed);
     });
 
+    test('RMC bez kursu: prędkość zachowana, kurs nieznany (nie NaN)',
+        () async {
+      final stop = nmea('GNRMC,1,A,5213.7,N,01730.0,E,0.10,,010525,,,A');
+      final out = await feed(['$rmc\n$gga\n$stop\n$gga\n']);
+      expect(
+          out.map((p) => p.heading), [closeTo(45, 1e-9), closeTo(-1, 1e-12)]);
+      expect(out.last.speed, closeTo(0.0514444, 1e-9));
+    });
+
     test('bez RMC kurs i prędkość = -1', () async {
       final out = await feed(['$gga\r\n']);
       expect(out.single.heading, closeTo(-1, 1e-12));
@@ -265,5 +274,175 @@ void main() {
         expect(n.lastError, contains(status));
       });
     }
+
+    final frame = [0xD3, 0x00, 0x04, 1, 2, 3, 4, 9, 9, 9];
+
+    /// Łączy się z casterem odpowiadającym [parts] (osobne pakiety TCP) i
+    /// zwraca wszystko, co trafiłoby do odbiornika.
+    Future<List<int>> serve(List<List<int>> parts, NtripState expected,
+        {bool close = false}) async {
+      final got = <int>[];
+      final sub = n.rtcmStream.listen(got.addAll);
+      addTearDown(sub.cancel);
+      final sent = Completer<void>();
+      onRequest = (c) async {
+        try {
+          for (final p in parts) {
+            c.add(p);
+            await c.flush();
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+          if (close) c.destroy();
+        } catch (_) {
+          // Klient zamknął gniazdo.
+        }
+        sent.complete();
+      };
+      await connect();
+      await waitState(expected);
+      await sent.future;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      return got;
+    }
+
+    group('strumień poprawny', () {
+      for (final (name, header) in [
+        ('v1 z pustą linią', 'ICY 200 OK\r\n\r\n'),
+        ('v1 bez pustej linii', 'ICY 200 OK\r\n'),
+        (
+          'v2',
+          'HTTP/1.1 200 OK\r\nNtrip-Version: Ntrip/2.0\r\n'
+              'CONTENT-type:  GNSS/Data; x=1\r\n\r\n'
+        ),
+        ('HTTP bez typu treści', 'HTTP/1.0 200 OK\r\nServer: x\r\n\r\n'),
+      ]) {
+        test('$name — jeden pakiet', () async {
+          final got = await serve([
+            [...ascii.encode(header), ...frame],
+            [1, 2, 3],
+          ], NtripState.connected);
+          expect(got, [...frame, 1, 2, 3]);
+          expect(n.lastError, isNull);
+        });
+
+        test('$name — nagłówek i dane osobno', () async {
+          final got = await serve([
+            ascii.encode(header.substring(0, 5)),
+            ascii.encode(header.substring(5)),
+            frame,
+          ], NtripState.connected);
+          expect(got, frame);
+        });
+      }
+    });
+
+    group('v2 chunked', () {
+      final header = ascii.encode('HTTP/1.1 200 OK\r\n'
+          'Content-Type: gnss/data\r\nTransfer-Encoding: chunked\r\n\r\n');
+
+      test('do odbiornika trafiają same dane, bez długości porcji', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('A\r\n'), ...frame.sublist(0, 4)],
+          [...frame.sublist(4), 13],
+          [10, ...ascii.encode('2;x=1\r\n'), 7, 8, ...ascii.encode('\r\n')],
+        ], NtripState.connected);
+        expect(got, [...frame, 7, 8]);
+      });
+
+      test('porcja 0 kończy strumień i ponawia połączenie', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('1\r\nx\r\n0\r\n\r\n')],
+        ], NtripState.reconnecting);
+        expect(got, ascii.encode('x'));
+        expect(n.lastError, contains('zakończył'));
+      });
+
+      test('zły rozmiar porcji przerywa strumień', () async {
+        final got = await serve([
+          [...header, ...ascii.encode('zz\r\nabc')],
+        ], NtripState.reconnecting);
+        expect(got, isEmpty);
+        expect(n.lastError, contains('Uszkodzony'));
+      });
+    });
+
+    group('odpowiedź niebędąca strumieniem', () {
+      const table = 'STR;RTN;Polska;RTCM 3.2\r\nENDSOURCETABLE\r\n';
+
+      test('sourcetable z kodem 200 → błąd mountpointu, bez ponawiania',
+          () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 200 OK\r\nNtrip-Version: Ntrip/2.0\r\n'
+              'Content-Type: gnss/sourcetable\r\n\r\n$table'),
+          ascii.encode(table),
+        ], NtripState.networkError);
+        expect(got, isEmpty);
+        expect(n.state, NtripState.networkError);
+        expect(n.lastError, contains('RTN'));
+      });
+
+      test('ICY z typem sourcetable też jest odrzucane', () async {
+        final got = await serve([
+          ascii.encode(
+              'ICY 200 OK\r\nContent-Type: gnss/sourcetable\r\n\r\n$table'),
+        ], NtripState.networkError);
+        expect(got, isEmpty);
+      });
+
+      test('200 z HTML → czytelny błąd', () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n'),
+          ascii.encode('<html>portal</html>'),
+        ], NtripState.reconnecting);
+        expect(got, isEmpty);
+        expect(n.lastError, contains('text/html'));
+      });
+
+      test('200 bez typu i bez RTCM3 → błąd', () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 200 OK\r\n\r\n'),
+          ascii.encode(table),
+        ], NtripState.reconnecting);
+        expect(got, isEmpty);
+        expect(n.lastError, contains('RTCM3'));
+      });
+
+      test('401 z treścią → authError, nic do odbiornika', () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 401 Unauthorized\r\n\r\n'),
+          ascii.encode('denied'),
+        ], NtripState.authError);
+        expect(got, isEmpty);
+        expect(n.state, NtripState.authError);
+      });
+
+      test('404 → błąd, nic do odbiornika', () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 404 Not Found\r\n'
+              'Content-Type: gnss/data\r\n\r\n'),
+          frame,
+        ], NtripState.reconnecting);
+        expect(got, isEmpty);
+        expect(n.lastError, contains('404'));
+      });
+    });
+
+    group('rozłączenie', () {
+      test('w trakcie strumienia: dane przed zerwaniem są, potem ponawianie',
+          () async {
+        final got = await serve([
+          [...ascii.encode('ICY 200 OK\r\n\r\n'), ...frame],
+        ], NtripState.reconnecting, close: true);
+        expect(got, frame);
+        expect(n.lastError, isNotNull);
+      });
+
+      test('w trakcie nagłówka: nic do odbiornika', () async {
+        final got = await serve([
+          ascii.encode('HTTP/1.1 200 OK\r\nContent-Ty'),
+        ], NtripState.reconnecting, close: true);
+        expect(got, isEmpty);
+      });
+    });
   });
 }

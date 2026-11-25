@@ -163,7 +163,9 @@ class MaterialMonitorService {
     final newLevel =
         (_state.remainingVolume + addedVolume).clamp(0.0, maxCapacity);
     final actualAdded = newLevel - _state.remainingVolume;
-    if (actualAdded > 0) _totalAdded += actualAdded;
+    // Także ujemne: poziom ponad pojemność jest obcinany, a obcięta ilość
+    // nigdy nie była w zbiorniku — nie może liczyć się jako zużyta.
+    _totalAdded += actualAdded;
     _tankAtBase = newLevel;
     _baseAreaHa = currentAreaHa;
     _recalculate(currentAreaHa);
@@ -175,7 +177,9 @@ class MaterialMonitorService {
       {required double currentAreaHa, required double maxCapacity}) {
     if (_task == null) return;
     final actualAdded = maxCapacity - _state.remainingVolume;
-    if (actualAdded > 0) _totalAdded += actualAdded;
+    // Także ujemne: poziom ponad pojemność jest obcinany, a obcięta ilość
+    // nigdy nie była w zbiorniku — nie może liczyć się jako zużyta.
+    _totalAdded += actualAdded;
     _tankAtBase = maxCapacity;
     _baseAreaHa = currentAreaHa;
     _recalculate(currentAreaHa);

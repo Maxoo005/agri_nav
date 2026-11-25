@@ -71,12 +71,14 @@ void main() {
           isNaN);
     });
 
+    // poza zakresem: obsługiwane tylko współrzędne w Polsce
     xfail('odległość przez dateline', () {
       final d =
           GeoUtils.toEnu(const LatLng(0, 179.9999), const LatLng(0, -179.9999));
       expect(d.e, closeTo(22.264, 0.01));
     }, reason: 'brak zawijania długości na ±180°');
 
+    // poza zakresem: obsługiwane tylko współrzędne w Polsce
     xfail('biegun: fromEnu zwraca sensowną długość', () {
       expect(GeoUtils.fromEnu(const LatLng(90, 0), 10, 0).longitude.abs(),
           lessThanOrEqualTo(180));
@@ -200,6 +202,7 @@ void main() {
           closeTo(0.5, 0.005));
     });
 
+    // poza zakresem: obsługiwane tylko współrzędne w Polsce
     xfail('pole na dateline', () {
       final r = [
         const LatLng(0, 179.999),
