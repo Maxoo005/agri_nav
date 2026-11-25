@@ -1,5 +1,6 @@
 #pragma once
 #include "SwathPlanner.h"
+#include <cstdint>
 #include <mutex>
 #include <shared_mutex>
 #include <vector>

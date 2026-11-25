@@ -47,11 +47,6 @@ option(AGRINAV_BUILD_TESTS "Buduj testy rdzenia C++" OFF)
 option(AGRINAV_COVERAGE    "Instrumentacja pokrycia (GCC/Clang, gcov)" OFF)
 option(AGRINAV_SANITIZE    "AddressSanitizer + UBSan" OFF)
 if(AGRINAV_BUILD_TESTS)
-    # OBEJŚCIE znanego błędu: ParcelMerger.h używa int32_t bez #include <cstdint>
-    # (nie kompiluje się m.in. na GCC 15+). Usuń po naprawie nagłówka.
-    if(NOT MSVC)
-        target_compile_options(agri_nav_core PUBLIC -include cstdint)
-    endif()
     foreach(tgt agri_nav_core agri_nav_ffi)
         if(AGRINAV_COVERAGE)
             target_compile_options(${tgt} PRIVATE --coverage -O0 -g)
