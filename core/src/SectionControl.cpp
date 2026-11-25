@@ -40,7 +40,7 @@ std::vector<int64_t> SectionControl::_footprintKeys(
     // exception (e.g. reserve() with a negative size) would kill the app.
     if (!std::isfinite(eE) || !std::isfinite(eN) ||
         !std::isfinite(headingDeg) || !std::isfinite(toolWidthM) ||
-        toolWidthM < 0.0)
+        toolWidthM <= 0.0)
         return {};
 
     // Perpendicular-to-heading unit vector in (E, N).

@@ -97,7 +97,7 @@ TEST_F(SectionControlTest, InvalidInputMarksNothingAndDoesNotThrow) {
     const double inf = INFINITY;
     add(0.5, 0.5, 0, 4);
     const double before = s.coveredAreaHa();
-    for (double w : {-10.0, -1e-9, kNaN, inf, -inf}) {
+    for (double w : {0.0, -10.0, -1e-9, kNaN, inf, -inf}) {
         EXPECT_NO_THROW({
             EXPECT_FLOAT_EQ(add(50, 50, 0, w), 0.f);
             EXPECT_FLOAT_EQ(check(0.5, 0.5, 0, w), 0.f);
@@ -119,12 +119,6 @@ TEST_F(SectionControlTest, XfailNarrowToolAreaOverestimated) {
     for (int i = 0; i < 100; ++i) add(50.3, i + 0.5, 0, 3.0);
     AGRINAV_XFAIL("pojedynczy przejazd zawyża powierzchnię o ok. 1 kolumnę komórek",
                   EXPECT_NEAR(s.coveredAreaHa(), 0.03, 0.003));
-}
-
-TEST_F(SectionControlTest, XfailZeroWidthMarksArea) {
-    add(0.5, 0.5, 0, 0.0);
-    AGRINAV_XFAIL("zerowa szerokość robocza zalicza 1 m²",
-                  EXPECT_NEAR(s.coveredAreaHa(), 0.0, 1e-12));
 }
 
 }  // namespace
