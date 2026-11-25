@@ -39,3 +39,29 @@ target_include_directories(agri_nav_ffi
         bridge
         core/include
 )
+
+# ── Testy jednostkowe/integracyjne (GoogleTest) ───────────────────────────────
+# Domyślnie WYŁĄCZONE — build Androida (Gradle → ten plik) nie pobiera GoogleTest
+# i nie kompiluje testów. Włącz: cmake -S . -B build/tests -DAGRINAV_BUILD_TESTS=ON
+option(AGRINAV_BUILD_TESTS "Buduj testy rdzenia C++" OFF)
+option(AGRINAV_COVERAGE    "Instrumentacja pokrycia (GCC/Clang, gcov)" OFF)
+option(AGRINAV_SANITIZE    "AddressSanitizer + UBSan" OFF)
+if(AGRINAV_BUILD_TESTS)
+    # OBEJŚCIE znanego błędu: ParcelMerger.h używa int32_t bez #include <cstdint>
+    # (nie kompiluje się m.in. na GCC 15+). Usuń po naprawie nagłówka.
+    if(NOT MSVC)
+        target_compile_options(agri_nav_core PUBLIC -include cstdint)
+    endif()
+    foreach(tgt agri_nav_core agri_nav_ffi)
+        if(AGRINAV_COVERAGE)
+            target_compile_options(${tgt} PRIVATE --coverage -O0 -g)
+            target_link_options(${tgt} PUBLIC --coverage)
+        endif()
+        if(AGRINAV_SANITIZE)
+            target_compile_options(${tgt} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+            target_link_options(${tgt} PUBLIC -fsanitize=address,undefined)
+        endif()
+    endforeach()
+    enable_testing()
+    add_subdirectory(core/test)
+endif()
