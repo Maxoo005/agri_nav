@@ -136,11 +136,17 @@ TEST_F(NavEngineTest, XfailDatelineCrossing) {
                   EXPECT_NEAR(g.crossTrackError, 2.0, 1e-2));
 }
 
-TEST_F(NavEngineTest, XfailNaNPositionReportedAsValid) {
+TEST_F(NavEngineTest, NonFinitePositionIsInvalid) {
     line(0, 0, 0, 100);
-    gnss.moveTo({kNaN, kNaN});
-    const auto g = nav.update();
-    AGRINAV_XFAIL("pozycja NaN daje isValid=true i XTE=NaN", EXPECT_FALSE(g.isValid));
+    for (const LatLon bad : {LatLon{kNaN, kNaN}, LatLon{52, kNaN}, LatLon{INFINITY, 17}}) {
+        gnss.moveTo(bad);
+        const auto g = nav.update();
+        EXPECT_FALSE(g.isValid);
+        EXPECT_TRUE(std::isfinite(g.crossTrackError));
+    }
+    EXPECT_TRUE(at(1, 1).isValid);  // kolejna dobra pozycja działa normalnie
+    nav.setAbLine({kNaN, 17}, {52, 17});
+    EXPECT_FALSE(at(1, 1).isValid);
 }
 
 }  // namespace
