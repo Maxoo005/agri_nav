@@ -132,8 +132,7 @@ jobs:
       - name: Biblioteka natywna dla testów FFI
         run: |
           cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_CXX_FLAGS="-include cstdint"
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
           cmake --build build/native --target agri_nav_ffi
           mkdir -p "$RUNNER_TEMP/native"
           cp build/native/libagri_nav_ffi.so "$RUNNER_TEMP/native/agri_nav_ffi.dll"
