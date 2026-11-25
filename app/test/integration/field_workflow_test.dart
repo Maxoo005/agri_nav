@@ -138,6 +138,12 @@ void main() {
       expect(m.holes, isEmpty);
       final l = await LpisProcessorBridge.instance.processAsync(parts);
       expect(GeoUtils.polygonAreaHa(l.primaryBoundary), closeTo(2.0, 0.02));
+      // Opcje muszą dotrzeć do C++ (regresja: czytane po calloc.free):
+      // bufor 2 m powiększa prostokąt 200×100 o ok. 600·2 + π·4 m².
+      final wide = await LpisProcessorBridge.instance
+          .processAsync(parts, bufferM: 2, simplifyEpsilonM: 0);
+      expect(
+          GeoUtils.polygonAreaHa(wide.primaryBoundary), closeTo(2.1213, 0.01));
       expect(() => ParcelMergerBridge.instance.merge([]), throwsStateError);
     });
 
