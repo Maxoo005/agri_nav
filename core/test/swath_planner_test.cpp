@@ -45,6 +45,22 @@ TEST_F(SwathPlannerTest, CollinearPolygonHasNoUsableSwaths) {
     EXPECT_TRUE(SwathPlanner::plan(line, o, north, 10).swaths.empty());
 }
 
+TEST_F(SwathPlannerTest, NonFiniteInputGivesEmptyPlan) {
+    for (double bad : {kNaN, static_cast<double>(INFINITY)}) {
+        for (int i = 0; i < 4; ++i) {
+            Ring r = rect;
+            r[i].lat = bad;
+            EXPECT_TRUE(SwathPlanner::plan(r, o, east, 10, 0, 1).swaths.empty());
+            EXPECT_TRUE(SwathPlanner::plan(r, o, east, 10, 0, 1).headlandRings.empty());
+            EXPECT_EQ(SwathPlanner::optimizeAngle(r, 10).swathCount, 0);
+        }
+        EXPECT_TRUE(SwathPlanner::plan(rect, o, east, bad).swaths.empty());
+        EXPECT_TRUE(SwathPlanner::plan(rect, o, east, 10, bad).swaths.empty());
+        EXPECT_TRUE(SwathPlanner::plan(rect, {bad, 17}, east, 10).swaths.empty());
+        EXPECT_TRUE(SwathPlanner::plan(rect, o, {bad, 17}, 10).swaths.empty());
+    }
+}
+
 // ── Wartości referencyjne ────────────────────────────────────────────────────
 
 TEST_F(SwathPlannerTest, RectangleEastWest) {
@@ -265,15 +281,6 @@ TEST_F(SwathPlannerTest, HeadlandWithOverlapStaysInsideField) {
     const auto two = SwathPlanner::plan(rect, o, east, 10, 2, 2);
     ASSERT_EQ(two.headlandRings.size(), 2u);
     EXPECT_NEAR(f.area(two.headlandRings[1]), 174.0 * 74.0, 5.0);  // 13 m
-}
-
-TEST_F(SwathPlannerTest, XfailNaNVertexYieldsNaNSwaths) {
-    Ring r = f.rect(100, 100);
-    r[1].lat = kNaN;
-    bool finite = true;
-    for (const auto& s : SwathPlanner::plan(r, o, east, 10).swaths)
-        finite = finite && std::isfinite(s.start.lat) && std::isfinite(s.end.lat);
-    AGRINAV_XFAIL("wierzchołek NaN przechodzi do wygenerowanych ścieżek", EXPECT_TRUE(finite));
 }
 
 TEST_F(SwathPlannerTest, XfailPoleIsUnsupported) {

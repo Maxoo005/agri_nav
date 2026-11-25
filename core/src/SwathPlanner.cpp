@@ -145,6 +145,21 @@ static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
     return sVals;
 }
 
+// ─── Input validation ─────────────────────────────────────────────────────────
+
+/// A NaN/Inf anywhere in the input makes the whole plan unusable. Dropping just
+/// the bad vertex would silently change the field shape (and could route the
+/// machine outside of it), so the input is rejected as a whole instead.
+static bool isValidInput(const std::vector<LatLon>& polygon,
+                         double workingWidthM, double overlapM) {
+    if (polygon.size() < 3) return false;
+    if (!std::isfinite(workingWidthM) || workingWidthM <= 0.0) return false;
+    if (!std::isfinite(overlapM)) return false;
+    return std::all_of(polygon.begin(), polygon.end(), [](const LatLon& v) {
+        return std::isfinite(v.lat) && std::isfinite(v.lon);
+    });
+}
+
 // ─── Field geometry: angle-independent, expensive (Clipper2) part ────────────
 
 /// Everything about a field that does NOT depend on swath bearing: the CCW
@@ -167,7 +182,7 @@ static FieldGeometry buildFieldGeometry(
     double workingWidthM, double overlapM, int headlandLaps
 ) {
     FieldGeometry geo;
-    if (polygon.size() < 3 || workingWidthM <= 0.0) return geo;
+    if (!isValidInput(polygon, workingWidthM, overlapM)) return geo;
 
     const int sz = static_cast<int>(polygon.size());
     geo.outerPoly.resize(static_cast<size_t>(sz));
@@ -538,13 +553,14 @@ SwathPlan SwathPlanner::plan(
     int                        headlandLaps
 ) {
     SwathPlan result;
-    if (polygon.size() < 3 || workingWidthM <= 0.0) return result;
+    if (!isValidInput(polygon, workingWidthM, overlapM)) return result;
 
     const double oLat = a.lat;
     const double oLon = a.lon;
 
     const Vec2 bEnu = toENU(oLat, oLon, b.lat, b.lon);
-    if (normVec(bEnu) < 0.01) return result;  // A == B
+    const double abLen = normVec(bEnu);
+    if (!std::isfinite(abLen) || abLen < 0.01) return result;  // NaN/Inf or A == B
 
     const Vec2 d = normalize(bEnu);   // unit vector along AB
     const Vec2 p = {-d.n, d.e};       // unit perpendicular (90° CCW = "left")
@@ -569,7 +585,7 @@ SwathAngleResult SwathPlanner::optimizeAngle(
     double                     coveragePenaltyFactor
 ) {
     SwathAngleResult result;
-    if (polygon.size() < 3 || workingWidthM <= 0.0) return result;
+    if (!isValidInput(polygon, workingWidthM, overlapM)) return result;
 
     const double oLat = polygon[0].lat;
     const double oLon = polygon[0].lon;
