@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Gałęzie robocze tymczasowo, żeby CI ruszało bez PR-a — usunąć po scaleniu.
+    branches: [main, add-ci-tests, format-lib]
   pull_request:
 
 permissions:
