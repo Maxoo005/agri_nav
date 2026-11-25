@@ -91,7 +91,7 @@ class GeoJsonParser {
     if (geometry is! Map<String, dynamic>) return const [];
     final props = feature['properties'];
     final name =
-        (props is Map<String, dynamic>) ? props['name'] as String? : null;
+        (props is Map<String, dynamic>) ? props['name']?.toString() : null;
     return _polygonsFromGeometry(geometry, name);
   }
 
@@ -145,9 +145,11 @@ class GeoJsonParser {
       if (pt is! List || pt.length < 2) {
         throw FormatException('Niepoprawna współrzędna w pliku GeoJSON: $pt');
       }
-      final lon = (pt[0] as num).toDouble();
-      final lat = (pt[1] as num).toDouble();
-      points.add(LatLng(lat, lon));
+      final lon = pt[0], lat = pt[1];
+      if (lon is! num || lat is! num) {
+        throw FormatException('Niepoprawna współrzędna w pliku GeoJSON: $pt');
+      }
+      points.add(LatLng(lat.toDouble(), lon.toDouble()));
     }
     return points;
   }

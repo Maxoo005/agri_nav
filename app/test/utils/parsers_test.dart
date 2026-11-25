@@ -57,18 +57,18 @@ void main() {
       }
     });
 
-    xfail('punkt zamykający jest usuwany', () {
+    test('punkt zamykający jest usuwany', () {
       expect(WktParser.parse('POLYGON((0 0,1 0,1 1,0 1,0 0))'), hasLength(4));
-    }, reason: 'porównanie z points.last zamiast z points.first');
+    });
 
-    xfail('A-B-A to nie wielokąt', () {
+    test('A-B-A to nie wielokąt', () {
       expect(() => WktParser.parse('POLYGON((0 0,1 1,0 0))'), throwsFormat);
-    }, reason: 'punkt zamykający liczony do minimum 3');
+    });
 
-    xfail('NaN jest odrzucany', () {
+    test('NaN jest odrzucany', () {
       expect(
           () => WktParser.parse('POLYGON((NaN 0,1 0,1 1,0 1))'), throwsFormat);
-    }, reason: 'NaN.abs() > 180 jest false');
+    });
 
     xfail('MULTIPOLYGON: większa powierzchnia wygrywa z liczbą wierzchołków',
         () {
@@ -122,27 +122,25 @@ void main() {
       }
     });
 
-    xfail('liczbowa nazwa pola (QGIS) jest akceptowana', () {
+    test('liczbowa nazwa pola (QGIS) jest akceptowana', () {
       final r =
           GeoJsonParser.parse('{"type":"Feature","properties":{"name":12},'
               '"geometry":{"type":"Polygon","coordinates":[$_ring]}}');
       expect(r.single.suggestedName, '12');
-    }, reason: 'rzut `as String?` rzuca TypeError');
+    });
 
-    xfail('tekst w miejscu współrzędnej → FormatException', () {
+    test('tekst w miejscu współrzędnej → FormatException', () {
       expect(
           () => GeoJsonParser.parse(
               '{"type":"Polygon","coordinates":[[["a",52],[18,52],[18,53]]]}'),
           throwsFormat);
-    }, reason: 'rzut `as num` daje TypeError, łamiąc kontrakt parsera');
+    });
 
-    xfail('zamknięty kwadrat → 4 punkty', () {
+    test('zamknięty kwadrat → 4 punkty', () {
       final r =
           GeoJsonParser.parse('{"type":"Polygon","coordinates":[$_ring]}');
       expect(r.single.points, hasLength(4));
-    },
-        reason:
-            'normalizeRing porównuje z ostatnim zamiast z pierwszym punktem');
+    });
   });
 
   group('KmlParser', () {
@@ -177,10 +175,10 @@ void main() {
       }
     });
 
-    xfail('NaN jest odrzucany', () {
+    test('NaN jest odrzucany', () {
       expect(() => KmlParser.parse(_kml('NaN,52 18,52 18,53 17,53')),
           throwsFormat);
-    }, reason: 'double.tryParse("NaN") przechodzi walidację zakresu');
+    });
   });
 
   group('ParsedPolygon.normalizeRing', () {
