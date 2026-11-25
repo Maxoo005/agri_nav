@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: C++ (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc, pokrycie
+            cxx: g++
+            flags: -DAGRINAV_COVERAGE=ON
+            coverage: true
+          - name: clang, ASan+UBSan
+            cxx: clang++
+            flags: -DAGRINAV_SANITIZE=ON
+            coverage: false
+    env:
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Zależności systemowe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+
+      - name: Cache GoogleTest
+        uses: actions/cache@v6
+        with:
+          path: build/tests/_deps
+          key: gtest-${{ runner.os }}-${{ matrix.cxx }}-${{ hashFiles('core/test/CMakeLists.txt') }}
+
+      # PIC: rdzeń statyczny jest linkowany do współdzielonego agri_nav_ffi.
+      - name: Konfiguracja
+        run: >-
+          cmake -S . -B build/tests -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          -DAGRINAV_BUILD_TESTS=ON
+          ${{ matrix.flags }}
+
+      # Kompilacja jest zarazem kontrolą typów części C++.
+      - name: Kompilacja
+        run: cmake --build build/tests
+
+      - name: Testy
+        run: ctest --test-dir build/tests --output-on-failure --output-junit junit.xml
+
+      - name: Raport pokrycia
+        if: matrix.coverage
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet gcovr==8.3
+          mkdir -p coverage-cpp
+          "$RUNNER_TEMP/venv/bin/gcovr" -r . --object-directory build/tests \
+            --filter 'core/(src|include)/' --filter 'bridge/' \
+            --txt coverage-cpp/summary.txt \
+            --cobertura coverage-cpp/cobertura.xml \
+            --html-details coverage-cpp/index.html
+          { echo '### Pokrycie C++'; echo '```'; cat coverage-cpp/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Artefakt pokrycia
+        if: matrix.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-cpp
+          path: coverage-cpp/
+          if-no-files-found: error
+
+      - name: Wyniki testów
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-cpp-${{ matrix.cxx }}
+          path: build/tests/junit.xml
+          if-no-files-found: ignore
+
+  app:
+    name: Flutter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Jedna przypięta wersja: pubspec.lock zależy od pakietów wpiętych w SDK.
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.32.8
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: Zależności systemowe
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev
+
+      - name: Zależności Dart
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      # lib/ nie jest dziś sformatowane przez `dart format` (31 plików) —
+      # egzekwujemy format tylko dla testów; lib/ dołączyć po jednorazowym
+      # sformatowaniu całości.
+      - name: Format (testy)
+        working-directory: app
+        run: dart format --output=none --set-exit-if-changed test
+
+      - name: Lint i kontrola typów
+        working-directory: app
+        run: flutter analyze
+
+      # Produkcyjny native_lib.dart otwiera „agri_nav_ffi.dll” na każdej
+      # platformie poza Androidem, więc podkładamy .so pod tą nazwą.
+      - name: Biblioteka natywna dla testów FFI
+        run: |
+          cmake -S . -B build/native -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_CXX_FLAGS="-include cstdint"
+          cmake --build build/native --target agri_nav_ffi
+          mkdir -p "$RUNNER_TEMP/native"
+          cp build/native/libagri_nav_ffi.so "$RUNNER_TEMP/native/agri_nav_ffi.dll"
+
+      - name: Testy z pokryciem
+        working-directory: app
+        env:
+          AGRINAV_REQUIRE_NATIVE: '1'
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/native:${LD_LIBRARY_PATH:-}"
+          flutter test --coverage --reporter expanded
+
+      - name: Podsumowanie pokrycia
+        working-directory: app
+        run: |
+          awk -F'[:,]' '/^DA:/ {t++; if ($3 > 0) h++} END {
+            printf "### Pokrycie Dart\n%d/%d linii (%.1f%%) w plikach załadowanych przez testy\n", h, t, 100*h/t
+          }' coverage/lcov.info | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Artefakt pokrycia
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-dart
+          path: app/coverage/lcov.info
+          if-no-files-found: error
