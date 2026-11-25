@@ -37,6 +37,9 @@ class CoverageService {
   void startTracking(String fieldId, {String? taskId}) {
     final key = taskId != null ? '${fieldId}_$taskId' : fieldId;
     if (_activeKey == key) return;
+    // Zapisz ogon poprzedniego śladu — czyszczenie bufora by go zgubiło.
+    // (Zapis kopiuje punkty synchronicznie, przed clear() poniżej.)
+    _flush();
     _activeKey = key;
     _buffer
       ..clear()

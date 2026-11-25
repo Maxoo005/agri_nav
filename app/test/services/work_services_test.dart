@@ -294,12 +294,14 @@ void main() {
       expect(c.currentTrack, isEmpty);
     });
 
-    xfail('przełączenie pola bez stopTracking nie gubi punktów', () async {
+    test('przełączenie pola bez stopTracking nie gubi punktów', () async {
       c.startTracking('a');
       c.addPoint(at(0, 0));
       c.startTracking('b');
+      expect(c.currentTrack, isEmpty);
       expect(c.loadForField('a'), hasLength(1));
-    }, reason: 'startTracking czyści bufor bez zapisu');
+      expect(c.loadForField('b'), isEmpty);
+    });
   });
 
   group('CRUD Hive', () {
