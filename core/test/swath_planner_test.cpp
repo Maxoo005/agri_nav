@@ -251,10 +251,9 @@ TEST_F(SwathPlannerTest, DumbbellFieldKeepsBothParts) {
     EXPECT_NEAR(opt.totalLengthM, 1290.0, 60.0);
 }
 
-TEST_F(SwathPlannerTest, XfailScanlineThroughReflexVertex) {
+TEST_F(SwathPlannerTest, ScanlineThroughReflexVertexKeepsWholePass) {
     // Arytmetyka dokładna (równik, U = 111320/2048): pas N=2.5U przechodzi
-    // dokładnie przez wierzchołek wcięcia (ostrze od góry) → nieparzysta
-    // liczba przecięć i pop_back() odcina prawą połowę pasa.
+    // dokładnie przez wierzchołek wcięcia — pas nie może zostać ucięty.
     const double q = 1.0 / 2048.0, U = kMDeg * q;
     const Ring r = {{0, 0}, {0, 8 * q}, {4 * q, 8 * q}, {4 * q, 6 * q},
                     {2.5 * q, 4 * q}, {4 * q, 2 * q}, {4 * q, 0}};
@@ -263,9 +262,7 @@ TEST_F(SwathPlannerTest, XfailScanlineThroughReflexVertex) {
     double covered = 0;
     for (const auto& s : p.swaths)
         if (std::abs(g.en(s.start).second - 2.5 * U) < 0.01) covered += g.length(s);
-    EXPECT_GT(covered, 0.0);
-    AGRINAV_XFAIL("wierzchołek wklęsły na linii skanu ucina połowę pasa",
-                  EXPECT_NEAR(covered, 8 * U, 1.0));
+    EXPECT_NEAR(covered, 8 * U, 1.0);
 }
 
 TEST_F(SwathPlannerTest, HeadlandWithOverlapStaysInsideField) {

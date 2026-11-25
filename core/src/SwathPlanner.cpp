@@ -112,8 +112,10 @@ static std::vector<std::vector<Vec2>> offsetPolygon(const std::vector<Vec2>& pol
 
 /// Collect sorted intersection parameters along the d-axis where the scan line
 /// { dot(P, p) = tK } crosses the polygon edges.
-/// Half-open edge parameter u ∈ [0,1) avoids double-counting shared vertices.
-/// Enforces even count (Jordan curve theorem; pops last entry if odd).
+/// An edge counts when its ends lie on opposite sides of the line ("on the
+/// line" belongs to the lower side). Around a closed ring the side flips an
+/// even number of times, so the count is always even — also when the line
+/// passes exactly through a vertex.
 static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
                                         const Vec2&               d,
                                         const Vec2&               p,
@@ -128,12 +130,9 @@ static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
 
         const double d0 = dot(v0, p) - tK;
         const double d1 = dot(v1, p) - tK;
-        const double dd = d1 - d0;
-
-        if (std::abs(dd) < 1e-10) continue;
+        if ((d0 > 0.0) == (d1 > 0.0)) continue;
 
         const double u = d0 / (d0 - d1);
-        if (u < 0.0 || u >= 1.0) continue;
 
         const Vec2 pt = {v0.e + u * (v1.e - v0.e),
                          v0.n + u * (v1.n - v0.n)};
@@ -141,7 +140,6 @@ static std::vector<double> clipScanLine(const std::vector<Vec2>& poly,
     }
 
     std::sort(sVals.begin(), sVals.end());
-    if (!sVals.empty() && sVals.size() % 2 != 0) sVals.pop_back();
     return sVals;
 }
 
