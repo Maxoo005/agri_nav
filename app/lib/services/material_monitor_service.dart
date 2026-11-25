@@ -137,6 +137,7 @@ class MaterialMonitorService {
   /// Detach the active task (e.g. when leaving work mode).
   void stop() {
     _task = null;
+    _totalAdded = 0.0; // bez zadania nie ma zużycia (patrz [totalConsumed])
     _state = MaterialMonitorState.empty;
     _stateController.add(_state);
   }

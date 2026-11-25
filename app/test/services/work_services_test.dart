@@ -140,12 +140,12 @@ void main() {
       expect(m.totalConsumed, closeTo(0, 1e-9));
     }, reason: 'obcięcie do pojemności liczone jako zużyte 200 l');
 
-    xfail('po stop() zużycie nie rośnie do całego zbiornika', () {
+    test('po stop() zużycie nie rośnie do całego zbiornika', () {
       m.start(_task());
       m.updateArea(1);
       m.stop();
       expect(m.totalConsumed, lessThanOrEqualTo(100));
-    }, reason: 'stop() zeruje stan, ale nie _totalAdded');
+    });
   });
 
   group('WorkSessionService', () {
