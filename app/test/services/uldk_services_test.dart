@@ -178,6 +178,8 @@ void main() {
           l.fetchByFarmId('x'), throwsA(isA<LpisNoNetworkException>()));
     });
 
+    // poza zakresem: obsługiwane tylko współrzędne w Polsce
+    // w WGS-84 (srid=4326); SRID=2180 to nieużywana ścieżka legacy.
     xfail('EPSG:2180 (PUWG-92) jest przeliczane na WGS-84', () async {
       // Południk osiowy 19°E ↔ easting 500000; ~52°N.
       _respond = (_) => http.Response(

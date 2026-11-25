@@ -22,6 +22,7 @@ AgriNav to aplikacja nawigacyjna do jazdy równoległymi pasami po polu — z ko
 7. [Stan projektu i ograniczenia](#7-stan-projektu-i-ograniczenia)
 8. [Moje autorskie podejście i podsumowanie](#8-moje-autorskie-podejście-i-podsumowanie)
 9. [Testy](#9-testy)
+10. [Znane ograniczenia](#10-znane-ograniczenia)
 
 ---
 
@@ -278,7 +279,7 @@ Dalej dochodzi korekta granic punktami kontrolnymi i wyznaczanie linii AB przeja
 
 **Zależność od zasięgu komórkowego.** Poprawki NTRIP wymagają aktywnego połączenia internetowego. Bez zasięgu (typowe na części pól w terenie) odbiornik RTK degraduje się do zwykłego GPS/DGPS — nie ma trybu offline ani obsługi własnej stacji bazowej.
 
-**Testy automatyczne obejmują logikę, nie interfejs.** Rdzeń C++, most FFI, parsery, modele i serwisy mają testy uruchamiane w CI (patrz [rozdział 9](#9-testy)); ekrany Fluttera i praca z prawdziwym sprzętem są nadal weryfikowane ręcznie, w terenie. Znane błędy są w testach oznaczone jako XFAIL.
+**Testy automatyczne obejmują logikę, nie interfejs.** Rdzeń C++, most FFI, parsery, modele i serwisy mają testy uruchamiane w CI (patrz [rozdział 9](#9-testy)); ekrany Fluttera i praca z prawdziwym sprzętem są nadal weryfikowane ręcznie, w terenie. Znane błędy są w testach oznaczone jako XFAIL i zebrane w [rozdziale 10](#10-znane-ograniczenia).
 
 **Tylko Android.** Projekt buduje się wyłącznie na Android; nie ma konfiguracji iOS/desktop/web.
 
@@ -327,3 +328,18 @@ Testy integracyjne w `app/test/integration` wołają prawdziwą bibliotekę C++.
 Testy są deterministyczne: bez sieci zewnętrznej (ULDK na mocku HTTP, NTRIP na loopbacku) i bez sprzętu GPS. Dane testowe leżą w `core/test/fixtures` i `app/test/fixtures`. Test oznaczony `XFAIL` opisuje poprawne zachowanie, którego kod jeszcze nie spełnia — po naprawie błędu zacznie się wywalać i trzeba go zamienić na zwykły test.
 
 **CI** ([ci.yml](.github/workflows/ci.yml)) działa na każdym pull requeście i pushu do `main`: buduje i testuje rdzeń na GCC (z pokryciem) oraz Clang (ASan + UBSan), a dla aplikacji sprawdza format `lib/` i testów, uruchamia `flutter analyze` i testy razem z FFI. Raporty pokrycia są artefaktami przebiegu (`coverage-cpp`, `coverage-dart`).
+
+## 10. Znane ograniczenia
+
+Każdy punkt odpowiada testom XFAIL (łącznie 12):
+
+| Ograniczenie | XFAIL | Dlaczego zostaje |
+|---|---|---|
+| Pola i prowadzenie przez południk 180° (dateline) | 5 | Poza zakresem: obsługiwane tylko współrzędne w Polsce. |
+| Bieguny | 2 | Poza zakresem: obsługiwane tylko współrzędne w Polsce. Lokalny układ ENU jest tam zdegenerowany. |
+| Odpowiedź ULDK w EPSG:2180 (PUWG-92) | 1 | Poza zakresem: aplikacja zawsze żąda WGS-84 (`srid=4326`), a ścieżka EPSG:2180 to nieużywana pozostałość. |
+| Pokrycie liczone na kratce 1 m zawyża powierzchnię pojedynczego przejazdu (ok. +33% przy 3 m, mniej przy szerszych maszynach) | 1 | Czeka na decyzję: poprawka zmieni raportowane hektary. Zużycie materiału jest liczone osobno i nie jest tym obciążone. |
+| Z MULTIPOLYGON importowana jest część o największej liczbie wierzchołków, a nie o największej powierzchni | 1 | Czeka na decyzję: poprawka zmieni, która część działki się importuje. |
+| Symulator GNSS (C++): przyjmuje zdania bez fixa i ze złą sumą kontrolną | 2 | Kod jest odłączony od aplikacji; czeka na decyzję, czy go naprawić, czy usunąć. Parser NMEA aplikacji (Dart) sprawdza jedno i drugie. |
+
+Przed scaleniem zmian w prowadzeniu wykonaj [plan przejazdu próbnego](docs/przejazd-probny.md).

@@ -219,6 +219,7 @@ TEST_F(SwathPlannerTest, WorksAcrossUtmBoundaryAndInSouth) {
 
 // ── Znane błędy ──────────────────────────────────────────────────────────────
 
+// poza zakresem: obsługiwane tylko współrzędne w Polsce
 TEST_F(SwathPlannerTest, XfailDatelineField) {
     const Frame g{0.0, 180.0};
     Ring r = g.rect(200, 100, -100, 0);
@@ -280,6 +281,7 @@ TEST_F(SwathPlannerTest, HeadlandWithOverlapStaysInsideField) {
     EXPECT_NEAR(f.area(two.headlandRings[1]), 174.0 * 74.0, 5.0);  // 13 m
 }
 
+// poza zakresem: obsługiwane tylko współrzędne w Polsce
 TEST_F(SwathPlannerTest, XfailPoleIsUnsupported) {
     const Ring r = {{89.999, 0}, {89.999, 90}, {89.999, 180}, {89.999, -90}};
     const auto p = SwathPlanner::plan(r, {90.0, 0}, {89.999, 0}, 10);
