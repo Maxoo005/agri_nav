@@ -22,7 +22,8 @@ AgriNav to aplikacja nawigacyjna do jazdy równoległymi pasami po polu — z ko
 7. [Stan projektu i ograniczenia](#7-stan-projektu-i-ograniczenia)
 8. [Moje autorskie podejście i podsumowanie](#8-moje-autorskie-podejście-i-podsumowanie)
 9. [Testy](#9-testy)
-10. [Znane ograniczenia](#10-znane-ograniczenia)
+10. [Naprawione błędy](#10-naprawione-błędy)
+11. [Znane ograniczenia](#11-znane-ograniczenia)
 
 ---
 
@@ -279,7 +280,7 @@ Dalej dochodzi korekta granic punktami kontrolnymi i wyznaczanie linii AB przeja
 
 **Zależność od zasięgu komórkowego.** Poprawki NTRIP wymagają aktywnego połączenia internetowego. Bez zasięgu (typowe na części pól w terenie) odbiornik RTK degraduje się do zwykłego GPS/DGPS — nie ma trybu offline ani obsługi własnej stacji bazowej.
 
-**Testy automatyczne obejmują logikę, nie interfejs.** Rdzeń C++, most FFI, parsery, modele i serwisy mają testy uruchamiane w CI (patrz [rozdział 9](#9-testy)); ekrany Fluttera i praca z prawdziwym sprzętem są nadal weryfikowane ręcznie, w terenie. Znane błędy są w testach oznaczone jako XFAIL i zebrane w [rozdziale 10](#10-znane-ograniczenia).
+**Testy automatyczne obejmują logikę, nie interfejs.** Rdzeń C++, most FFI, parsery, modele i serwisy mają testy uruchamiane w CI (patrz [rozdział 9](#9-testy)); ekrany Fluttera i praca z prawdziwym sprzętem są nadal weryfikowane ręcznie, w terenie. Znane błędy są w testach oznaczone jako XFAIL i zebrane w [rozdziale 11](#11-znane-ograniczenia), a błędy naprawione dzięki testom — w [rozdziale 10](#10-naprawione-błędy).
 
 **Tylko Android.** Projekt buduje się wyłącznie na Android; nie ma konfiguracji iOS/desktop/web.
 
@@ -327,9 +328,67 @@ Testy integracyjne w `app/test/integration` wołają prawdziwą bibliotekę C++.
 
 Testy są deterministyczne: bez sieci zewnętrznej (ULDK na mocku HTTP, NTRIP na loopbacku) i bez sprzętu GPS. Dane testowe leżą w `core/test/fixtures` i `app/test/fixtures`. Test oznaczony `XFAIL` opisuje poprawne zachowanie, którego kod jeszcze nie spełnia — po naprawie błędu zacznie się wywalać i trzeba go zamienić na zwykły test.
 
+**Co jest testowane:**
+
+| Plik | Zakres |
+|---|---|
+| `core/test/swath_planner_test.cpp` | Planer ścieżek: odstępy pasów, uwrocia z zakładką, pola wieloczęściowe i z otworami, linia skanu przez wierzchołek, odrzucanie NaN/Inf |
+| `core/test/guidance_test.cpp` | Prowadzenie po pasach i uwrociach: wybór najbliższej linii, strona, błąd kursu w obu kierunkach, czyszczenie pustą listą |
+| `core/test/nav_engine_test.cpp` | Linia AB: odchyłka poprzeczna i jej znak, ważność zależna od RTK, pozycja NaN → wynik nieważny |
+| `core/test/section_control_test.cpp` | Pokrycie na kratce: nakładanie się przejazdów, rozmiar kratki, zerowa/ujemna szerokość |
+| `core/test/parcel_test.cpp` | Scalanie działek: sąsiednie i nakładające się, mikroszczeliny, kierunek obiegu, otwory, upraszczanie LPIS |
+| `core/test/ffi_test.cpp`, `integration_test.cpp` | Most FFI i pełny przebieg pole → plan → prowadzenie na danych z `fixtures` |
+| `app/test/models/` | NMEA (GGA/RMC, sumy kontrolne, zakresy), modele pól i maszyn, zapis/odczyt |
+| `app/test/utils/` | Parsery WKT/KML/GeoJSON, geometria, dekoder `chunked` |
+| `app/test/services/` | NTRIP (v1/v2, sourcetable, 401/404, rozłączenia), Bluetooth, ULDK, bazy SQLite/Hive, zużycie materiału, pokrycie |
+| `app/test/integration/` | Aplikacja + prawdziwa biblioteka C++: import pola, plan, symulowany przejazd |
+
+Stan: 112 testów C++ i 196 testów Dart; pokrycie ok. 91% rdzenia C++ i 93% wczytanych plików Dart (bez ekranów).
+
 **CI** ([ci.yml](.github/workflows/ci.yml)) działa na każdym pull requeście i pushu do `main`: buduje i testuje rdzeń na GCC (z pokryciem) oraz Clang (ASan + UBSan), a dla aplikacji sprawdza format `lib/` i testów, uruchamia `flutter analyze` i testy razem z FFI. Raporty pokrycia są artefaktami przebiegu (`coverage-cpp`, `coverage-dart`).
 
-## 10. Znane ograniczenia
+## 10. Naprawione błędy
+
+Błędy znalezione przez testy (wcześniej oznaczone XFAIL) i naprawione. Każda poprawka to osobny commit z testem, który ją pilnuje.
+
+**Planowanie ścieżek i prowadzenie (C++)**
+
+| Było | Jest |
+|---|---|
+| Pole rozcięte przez uwrocie na części (np. dwa kwadraty połączone wąskim przesmykiem) traciło wszystkie części poza jedną — tam nie było ścieżek | Każda część dostaje uwrocie i pasy |
+| Uwrocie z zakładką wychodziło o połowę zakładki poza granicę pola | Krawędź narzędzia na granicy; tor uwrocia i pasy przesunięte do środka o połowę zakładki (np. 6 m / 0,5 m: tor 3,00 m zamiast 2,75 m) |
+| Linia skanu trafiająca dokładnie w wierzchołek ucinała pas | Pas jest kompletny |
+| Wejście z NaN/Inf dawało ścieżki z NaN | Plan pusty |
+| Pozycja lub linia AB z NaN dawała „ważne” prowadzenie | Wynik oznaczony jako nieważny |
+| Pusta lista ścieżek lub uwroci zostawiała stare prowadzenie (np. z poprzedniego pola) | Pusta lista czyści prowadzenie i mapę |
+| Ujemna lub nieskończona szerokość narzędzia rzucała wyjątek przez FFI (zamknięcie aplikacji) | Brak pokrycia, bez wyjątku |
+| Zerowa szerokość robocza zaliczała powierzchnię | Nie zalicza |
+| Scalanie działek gubiło działkę narysowaną w odwrotnym kierunku obiegu | Kierunek jest wyrównywany przed scaleniem |
+| Otwór (np. las) przypisywany do złej części pola | Otwór trafia do części, w której leży |
+| Brak `#include <cstdint>` — błąd kompilacji na nowszym GCC | Nagłówki kompilują się samodzielnie |
+
+**Most FFI i aplikacja (Dart)**
+
+| Było | Jest |
+|---|---|
+| `LpisProcessorBridge` czytał opcje po zwolnieniu pamięci (`calloc.free`) | Pamięć zwalniana po użyciu |
+| NTRIP: odpowiedź 404 lub inna niż 200 (np. strona HTML) trafiała do odbiornika jako poprawki | Gniazdo zamykane, czytelny błąd, ponawianie |
+| NTRIP: 200 z listą mountpointów (sourcetable) lub innym typem treści traktowane jak RTCM | Błąd „zły mountpoint”; przyjmowane tylko `ICY 200 OK`, `gnss/data` albo (bez typu) dane zaczynające się od RTCM3 |
+| NTRIP v2 z `Transfer-Encoding: chunked`: długości porcji szły do odbiornika razem z danymi | Strumień jest dekodowany; koniec strumienia → ponowne połączenie |
+| NMEA: współrzędne GGA spoza zakresu przyjmowane; minuty zaokrąglane do 60 | Odrzucane; poprawne przeniesienie do pełnego stopnia |
+| NMEA: RMC bez kursu (postój) gubił prędkość | Prędkość zostaje, kurs oznaczony jako nieznany |
+| Import WKT/KML/GeoJSON: powtórzony punkt zamykający dawał dodatkowy narożnik; NaN i tekst zamiast liczby przechodziły; nazwa liczbowa psuła import | Punkt zamykający usuwany, wadliwy plik odrzucany z komunikatem, nazwa zamieniana na tekst |
+| `FieldModel` nie wczytywał zapisów z liczbami całkowitymi ani niekompletnych | Wczytuje |
+| Materiał: po `stop()` zużycie pokazywało cały zbiornik | Zużycie zerowane |
+| Materiał: dolewka ponad pojemność liczyła obcięty nadmiar jako zużycie | Poziom obcinany do pojemności bez fikcyjnego zużycia |
+| Pokrycie: przełączenie pola bez `stopTracking` gubiło ostatnie punkty | Punkty zapisywane przed przełączeniem |
+| ULDK: niepoprawny UTF-8 w odpowiedzi kończył się nieobsłużonym wyjątkiem | `ULDKException` z komunikatem |
+
+Dodatkowo kod w `lib/` sformatowano `dart format` (bez zmian w logice), a CI pilnuje formatu.
+
+**Uwaga przy aktualizacji:** plany z zakładką i uwrociem po ponownym wygenerowaniu są przesunięte o połowę zakładki względem starej wersji. Pole zaczęte w starej wersji dokończ w niej albo skoryguj ręcznym przesunięciem. Zmiany w terenie sprawdza [plan przejazdu próbnego](docs/przejazd-probny.md).
+
+## 11. Znane ograniczenia
 
 Każdy punkt odpowiada testom XFAIL (łącznie 12):
 
