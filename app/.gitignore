@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Testy
+/coverage/
+/agri_nav_ffi.dll

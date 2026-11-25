@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Gospodarstwo"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          17,
+          52
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Pole testowe"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              17.0,
+              52.0
+            ],
+            [
+              17.002918198429,
+              52.0
+            ],
+            [
+              17.002918198429,
+              52.000898311175
+            ],
+            [
+              17.0,
+              52.000898311175
+            ],
+            [
+              17.0,
+              52.0
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
