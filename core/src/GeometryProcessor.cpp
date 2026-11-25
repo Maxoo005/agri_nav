@@ -127,7 +127,9 @@ MergeResult GeometryProcessor::processLpis(
         size_t groupIdx = 0;
         if (!isOuter) {
             for (size_t k = 0; k < outerIndices.size(); ++k)
-                if (outerIndices[k].first < i) groupIdx = k;
+                if (Clipper2Lib::PointInPolygon(rawPath.front(), unioned[outerIndices[k].first])
+                        != Clipper2Lib::PointInPolygonResult::IsOutside)
+                    groupIdx = k;  // malejąco po polu → zostaje najmniejsza obejmująca
         } else {
             for (size_t k = 0; k < outerIndices.size(); ++k)
                 if (outerIndices[k].first == i) { groupIdx = k; break; }

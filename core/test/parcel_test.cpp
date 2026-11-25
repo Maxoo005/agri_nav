@@ -133,16 +133,30 @@ TEST_F(ParcelTest, MixedWindingKeepsAllParcels) {
     EXPECT_NEAR(outer(GeometryProcessor::processLpis(in)), 20012.0, 5.0);  // bufor 2 cm
 }
 
-// ── Znane błędy ──────────────────────────────────────────────────────────────
-
-TEST_F(ParcelTest, XfailHoleAssignedToWrongPart) {
+TEST_F(ParcelTest, HoleIsAssignedToContainingPart) {
     auto parcels = frame();
     parcels.push_back(f.rect(20, 20, 500, -100));
     parcels.push_back(f.rect(20, 20, 500, 400));
-    const auto r = ParcelMerger::merge(parcels);
-    EXPECT_EQ(count(r, RingType::HolePrimary) + count(r, RingType::HoleSecondary), 1);
-    AGRINAV_XFAIL("otwór przypisywany po indeksie, nie po położeniu",
-                  EXPECT_EQ(count(r, RingType::HolePrimary), 1));
+    for (const auto& r : {ParcelMerger::merge(parcels), GeometryProcessor::processLpis(parcels)}) {
+        EXPECT_EQ(count(r, RingType::HolePrimary), 1);
+        EXPECT_EQ(count(r, RingType::HoleSecondary), 0);
+    }
+    // Wyspa z własnym otworem wewnątrz otworu ramy.
+    auto island = frame();
+    for (const auto& q : {f.rect(60, 20, 70, 70), f.rect(60, 20, 70, 110),
+                          f.rect(20, 20, 70, 90), f.rect(20, 20, 110, 90)})
+        island.push_back(q);
+    const auto isl = ParcelMerger::merge(island);
+    EXPECT_EQ(count(isl, RingType::HolePrimary), 1);
+    EXPECT_EQ(count(isl, RingType::HoleSecondary), 1);
+    // Otwór w mniejszej części → HoleSecondary.
+    const std::vector<Ring> two = {f.rect(60, 20, 1000), f.rect(60, 20, 1000, 40),
+                                   f.rect(20, 20, 1000, 20), f.rect(20, 20, 1040, 20),
+                                   f.rect(300, 300)};
+    for (const auto& r : {ParcelMerger::merge(two), GeometryProcessor::processLpis(two)}) {
+        EXPECT_EQ(count(r, RingType::HolePrimary), 0);
+        EXPECT_EQ(count(r, RingType::HoleSecondary), 1);
+    }
 }
 
 }  // namespace
