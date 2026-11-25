@@ -157,6 +157,7 @@ struct FieldGeometry {
     std::vector<std::vector<Vec2>> innerPolys;           // ENU, CCW — swath clip boundaries (one per part)
     std::vector<std::vector<Vec2>> headlandRingsEnu;     // ENU, lap 1..k order (several rings per lap when the field splits)
     double effectiveWidth = 0.1;
+    double edgeInset = 0.0;  // overlap/2 — keeps the outermost lap inside the field
     bool   valid = false;
 };
 
@@ -178,6 +179,9 @@ static FieldGeometry buildFieldGeometry(
 
     // Effective strip pitch = workingWidth − overlap (clamped) ────────────────
     geo.effectiveWidth = std::max(workingWidthM - std::max(overlapM, 0.0), 0.1);
+    // Lap pitch is effectiveWidth, but the implement is workingWidth wide:
+    // without this inset lap 1 would stick out of the field by overlap/2.
+    geo.edgeInset = std::max((workingWidthM - geo.effectiveWidth) * 0.5, 0.0);
 
     // Headland rings ────────────────────────────────────────────────────────
     //
@@ -185,14 +189,14 @@ static FieldGeometry buildFieldGeometry(
     // the machine's outer edge touch the previous boundary:
     //
     //   pass 1 : offset = W/2          (outer edge = field boundary)
-    //   pass 2 : offset = W/2 + W
-    //   pass k : offset = W/2 + (k-1)×W  =  (k - 0.5) × effectiveWidth
+    //   pass k : offset = W/2 + (k-1)×effectiveWidth
+    //                   = (k - 0.5)×effectiveWidth + overlap/2
     //
     // Each ring is computed independently from outerPoly to prevent
     // compounding numerical error across laps.
     for (int k = 1; k <= headlandLaps; ++k) {
         const double antennaOffset =
-            (static_cast<double>(k) - 0.5) * geo.effectiveWidth;
+            (static_cast<double>(k) - 0.5) * geo.effectiveWidth + geo.edgeInset;
         auto rings = offsetPolygon(geo.outerPoly, antennaOffset);
         if (rings.empty()) break;  // field too narrow — stop generating more laps
         for (auto& ring : rings) geo.headlandRingsEnu.push_back(std::move(ring));
@@ -202,7 +206,7 @@ static FieldGeometry buildFieldGeometry(
     // Swaths must not cross this line (they would overlap the headland area).
     if (headlandLaps > 0) {
         const double clipOffset =
-            static_cast<double>(headlandLaps) * geo.effectiveWidth;
+            static_cast<double>(headlandLaps) * geo.effectiveWidth + geo.edgeInset;
         geo.innerPolys = offsetPolygon(geo.outerPoly, clipOffset);
     }
     // Fallback: no headland or field too narrow to clip — use outer boundary.
@@ -478,13 +482,14 @@ static PathD toPathD(const std::vector<Vec2>& poly) {
 /// Angle-independent — computed once per optimizeAngle call, reused across
 /// every refine-stage candidate.
 static PathsD buildHeadlandBandPieces(
-    const std::vector<Vec2>& outerPoly, double effectiveWidth, int headlandLaps
+    const std::vector<Vec2>& outerPoly, double effectiveWidth, double edgeInset,
+    int headlandLaps
 ) {
     PathsD pieces;
     PathsD prevBoundary{toPathD(outerPoly)};
     for (int k = 1; k <= headlandLaps; ++k) {
         PathsD nextBoundary;
-        for (const auto& part : offsetPolygon(outerPoly, k * effectiveWidth))
+        for (const auto& part : offsetPolygon(outerPoly, k * effectiveWidth + edgeInset))
             nextBoundary.push_back(toPathD(part));
         const PathsD band = nextBoundary.empty()
             ? prevBoundary
@@ -625,7 +630,7 @@ SwathAngleResult SwathPlanner::optimizeAngle(
     bestScore = std::numeric_limits<double>::max();
 
     const PathsD headlandBandPieces =
-        buildHeadlandBandPieces(geo.outerPoly, geo.effectiveWidth, headlandLaps);
+        buildHeadlandBandPieces(geo.outerPoly, geo.effectiveWidth, geo.edgeInset, headlandLaps);
     const double fieldAreaM2 = std::abs(signedArea(geo.outerPoly));
 
     auto considerAccurate = [&](double angleDeg) {

@@ -252,15 +252,19 @@ TEST_F(SwathPlannerTest, XfailScanlineThroughReflexVertex) {
                   EXPECT_NEAR(covered, 8 * U, 1.0));
 }
 
-TEST_F(SwathPlannerTest, XfailOverlapPushesHeadlandOutsideField) {
+TEST_F(SwathPlannerTest, HeadlandWithOverlapStaysInsideField) {
     // W=10, zakładka 2: zewnętrzna krawędź maszyny ma dotykać granicy, więc
-    // antena W/2 = 5 m od niej. Kod używa (W-overlap)/2 = 4 m → 1 m poza polem.
+    // antena W/2 = 5 m od niej (nie (W-overlap)/2 = 4 m).
     const auto p = SwathPlanner::plan(rect, o, east, 10, 2, 1);
     ASSERT_EQ(p.headlandRings.size(), 1u);
     double minN = 1e9;
     for (const auto& pt : p.headlandRings[0]) minN = std::min(minN, f.en(pt).second);
-    AGRINAV_XFAIL("pierwsze uwrocie z zakładką wychodzi poza granicę o overlap/2",
-                  EXPECT_NEAR(minN, 5.0, 0.05));
+    EXPECT_NEAR(minN, 5.0, 0.05);
+    // Kolejne tory co skok 8 m, pierwszy pas wnętrza o skok od uwrocia.
+    EXPECT_NEAR(f.en(p.swaths.front().start).second, 13.0, 0.05);
+    const auto two = SwathPlanner::plan(rect, o, east, 10, 2, 2);
+    ASSERT_EQ(two.headlandRings.size(), 2u);
+    EXPECT_NEAR(f.area(two.headlandRings[1]), 174.0 * 74.0, 5.0);  // 13 m
 }
 
 TEST_F(SwathPlannerTest, XfailNaNVertexYieldsNaNSwaths) {
