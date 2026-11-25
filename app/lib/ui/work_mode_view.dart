@@ -660,8 +660,7 @@ class _WorkModeViewState extends State<WorkModeView> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF1A3A1A),
                       borderRadius: BorderRadius.circular(8),
-                      border:
-                          Border.all(color: Colors.greenAccent, width: 0.5),
+                      border: Border.all(color: Colors.greenAccent, width: 0.5),
                     ),
                     child: Row(
                       children: [
@@ -785,8 +784,8 @@ class _WorkModeViewState extends State<WorkModeView> {
 
     if (choice == null || !mounted) return;
     if (choice == 'full') {
-      MaterialMonitorService.instance.fullRefill(
-          currentAreaHa: _rawMaterialAreaHa, maxCapacity: maxVol);
+      MaterialMonitorService.instance
+          .fullRefill(currentAreaHa: _rawMaterialAreaHa, maxCapacity: maxVol);
     } else if (choice == 'partial' && partialAmount != null) {
       MaterialMonitorService.instance.refill(
         addedVolume: partialAmount!,
@@ -811,8 +810,7 @@ class _WorkModeViewState extends State<WorkModeView> {
     final unit = MaterialMonitorService.instance.state.unit;
 
     double? newRate = task.targetRate;
-    final rateCtrl =
-        TextEditingController(text: _formatRate(task.targetRate!));
+    final rateCtrl = TextEditingController(text: _formatRate(task.targetRate!));
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1202,8 +1200,10 @@ class _FieldCanvasPainter extends CustomPainter {
         final extentPaint = Paint()
           ..color = _kMachineExtent
           ..strokeWidth = 1.5;
-        _drawDashedLine(canvas, s0 + halfWidthOffset, s1 + halfWidthOffset, extentPaint);
-        _drawDashedLine(canvas, s0 - halfWidthOffset, s1 - halfWidthOffset, extentPaint);
+        _drawDashedLine(
+            canvas, s0 + halfWidthOffset, s1 + halfWidthOffset, extentPaint);
+        _drawDashedLine(
+            canvas, s0 - halfWidthOffset, s1 - halfWidthOffset, extentPaint);
       }
     }
 
@@ -1843,8 +1843,7 @@ class _TankIndicator extends StatelessWidget {
                 Expanded(
                   child: Text(
                     'Dawka: ${rate.toStringAsFixed(1)} ${state.unit}/ha',
-                    style:
-                        const TextStyle(color: Colors.white54, fontSize: 11),
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
                   ),
                 ),
                 const Icon(Icons.edit_rounded,
@@ -1927,8 +1926,7 @@ class _MachineOffButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color bg =
-        isOff ? const Color(0xAA4A0000) : const Color(0xAA1A1A1A);
+    final Color bg = isOff ? const Color(0xAA4A0000) : const Color(0xAA1A1A1A);
     final Color fg = isOff ? Colors.redAccent : Colors.white54;
 
     return FilledButton.icon(
@@ -1947,9 +1945,8 @@ class _MachineOffButton extends StatelessWidget {
         ),
       ),
       onPressed: onPressed,
-      icon: Icon(isOff
-          ? Icons.power_off_rounded
-          : Icons.power_settings_new_rounded),
+      icon: Icon(
+          isOff ? Icons.power_off_rounded : Icons.power_settings_new_rounded),
       label: Text(isOff ? 'Wyłączona' : 'Maszyna'),
     );
   }

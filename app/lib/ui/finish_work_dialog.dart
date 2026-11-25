@@ -77,8 +77,7 @@ Future<String?> showFinishWorkDialog(
             children: [
               _InfoRow(label: 'Pole', value: info.fieldName),
               _InfoRow(label: 'Maszyna', value: info.machineName),
-              _InfoRow(
-                  label: 'Rodzaj zadania', value: info.taskTypeLabel),
+              _InfoRow(label: 'Rodzaj zadania', value: info.taskTypeLabel),
               _InfoRow(
                 label: 'Szerokość robocza',
                 value: '${info.workingWidthM.toStringAsFixed(1)} m',

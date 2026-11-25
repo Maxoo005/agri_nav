@@ -129,7 +129,8 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Anuluj', style: TextStyle(color: Colors.white60)),
+            child:
+                const Text('Anuluj', style: TextStyle(color: Colors.white60)),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
@@ -174,8 +175,8 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(widget.manageMode ? 'Zadania' : 'Wybierz zadanie',
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w600)),
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             Text(widget.manageMode ? 'Wszystkie pola' : 'Tryb pracy',
                 style: const TextStyle(fontSize: 11, color: Colors.white54)),
           ],
@@ -278,7 +279,8 @@ class _WorkModeTaskPickerScreenState extends State<WorkModeTaskPickerScreen> {
                 onPressed: () => NewTaskScreen.open(context),
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('Nowe zadanie'),
-                style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+                style:
+                    FilledButton.styleFrom(backgroundColor: Colors.green[700]),
               ),
             ],
           ),

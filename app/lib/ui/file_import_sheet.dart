@@ -535,7 +535,8 @@ class _FileImportSheetState extends State<FileImportSheet> {
                 ),
               ),
               FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),
+                style:
+                    FilledButton.styleFrom(backgroundColor: Colors.green[700]),
                 icon: const Icon(Icons.arrow_forward, size: 18),
                 label: const Text('Dalej'),
                 onPressed: () =>

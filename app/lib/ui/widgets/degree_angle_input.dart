@@ -96,20 +96,18 @@ class _DegreeAngleInputState extends State<DegreeAngleInput> {
             focusNode: _focusNode,
             enabled: widget.enabled,
             textAlign: TextAlign.right,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            style:
-                TextStyle(color: widget.color, fontWeight: FontWeight.w600),
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: TextStyle(color: widget.color, fontWeight: FontWeight.w600),
             decoration: const InputDecoration(
               isDense: true,
               suffixText: '°',
               suffixStyle: TextStyle(color: Colors.white54),
-              enabledBorder:
-                  UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white24)),
               focusedBorder: UnderlineInputBorder(
                   borderSide: BorderSide(color: Colors.tealAccent)),
-              disabledBorder:
-                  UnderlineInputBorder(borderSide: BorderSide(color: Colors.white12)),
+              disabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white12)),
             ),
             onSubmitted: _submit,
           ),

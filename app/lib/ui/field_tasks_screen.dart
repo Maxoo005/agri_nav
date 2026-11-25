@@ -43,8 +43,7 @@ class _FieldTasksScreenState extends State<FieldTasksScreen> {
     });
     try {
       final all = await TaskDatabase.instance.getAll();
-      final tasks =
-          all.where((t) => t.fieldId == widget.field.id).toList();
+      final tasks = all.where((t) => t.fieldId == widget.field.id).toList();
       if (!mounted) return;
       setState(() {
         _tasks = tasks;
@@ -188,7 +187,8 @@ class _FieldTasksScreenState extends State<FieldTasksScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Anuluj', style: TextStyle(color: Colors.white60)),
+            child:
+                const Text('Anuluj', style: TextStyle(color: Colors.white60)),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.green[700]),

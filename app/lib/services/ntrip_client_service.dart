@@ -152,8 +152,7 @@ class NtripClientService {
       socket.write(request);
 
       final bytes = BytesBuilder(copy: false);
-      await for (final chunk
-          in socket.timeout(const Duration(seconds: 10))) {
+      await for (final chunk in socket.timeout(const Duration(seconds: 10))) {
         bytes.add(chunk);
       }
 

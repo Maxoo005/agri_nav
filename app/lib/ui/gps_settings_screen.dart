@@ -129,8 +129,7 @@ class _GpsSettingsScreenState extends State<GpsSettingsScreen>
           const _FixStatusTile(),
           const Divider(),
           SwitchListTile(
-            secondary:
-                Icon(useInternal ? Icons.phone_iphone : Icons.bluetooth),
+            secondary: Icon(useInternal ? Icons.phone_iphone : Icons.bluetooth),
             title: const Text('Zewnętrzny odbiornik RTK (Bluetooth)'),
             subtitle: Text(
               useInternal
@@ -570,8 +569,7 @@ class _NtripSectionState extends State<_NtripSection> {
                       items: _mountpoints
                           .map((m) => DropdownMenuItem(
                                 value: m,
-                                child:
-                                    Text(m, overflow: TextOverflow.ellipsis),
+                                child: Text(m, overflow: TextOverflow.ellipsis),
                               ))
                           .toList(),
                       onChanged: (v) => setState(() => _selectedMountpoint = v),

@@ -247,9 +247,8 @@ class _ManualHistoryEntrySheetBodyState
                             selectedColor: Colors.green[700],
                             labelStyle: TextStyle(
                               color: selected ? Colors.white : Colors.white70,
-                              fontWeight: selected
-                                  ? FontWeight.w600
-                                  : FontWeight.w400,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w400,
                             ),
                             backgroundColor: const Color(0xFF2A2A2A),
                             side: BorderSide(
@@ -270,8 +269,8 @@ class _ManualHistoryEntrySheetBodyState
                             labelText:
                                 'Dawka (${_taskType!.defaultUnit}) — opcjonalnie',
                             labelStyle: const TextStyle(color: Colors.white54),
-                            prefixIcon: const Icon(Icons.speed,
-                                color: Colors.white38),
+                            prefixIcon:
+                                const Icon(Icons.speed, color: Colors.white38),
                             enabledBorder: const OutlineInputBorder(
                                 borderSide: BorderSide(color: Colors.white24)),
                             focusedBorder: const OutlineInputBorder(
@@ -408,8 +407,8 @@ class _PickRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(label,
-                      style: const TextStyle(
-                          color: Colors.white38, fontSize: 11)),
+                      style:
+                          const TextStyle(color: Colors.white38, fontSize: 11)),
                   Text(
                     value ?? 'Dotknij aby wybrać',
                     style: TextStyle(

@@ -123,8 +123,7 @@ class _MachineSelectorScreenState extends State<MachineSelectorScreen> {
                         SizedBox(height: 12),
                         Text(
                           'Brak maszyn w bazie.\nDodaj maszynę w ekranie\n"Zarządzanie maszynami".',
-                          style:
-                              TextStyle(color: Colors.white38, fontSize: 13),
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
                           textAlign: TextAlign.center,
                         ),
                       ],
@@ -330,4 +329,3 @@ class _MachineSelectorTile extends StatelessWidget {
     );
   }
 }
-

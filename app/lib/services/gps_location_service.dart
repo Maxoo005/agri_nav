@@ -193,8 +193,7 @@ class GpsLocationService {
     await box.put(_kNtripCompanyKey, company);
     await box.put(_kNtripUsernameKey, username);
     await box.put(_kNtripMountpointKey, mountpoint);
-    await _secureStorage.write(
-        key: _kNtripPasswordSecureKey, value: password);
+    await _secureStorage.write(key: _kNtripPasswordSecureKey, value: password);
 
     if (!_useInternalGps && _activeListeners > 0) {
       await _startNtripIfConfigured();

@@ -296,8 +296,8 @@ class OptimizeAngleBridge {
         buf[i] = flatPolygon[i];
       }
 
-      final r = _optimize(buf, flatPolygon.length ~/ 2, workingWidthM,
-          overlapM, headlandLaps, turnPenaltyFactor, coveragePenaltyFactor);
+      final r = _optimize(buf, flatPolygon.length ~/ 2, workingWidthM, overlapM,
+          headlandLaps, turnPenaltyFactor, coveragePenaltyFactor);
       if (r == nullptr) return OptimizeAngleResult.empty;
 
       try {

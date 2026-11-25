@@ -171,7 +171,8 @@ class MaterialMonitorService {
 
   /// Completely refill to [maxCapacity] (machine's physical tank capacity)
   /// and reset baseline.
-  void fullRefill({required double currentAreaHa, required double maxCapacity}) {
+  void fullRefill(
+      {required double currentAreaHa, required double maxCapacity}) {
     if (_task == null) return;
     final actualAdded = maxCapacity - _state.remainingVolume;
     if (actualAdded > 0) _totalAdded += actualAdded;

@@ -129,8 +129,7 @@ class KmlParser {
       final lon = double.tryParse(parts[0]);
       final lat = double.tryParse(parts[1]);
       if (lon == null || lat == null) {
-        throw FormatException(
-            'Niepoprawna współrzędna w pliku KML: "$tuple"');
+        throw FormatException('Niepoprawna współrzędna w pliku KML: "$tuple"');
       }
       points.add(LatLng(lat, lon));
     }

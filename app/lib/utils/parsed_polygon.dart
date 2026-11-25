@@ -56,8 +56,7 @@ class ParsedPolygon {
       points.removeLast();
     }
     if (points.length < 3) {
-      throw FormatException(
-          'Za mało punktów w wielokącie z pliku $formatLabel '
+      throw FormatException('Za mało punktów w wielokącie z pliku $formatLabel '
           '(znaleziono ${points.length}, wymagane min. 3).');
     }
     return points;

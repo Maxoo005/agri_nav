@@ -151,7 +151,9 @@ class HistoryPdfService {
               ],
           ],
           headerStyle: pw.TextStyle(
-              fontSize: 9, fontWeight: pw.FontWeight.bold, color: PdfColors.white),
+              fontSize: 9,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.white),
           headerDecoration: const pw.BoxDecoration(color: PdfColors.green800),
           cellStyle: const pw.TextStyle(fontSize: 9),
           cellAlignment: pw.Alignment.centerLeft,
@@ -180,7 +182,8 @@ class HistoryPdfService {
     if (consumed == null) return '—';
     final unit = r.materialUnit ?? '';
     final rate = r.coveredHa > 0 ? consumed / r.coveredHa : null;
-    final rateStr = rate != null ? ' (${rate.toStringAsFixed(2)} $unit/ha)' : '';
+    final rateStr =
+        rate != null ? ' (${rate.toStringAsFixed(2)} $unit/ha)' : '';
     return '${consumed.toStringAsFixed(1)} $unit$rateStr';
   }
 
@@ -199,7 +202,9 @@ class HistoryPdfService {
         'GPS — zarejestrowane z nawigacji (Tryb Pracy)  •  '
         'Ręczny — deklaracja rolnika (wpis bez GPS)',
         style: pw.TextStyle(
-            fontSize: 8, color: PdfColors.grey600, fontStyle: pw.FontStyle.italic),
+            fontSize: 8,
+            color: PdfColors.grey600,
+            fontStyle: pw.FontStyle.italic),
       );
 
   static pw.Widget _buildSummary(
@@ -231,7 +236,9 @@ class HistoryPdfService {
             ['RAZEM', totalHa.toStringAsFixed(2)],
           ],
           headerStyle: pw.TextStyle(
-              fontSize: 9, fontWeight: pw.FontWeight.bold, color: PdfColors.white),
+              fontSize: 9,
+              fontWeight: pw.FontWeight.bold,
+              color: PdfColors.white),
           headerDecoration: const pw.BoxDecoration(color: PdfColors.green800),
           cellStyle: const pw.TextStyle(fontSize: 9),
           border: pw.TableBorder.all(color: PdfColors.grey400, width: 0.5),

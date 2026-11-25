@@ -20,6 +20,8 @@ class WorkTaskService {
   /// odtwarzaniem świeżego WorkTask z migawki zapisanej w TaskPlan.
   WorkTask? getById(String id) {
     final raw = _box.get(id);
-    return raw != null ? WorkTask.fromJson(Map<String, dynamic>.from(raw)) : null;
+    return raw != null
+        ? WorkTask.fromJson(Map<String, dynamic>.from(raw))
+        : null;
   }
 }

@@ -354,9 +354,8 @@ class FieldModel {
         // zgadywać "ręcznie" czy "przejazd".
         abSource: AbSource.values.firstWhere(
           (e) => e.name == (map['abSource'] as String?),
-          orElse: () => map['lineALat'] != null
-              ? AbSource.unknown
-              : AbSource.none,
+          orElse: () =>
+              map['lineALat'] != null ? AbSource.unknown : AbSource.none,
         ),
         uLDKParcelId: map['uLDKParcelId'] as String?,
         terytCode: map['terytCode'] as String?,
@@ -365,12 +364,13 @@ class FieldModel {
             : null,
         sourceParcelIds: (map['sourceParcelIds'] as List?)?.cast<String>(),
         // Wsteczna kompatybilność: starsze zapisy używały klucza 'arimrParcelIds'.
-        lpisParcelIds: ((map['lpisParcelIds'] ?? map['arimrParcelIds'])
-                as List?)
-            ?.cast<String>(),
+        lpisParcelIds:
+            ((map['lpisParcelIds'] ?? map['arimrParcelIds']) as List?)
+                ?.cast<String>(),
         // Wsteczna kompatybilność: starsze zapisy używały nazwy 'arimr'.
         source: FieldSource.values.firstWhere(
-          (e) => e.name == (map['source'] as String?) ||
+          (e) =>
+              e.name == (map['source'] as String?) ||
               ((map['source'] == 'arimr') && e == FieldSource.lpis),
           orElse: () => FieldSource.manual,
         ),

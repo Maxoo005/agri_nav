@@ -67,7 +67,8 @@ const String kGeoportalWmsUrl =
 /// akceptuje wyłącznie EPSG:4326/2176-2180 → patrz [_WmsGeographicCrs].
 /// MaxScaleDenominator ograniczone przez serwer — warstwa renderuje się
 /// (nie jest pusta) dopiero po przybliżeniu do poziomu pojedynczego pola.
-const String kArimrLpisWmsUrl = 'https://mapy.geoportal.gov.pl/wss/ext/arimr_lpis?';
+const String kArimrLpisWmsUrl =
+    'https://mapy.geoportal.gov.pl/wss/ext/arimr_lpis?';
 
 /// Nazwa warstwy LPIS ARiMR dla województwa wielkopolskiego.
 const String kArimrLpisLayerWielkopolska = '30';
@@ -201,8 +202,10 @@ class _MapViewState extends State<MapView> {
   static const int _kMinBoundaryRecordedPoints = 10;
   static const double _kMinBoundaryAreaHa = 0.01; // 100 m²
   static const double _kBoundaryMinPointDistanceM = 0.2; // decymacja wejścia
-  static const double _kBoundaryCloseWarnM = 25.0; // próg ostrzeżenia domknięcia
-  static const double _kBoundarySimplifyEpsilonM = 0.15; // RDP (patrz processLpis)
+  static const double _kBoundaryCloseWarnM =
+      25.0; // próg ostrzeżenia domknięcia
+  static const double _kBoundarySimplifyEpsilonM =
+      0.15; // RDP (patrz processLpis)
 
   // ── Granice pola (PolygonLayer — gotowe do podpięcia) ───────────────────────
   final List<LatLng> _fieldBoundary = [];
@@ -468,8 +471,7 @@ class _MapViewState extends State<MapView> {
       final dt = now.difference(_prevTime!).inMilliseconds / 1000.0;
       if (dt > 0.01) {
         final cosLat = math.cos(newPos.latitude * math.pi / 180.0);
-        final de =
-            (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
+        final de = (newPos.longitude - _prevPos!.longitude) * 111320.0 * cosLat;
         final dn = (newPos.latitude - _prevPos!.latitude) * 111320.0;
         final raw = math.sqrt(de * de + dn * dn) / dt * 3.6;
         speedKmh = _speedKmh + (raw - _speedKmh) * 0.45;
@@ -789,8 +791,7 @@ class _MapViewState extends State<MapView> {
       _manualOffsetM = plan?.manualOffsetM ?? 0.0;
       _savedTrack = savedTrack;
       _coveredHa = coveredHa;
-      _rawMaterialAreaHa =
-          GeoUtils.trackSweptAreaHa(savedTrack, replayWidth);
+      _rawMaterialAreaHa = GeoUtils.trackSweptAreaHa(savedTrack, replayWidth);
       _lastMaterialPos = savedTrack.isNotEmpty ? savedTrack.last : null;
       // Zawsze przypisz (również gdy null) — inaczej linia AB poprzednio
       // wczytanego pola "przecieka" do pola, które żadnej linii nie ma.
@@ -956,8 +957,7 @@ class _MapViewState extends State<MapView> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: const Text(
-          'Zadanie zaktualizowane do nowej granicy pola'),
+      content: const Text('Zadanie zaktualizowane do nowej granicy pola'),
       backgroundColor: Colors.green[700],
       duration: const Duration(seconds: 3),
     ));
@@ -1374,8 +1374,8 @@ class _MapViewState extends State<MapView> {
     if (_abRecording) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-              'Zakończ nagrywanie linii AB przed wejściem w Tryb Pracy'),
+          content:
+              Text('Zakończ nagrywanie linii AB przed wejściem w Tryb Pracy'),
           backgroundColor: Colors.orange,
         ),
       );
@@ -1609,8 +1609,7 @@ class _MapViewState extends State<MapView> {
       final abLenSq = abx * abx + aby * aby;
       var t = 0.0;
       if (abLenSq > 1e-9) {
-        t = ((tappedPt.x - aPt.x) * abx + (tappedPt.y - aPt.y) * aby) /
-            abLenSq;
+        t = ((tappedPt.x - aPt.x) * abx + (tappedPt.y - aPt.y) * aby) / abLenSq;
         t = t.clamp(0.0, 1.0);
       }
       final projX = aPt.x + t * abx;
@@ -1688,10 +1687,8 @@ class _MapViewState extends State<MapView> {
       });
       return;
     }
-    final src =
-        _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
-    final tgt =
-        _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
+    final src = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.source)).toList();
+    final tgt = _cpPairs.map((p) => GeoUtils.toEnu(origin, p.target)).toList();
     final warp = ElasticWarp.fit(src, tgt);
     // Zagęść surowe krawędzie przed transformacją, tak samo jak
     // FieldModel.boundary — inaczej podgląd (proste odcinki między
@@ -2102,8 +2099,7 @@ class _MapViewState extends State<MapView> {
     final n = _boundaryRecordedPoints.length;
     final areaHa =
         n >= 3 ? GeoUtils.polygonAreaHa(_boundaryRecordedPoints) : 0.0;
-    final areaPart =
-        areaHa > 0 ? ' • ok. ${areaHa.toStringAsFixed(2)} ha' : '';
+    final areaPart = areaHa > 0 ? ' • ok. ${areaHa.toStringAsFixed(2)} ha' : '';
     final pausedPart = _boundaryPaused ? ' • WSTRZYMANE' : '';
     return 'Obejście: $n pkt (Fixed $_boundaryFixedCount, '
         'Float $_boundaryFloatCount)$areaPart$pausedPart';
@@ -2169,9 +2165,9 @@ class _MapViewState extends State<MapView> {
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text(
-            'Nagrywanie granicy rozpoczęte — obejdź/objedź pole i wróć '
-            'blisko punktu startowego, potem naciśnij "Zakończ".'),
+        content:
+            Text('Nagrywanie granicy rozpoczęte — obejdź/objedź pole i wróć '
+                'blisko punktu startowego, potem naciśnij "Zakończ".'),
         backgroundColor: Colors.blueGrey,
         duration: Duration(seconds: 4),
       ),
@@ -2187,8 +2183,8 @@ class _MapViewState extends State<MapView> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF2A2A2A),
-        title:
-            const Text('Obejście w toku', style: TextStyle(color: Colors.white)),
+        title: const Text('Obejście w toku',
+            style: TextStyle(color: Colors.white)),
         content: const Text(
           'Trwa nagrywanie granicy pola. Wyjście teraz odrzuci zebrane punkty.',
           style: TextStyle(color: Colors.white70),
@@ -2231,8 +2227,7 @@ class _MapViewState extends State<MapView> {
 
     if (points.length < _kMinBoundaryRecordedPoints) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            'Za mało punktów o jakości RTK Fixed/Float (zebrano: '
+        content: Text('Za mało punktów o jakości RTK Fixed/Float (zebrano: '
             '${points.length}, wymagane min. $_kMinBoundaryRecordedPoints). '
             'Sprawdź połączenie z odbiornikiem RTK i idź dalej — '
             'nagrywanie trwa.'),
@@ -2245,8 +2240,7 @@ class _MapViewState extends State<MapView> {
     final rawAreaHa = GeoUtils.polygonAreaHa(points);
     if (rawAreaHa < _kMinBoundaryAreaHa) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            'Trasa nie tworzy jeszcze zamkniętej pętli o sensownym '
+        content: Text('Trasa nie tworzy jeszcze zamkniętej pętli o sensownym '
             'obszarze (${(rawAreaHa * 10000).toStringAsFixed(0)} m²) — '
             'obejdź dalej granicę pola i spróbuj ponownie.'),
         backgroundColor: Colors.orange,
@@ -2294,9 +2288,9 @@ class _MapViewState extends State<MapView> {
     if (boundary.length < 3) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-              'Przetwarzanie geometrii nie zwróciło poprawnej granicy — '
-              'spróbuj obejść pole ponownie.'),
+          content:
+              Text('Przetwarzanie geometrii nie zwróciło poprawnej granicy — '
+                  'spróbuj obejść pole ponownie.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -2358,8 +2352,7 @@ class _MapViewState extends State<MapView> {
                 const Text(
                     '⚠ Trasa się przecięła — użyto największego wykrytego '
                     'obszaru. Sprawdź podgląd przed zapisem.',
-                    style:
-                        TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+                    style: TextStyle(color: Colors.orangeAccent, fontSize: 12)),
               ],
             ],
           ),
@@ -2481,8 +2474,7 @@ class _MapViewState extends State<MapView> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-              'Brak danych LPIS — użyj przycisku importu działek ▼'),
+          content: Text('Brak danych LPIS — użyj przycisku importu działek ▼'),
           backgroundColor: Colors.orange,
           duration: Duration(seconds: 3),
         ),
@@ -2535,7 +2527,8 @@ class _MapViewState extends State<MapView> {
         children: [
           Center(
             child: Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: AppColors.textFaint,
                 borderRadius: BorderRadius.circular(2),
@@ -2543,19 +2536,19 @@ class _MapViewState extends State<MapView> {
             ),
           ),
           const SizedBox(height: 16),
-
           _buildSectionHeader('WARSTWY MAPY'),
           const SizedBox(height: 8),
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: [
               _ActionTile(
                 icon: Icons.satellite_alt,
                 label: 'Ortofotomapa',
                 tooltip: 'Pokaż/ukryj zdjęcie lotnicze GUGiK (tło)',
                 isActive: _orthophotoVisible,
-                onPressed: () => setState(
-                    () => _orthophotoVisible = !_orthophotoVisible),
+                onPressed: () =>
+                    setState(() => _orthophotoVisible = !_orthophotoVisible),
               ),
               _ActionTile(
                 icon: Icons.layers,
@@ -2563,8 +2556,8 @@ class _MapViewState extends State<MapView> {
                 tooltip:
                     'Pokaż/ukryj referencyjny obrys działek ARiMR (nakładka, tylko podgląd)',
                 isActive: _arimrLpisVisible,
-                onPressed: () => setState(
-                    () => _arimrLpisVisible = !_arimrLpisVisible),
+                onPressed: () =>
+                    setState(() => _arimrLpisVisible = !_arimrLpisVisible),
               ),
               _ActionTile(
                 icon: Icons.grass,
@@ -2587,7 +2580,6 @@ class _MapViewState extends State<MapView> {
           const SizedBox(height: 16),
           const Divider(color: AppColors.textFaint),
           const SizedBox(height: 8),
-
           _buildSectionHeader('POLE'),
           const SizedBox(height: 8),
           if (_activeField != null) ...[
@@ -2605,9 +2597,8 @@ class _MapViewState extends State<MapView> {
             Text(
               _boundaryWalkStatusLabel(),
               style: TextStyle(
-                color: _boundaryPaused
-                    ? Colors.orangeAccent
-                    : Colors.greenAccent,
+                color:
+                    _boundaryPaused ? Colors.orangeAccent : Colors.greenAccent,
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -2615,7 +2606,8 @@ class _MapViewState extends State<MapView> {
             const SizedBox(height: 8),
           ],
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: [
               if (_activeField != null)
                 _ActionTile(
@@ -2623,8 +2615,8 @@ class _MapViewState extends State<MapView> {
                   label: 'Korekta',
                   tooltip: 'Koryguj położenie granicy',
                   isActive: _nudgePanelVisible,
-                  onPressed: () => setState(
-                      () => _nudgePanelVisible = !_nudgePanelVisible),
+                  onPressed: () =>
+                      setState(() => _nudgePanelVisible = !_nudgePanelVisible),
                 ),
               if (_activeField != null)
                 _ActionTile(
@@ -2646,9 +2638,8 @@ class _MapViewState extends State<MapView> {
               _ActionTile(
                 icon: _drawingMode ? Icons.cancel_outlined : Icons.edit,
                 label: _drawingMode ? 'Anuluj' : 'Rysuj',
-                tooltip: _drawingMode
-                    ? 'Anuluj rysowanie'
-                    : 'Rysuj granicę pola',
+                tooltip:
+                    _drawingMode ? 'Anuluj rysowanie' : 'Rysuj granicę pola',
                 isActive: _drawingMode,
                 onPressed: _toggleDrawingMode,
               ),
@@ -2695,8 +2686,8 @@ class _MapViewState extends State<MapView> {
                   label: 'Przesuń',
                   tooltip: 'Przesuń wygenerowane ścieżki w bok (cm)',
                   isActive: _swathOffsetPanelVisible || _manualOffsetM != 0.0,
-                  onPressed: () => setState(
-                      () => _swathOffsetPanelVisible = !_swathOffsetPanelVisible),
+                  onPressed: () => setState(() =>
+                      _swathOffsetPanelVisible = !_swathOffsetPanelVisible),
                 ),
               if (_activeField != null)
                 _ActionTile(
@@ -2728,11 +2719,11 @@ class _MapViewState extends State<MapView> {
           const SizedBox(height: 16),
           const Divider(color: AppColors.textFaint),
           const SizedBox(height: 8),
-
           _buildSectionHeader('POKRYCIE'),
           const SizedBox(height: 8),
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: [
               _ActionTile(
                 icon: _trackingCoverage
@@ -2758,11 +2749,11 @@ class _MapViewState extends State<MapView> {
           const SizedBox(height: 16),
           const Divider(color: AppColors.textFaint),
           const SizedBox(height: 8),
-
           _buildSectionHeader('WIĘCEJ'),
           const SizedBox(height: 8),
           Wrap(
-            spacing: 8, runSpacing: 8,
+            spacing: 8,
+            runSpacing: 8,
             children: [
               _ActionTile(
                 icon: Icons.agriculture,
@@ -3086,584 +3077,590 @@ class _MapViewState extends State<MapView> {
             ? const Color(0xFF1A1A1A)
             : Colors.black,
         body: Stack(
-        children: [
-          // ── FlutterMap ──────────────────────────────────────────────────────
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _tractorPos,
-              initialZoom: 17,
-              onTap: (_, latLng) {
-                if (_controlPointsMode) {
-                  _handleControlPointTap(latLng);
-                  return;
-                }
-                if (_abTapMode) {
-                  _handleAbTap(latLng);
-                  return;
-                }
-                if (!_drawingMode) setState(() => _followTractor = false);
-              },
-            ),
-            children: [
-              // ── Warstwy rastrowe (tło + nakładki, patrz "Warstwy mapy") ────
-              ..._buildRasterLayers(),
+          children: [
+            // ── FlutterMap ──────────────────────────────────────────────────────
+            FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _tractorPos,
+                initialZoom: 17,
+                onTap: (_, latLng) {
+                  if (_controlPointsMode) {
+                    _handleControlPointTap(latLng);
+                    return;
+                  }
+                  if (_abTapMode) {
+                    _handleAbTap(latLng);
+                    return;
+                  }
+                  if (!_drawingMode) setState(() => _followTractor = false);
+                },
+              ),
+              children: [
+                // ── Warstwy rastrowe (tło + nakładki, patrz "Warstwy mapy") ────
+                ..._buildRasterLayers(),
 
-              // ── Warstwa LPIS (zielone półprzezroczyste) ─────────────────────
-              // Wyświetlaj parcele które NIE są aktywnym polem (brak duplikatu warstw)
-              if (_lpisLayerVisible && _lpisParcels.isNotEmpty)
-                PolygonLayer(
-                  polygons: _lpisParcels
-                      .where((p) =>
-                          p.boundary.length >= 3 &&
-                          (_activeField == null ||
-                              !_activeField!.lpisParcelIds
-                                  .contains(p.objectId)))
-                      .map((p) => Polygon(
-                            points: p.boundary
-                                .map((ll) => LatLng(
-                                      ll.latitude + _parcelLatOffset,
-                                      ll.longitude + _parcelLonOffset,
-                                    ))
-                                .toList(),
-                            color: Colors.green.withValues(alpha: 0.18),
-                            borderColor: Colors.greenAccent,
-                            borderStrokeWidth: 1.5,
-                          ))
-                      .toList(),
-                ),
+                // ── Warstwa LPIS (zielone półprzezroczyste) ─────────────────────
+                // Wyświetlaj parcele które NIE są aktywnym polem (brak duplikatu warstw)
+                if (_lpisLayerVisible && _lpisParcels.isNotEmpty)
+                  PolygonLayer(
+                    polygons: _lpisParcels
+                        .where((p) =>
+                            p.boundary.length >= 3 &&
+                            (_activeField == null ||
+                                !_activeField!.lpisParcelIds
+                                    .contains(p.objectId)))
+                        .map((p) => Polygon(
+                              points: p.boundary
+                                  .map((ll) => LatLng(
+                                        ll.latitude + _parcelLatOffset,
+                                        ll.longitude + _parcelLonOffset,
+                                      ))
+                                  .toList(),
+                              color: Colors.green.withValues(alpha: 0.18),
+                              borderColor: Colors.greenAccent,
+                              borderStrokeWidth: 1.5,
+                            ))
+                        .toList(),
+                  ),
 
-              // ── Wszystkie zapisane pola (szare) ─────────────────────────────
-              if (_savedFields.isNotEmpty)
-                PolygonLayer(
-                  polygons: _savedFields
-                      .where((f) =>
-                          f.id != _activeField?.id &&
-                          f.boundaryLats.length >= 3)
-                      .map((f) => Polygon(
-                            points: f.boundary,
-                            color: Colors.white.withValues(alpha: 0.06),
-                            borderColor: Colors.white38,
-                            borderStrokeWidth: 1.0,
-                          ))
-                      .toList(),
-                ),
+                // ── Wszystkie zapisane pola (szare) ─────────────────────────────
+                if (_savedFields.isNotEmpty)
+                  PolygonLayer(
+                    polygons: _savedFields
+                        .where((f) =>
+                            f.id != _activeField?.id &&
+                            f.boundaryLats.length >= 3)
+                        .map((f) => Polygon(
+                              points: f.boundary,
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderColor: Colors.white38,
+                              borderStrokeWidth: 1.0,
+                            ))
+                        .toList(),
+                  ),
 
-              // ── Aktywna granica pola (PolygonLayer) ─────────────────────────
-              if (_fieldBoundary.length >= 3)
-                PolygonLayer(
-                  polygons: [
-                    Polygon(
-                      points: _fieldBoundary,
-                      color: Colors.yellow.withValues(alpha: 0.22),
-                      borderColor: _drawingMode ? Colors.orange : Colors.yellow,
-                      borderStrokeWidth: 3.0,
-                    ),
-                  ],
-                ),
-
-              // ── Pierścienie uwrociowe ────────────────────────────────────────
-              if (_headlandRings.isNotEmpty)
-                PolylineLayer(
-                  polylines: _headlandRings
-                      .map((ring) => Polyline(
-                            points: [...ring, ring.first], // zamknij pierścień
-                            color: Colors.orangeAccent.withValues(alpha: 0.75),
-                            strokeWidth: 1.8,
-                          ))
-                      .toList(),
-                ),
-
-              // ── Pokrycie pola (coverage track) ───────────────────────────────
-              if (_trackingCoverage &&
-                  CoverageService.instance.currentTrack.length >= 2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: CoverageService.instance.currentTrack,
-                      color: Colors.blue.withValues(alpha: 0.50),
-                      strokeWidth: _coverageStrokeWidth(),
-                    ),
-                  ],
-                ),
-
-              // ── Ścieżki uprawowe (swaths) — aktywna podświetlona żółtym ─────
-              if (_swaths.isNotEmpty)
-                PolylineLayer(
-                  polylines: _swaths.asMap().entries.map((e) {
-                    final isNearest = e.key == _snapInfo.swathIndex;
-                    final s = e.value;
-                    return Polyline(
-                      points: [
-                        LatLng(s.startLat, s.startLon),
-                        LatLng(s.endLat, s.endLon),
-                      ],
-                      color: isNearest
-                          ? Colors.yellow.withValues(alpha: 0.95)
-                          : Colors.greenAccent.withValues(alpha: 0.7),
-                      strokeWidth: isNearest ? 3.2 : 1.4,
-                    );
-                  }).toList(),
-                ),
-
-              // ── Punkty kontrolne — granica surowa (referencja Krok 1) ───────
-              if (_controlPointsMode &&
-                  _activeField != null &&
-                  _activeField!.boundaryLats.length >= 2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: [
-                        for (var i = 0;
-                            i < _activeField!.boundaryLats.length;
-                            i++)
-                          LatLng(_activeField!.boundaryLats[i],
-                              _activeField!.boundaryLons[i]),
-                        LatLng(_activeField!.boundaryLats.first,
-                            _activeField!.boundaryLons.first),
-                      ],
-                      color: Colors.deepOrangeAccent,
-                      strokeWidth: 1.5,
-                      pattern: StrokePattern.dashed(segments: const [6, 4]),
-                    ),
-                  ],
-                ),
-
-              // ── Punkty kontrolne — podgląd na żywo (niezatwierdzony fit) ────
-              if (_cpPreviewBoundary.length >= 3)
-                PolygonLayer(
-                  polygons: [
-                    Polygon(
-                      points: _cpPreviewBoundary,
-                      color: Colors.cyan.withValues(alpha: 0.12),
-                      borderColor: Colors.cyanAccent,
-                      borderStrokeWidth: 2.5,
-                      pattern: StrokePattern.dashed(segments: const [8, 5]),
-                    ),
-                  ],
-                ),
-
-              // ── Punkty kontrolne — pary (łączniki + kropki) ──────────────────
-              if (_controlPointsMode && _cpPairs.isNotEmpty)
-                PolylineLayer(
-                  polylines: _cpPairs
-                      .map((p) => Polyline(
-                            points: [p.source, p.target],
-                            color: Colors.white54,
-                            strokeWidth: 1.0,
-                            pattern:
-                                StrokePattern.dashed(segments: const [4, 4]),
-                          ))
-                      .toList(),
-                ),
-              if (_controlPointsMode &&
-                  (_cpPairs.isNotEmpty || _cpPendingSource != null))
-                CircleLayer(
-                  circles: [
-                    for (final p in _cpPairs) ...[
-                      CircleMarker(
-                        point: p.source,
-                        radius: 6,
-                        color: Colors.red,
-                        borderColor: Colors.white,
-                        borderStrokeWidth: 1.5,
-                      ),
-                      CircleMarker(
-                        point: p.target,
-                        radius: 6,
-                        color: Colors.green,
-                        borderColor: Colors.white,
-                        borderStrokeWidth: 1.5,
+                // ── Aktywna granica pola (PolygonLayer) ─────────────────────────
+                if (_fieldBoundary.length >= 3)
+                  PolygonLayer(
+                    polygons: [
+                      Polygon(
+                        points: _fieldBoundary,
+                        color: Colors.yellow.withValues(alpha: 0.22),
+                        borderColor:
+                            _drawingMode ? Colors.orange : Colors.yellow,
+                        borderStrokeWidth: 3.0,
                       ),
                     ],
-                    if (_cpPendingSource != null)
-                      CircleMarker(
-                        point: _cpPendingSource!,
-                        radius: 7,
-                        color: Colors.red,
-                        borderColor: Colors.yellow,
-                        borderStrokeWidth: 2,
+                  ),
+
+                // ── Pierścienie uwrociowe ────────────────────────────────────────
+                if (_headlandRings.isNotEmpty)
+                  PolylineLayer(
+                    polylines: _headlandRings
+                        .map((ring) => Polyline(
+                              points: [
+                                ...ring,
+                                ring.first
+                              ], // zamknij pierścień
+                              color:
+                                  Colors.orangeAccent.withValues(alpha: 0.75),
+                              strokeWidth: 1.8,
+                            ))
+                        .toList(),
+                  ),
+
+                // ── Pokrycie pola (coverage track) ───────────────────────────────
+                if (_trackingCoverage &&
+                    CoverageService.instance.currentTrack.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: CoverageService.instance.currentTrack,
+                        color: Colors.blue.withValues(alpha: 0.50),
+                        strokeWidth: _coverageStrokeWidth(),
                       ),
-                  ],
-                ),
+                    ],
+                  ),
 
-              // ── Linia AB — nagrywanie na żywo (tryb "przejazd") ─────────────
-              if (_abRecording && _abRecordedPoints.length >= 2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: _abRecordedPoints,
-                      color: Colors.pinkAccent.withValues(alpha: 0.55),
-                      strokeWidth: 3.0,
-                    ),
-                  ],
-                ),
+                // ── Ścieżki uprawowe (swaths) — aktywna podświetlona żółtym ─────
+                if (_swaths.isNotEmpty)
+                  PolylineLayer(
+                    polylines: _swaths.asMap().entries.map((e) {
+                      final isNearest = e.key == _snapInfo.swathIndex;
+                      final s = e.value;
+                      return Polyline(
+                        points: [
+                          LatLng(s.startLat, s.startLon),
+                          LatLng(s.endLat, s.endLon),
+                        ],
+                        color: isNearest
+                            ? Colors.yellow.withValues(alpha: 0.95)
+                            : Colors.greenAccent.withValues(alpha: 0.7),
+                        strokeWidth: isNearest ? 3.2 : 1.4,
+                      );
+                    }).toList(),
+                  ),
 
-              // ── Granica pola — obejście RTK, nagrywanie na żywo ─────────────
-              if (_boundaryRecording && _boundaryRecordedPoints.length >= 2)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: _boundaryRecordedPoints,
-                      color: Colors.greenAccent,
-                      strokeWidth: 3.5,
-                    ),
-                    // Podgląd domknięcia pętli — pokazuje, jaki kształt
-                    // przyjmie granica, gdyby użytkownik zakończył teraz.
-                    if (_boundaryRecordedPoints.length >= 3)
+                // ── Punkty kontrolne — granica surowa (referencja Krok 1) ───────
+                if (_controlPointsMode &&
+                    _activeField != null &&
+                    _activeField!.boundaryLats.length >= 2)
+                  PolylineLayer(
+                    polylines: [
                       Polyline(
                         points: [
-                          _boundaryRecordedPoints.last,
-                          _boundaryRecordedPoints.first,
+                          for (var i = 0;
+                              i < _activeField!.boundaryLats.length;
+                              i++)
+                            LatLng(_activeField!.boundaryLats[i],
+                                _activeField!.boundaryLons[i]),
+                          LatLng(_activeField!.boundaryLats.first,
+                              _activeField!.boundaryLons.first),
                         ],
-                        color: Colors.greenAccent.withValues(alpha: 0.45),
-                        strokeWidth: 2.0,
-                        pattern:
-                            StrokePattern.dashed(segments: const [6, 6]),
+                        color: Colors.deepOrangeAccent,
+                        strokeWidth: 1.5,
+                        pattern: StrokePattern.dashed(segments: const [6, 4]),
                       ),
-                  ],
-                ),
+                    ],
+                  ),
 
-              // ── Linia AB — zatwierdzona (stuknięcia lub przejazd) ───────────
-              if (_pointA != null && _pointB != null)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: [_pointA!, _pointB!],
-                      color: Colors.pinkAccent,
-                      strokeWidth: 2.5,
-                    ),
-                  ],
-                ),
-              if ((_pointA != null && _pointB != null) ||
-                  _abTapPending != null)
-                CircleLayer(
-                  circles: [
-                    if (_pointA != null)
-                      CircleMarker(
-                        point: _pointA!,
-                        radius: 6,
-                        color: Colors.pinkAccent,
-                        borderColor: Colors.white,
-                        borderStrokeWidth: 1.5,
+                // ── Punkty kontrolne — podgląd na żywo (niezatwierdzony fit) ────
+                if (_cpPreviewBoundary.length >= 3)
+                  PolygonLayer(
+                    polygons: [
+                      Polygon(
+                        points: _cpPreviewBoundary,
+                        color: Colors.cyan.withValues(alpha: 0.12),
+                        borderColor: Colors.cyanAccent,
+                        borderStrokeWidth: 2.5,
+                        pattern: StrokePattern.dashed(segments: const [8, 5]),
                       ),
-                    if (_pointB != null)
-                      CircleMarker(
-                        point: _pointB!,
-                        radius: 6,
-                        color: Colors.purpleAccent,
-                        borderColor: Colors.white,
-                        borderStrokeWidth: 1.5,
-                      ),
-                    if (_abTapPending != null)
-                      CircleMarker(
-                        point: _abTapPending!,
-                        radius: 7,
-                        color: Colors.pinkAccent,
-                        borderColor: Colors.yellow,
-                        borderStrokeWidth: 2,
-                      ),
-                  ],
-                ),
+                    ],
+                  ),
 
-              // ── Ikona ciągnika ────────────────────────────────────────────────
-              MarkerLayer(
-                markers: [
-                  Marker(
-                    point: _tractorPos,
-                    width: 52,
-                    height: 52,
-                    child: Transform.rotate(
-                      angle: _tractorHeading * math.pi / 180.0,
-                      child: CustomPaint(
-                        painter: _TractorArrow(
-                          valid: _guidanceValid,
-                          crossTrack: _crossTrack,
+                // ── Punkty kontrolne — pary (łączniki + kropki) ──────────────────
+                if (_controlPointsMode && _cpPairs.isNotEmpty)
+                  PolylineLayer(
+                    polylines: _cpPairs
+                        .map((p) => Polyline(
+                              points: [p.source, p.target],
+                              color: Colors.white54,
+                              strokeWidth: 1.0,
+                              pattern:
+                                  StrokePattern.dashed(segments: const [4, 4]),
+                            ))
+                        .toList(),
+                  ),
+                if (_controlPointsMode &&
+                    (_cpPairs.isNotEmpty || _cpPendingSource != null))
+                  CircleLayer(
+                    circles: [
+                      for (final p in _cpPairs) ...[
+                        CircleMarker(
+                          point: p.source,
+                          radius: 6,
+                          color: Colors.red,
+                          borderColor: Colors.white,
+                          borderStrokeWidth: 1.5,
                         ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-
-          // ── Wskaźnik trwającej optymalizacji kierunku ścieżek ─────────────────
-          if (_optimizingAngle)
-            Positioned(
-              top: 80,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2A2A2A),
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: const [
-                      BoxShadow(color: Colors.black45, blurRadius: 8),
+                        CircleMarker(
+                          point: p.target,
+                          radius: 6,
+                          color: Colors.green,
+                          borderColor: Colors.white,
+                          borderStrokeWidth: 1.5,
+                        ),
+                      ],
+                      if (_cpPendingSource != null)
+                        CircleMarker(
+                          point: _cpPendingSource!,
+                          radius: 7,
+                          color: Colors.red,
+                          borderColor: Colors.yellow,
+                          borderStrokeWidth: 2,
+                        ),
                     ],
                   ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.tealAccent),
+
+                // ── Linia AB — nagrywanie na żywo (tryb "przejazd") ─────────────
+                if (_abRecording && _abRecordedPoints.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _abRecordedPoints,
+                        color: Colors.pinkAccent.withValues(alpha: 0.55),
+                        strokeWidth: 3.0,
                       ),
-                      SizedBox(width: 10),
-                      Text('Szukam optymalnego kierunku…',
-                          style: TextStyle(color: Colors.white)),
                     ],
                   ),
-                ),
-              ),
-            ),
 
-          // ── Panel korekty przesunięcia (Nudge) ──────────────────────────────
-          if (_nudgePanelVisible && _activeField != null)
-            Positioned(
-              left: 12,
-              bottom: 200,
-              child: NudgePanel(
-                field: _activeField!,
-                onNudge: (dx, dy) => _nudgeActive(dx, dy),
-                onReset: _resetActiveNudge,
-                onClose: () => setState(() => _nudgePanelVisible = false),
-              ),
-            ),
-
-          // ── Panel ręcznego przesunięcia wygenerowanych ścieżek ───────────────
-          if (_swathOffsetPanelVisible && _rawSwaths.isNotEmpty)
-            Positioned(
-              left: 12,
-              bottom: 200,
-              child: _SwathOffsetPanel(
-                offsetCm: (_manualOffsetM * 100).round(),
-                onStep: _adjustSwathOffset,
-                onReset: _resetSwathOffset,
-                onClose: () =>
-                    setState(() => _swathOffsetPanelVisible = false),
-              ),
-            ),
-
-          // ── Panel korekty punktami kontrolnymi ────────────────────────────────
-          if (_controlPointsMode && _activeField != null)
-            Positioned(
-              left: 12,
-              bottom: 200,
-              child: ControlPointsPanel(
-                pairCount: _cpPairs.length,
-                hasPendingSource: _cpPendingSource != null,
-                onUndo: _undoLastCpPair,
-                onReset: _resetCpPairs,
-                onRemovePair: _removeCpPair,
-                onCancel: _cancelControlPoints,
-                onConfirm: _confirmControlPoints,
-              ),
-            ),
-
-          // ── Panel nagrywania linii AB (tryb "przejazd") ───────────────────────
-          if (_abRecording)
-            Positioned(
-              left: 12,
-              bottom: 200,
-              child: AbRecordingPanel(
-                pointCount: _abRecordedPoints.length,
-                lengthM: _abRecordedPoints.length >= 2
-                    ? GeoUtils.fitLineThroughPoints(_abRecordedPoints)
-                        ?.lengthM
-                    : null,
-                fixStatus: GpsLocationService.instance.fixStatus,
-                onStop: _finalizeAbRecording,
-                onCancel: _cancelAbRecording,
-              ),
-            ),
-
-          // ── Manual Offset — kalibracja warstwy LPIS względem satelity ────────
-          if (_offsetPanelVisible && _lpisLayerVisible)
-            Positioned(
-              left: 12,
-              bottom: 220,
-              child: _ManualOffsetPanel(
-                latOffset: _parcelLatOffset,
-                lonOffset: _parcelLonOffset,
-                onNudge: (dLat, dLon) => setState(() {
-                  _parcelLatOffset += dLat;
-                  _parcelLonOffset += dLon;
-                }),
-                onReset: () => setState(() {
-                  _parcelLatOffset = 0;
-                  _parcelLonOffset = 0;
-                }),
-                onClose: () => setState(() => _offsetPanelVisible = false),
-              ),
-            ),
-
-          // ── DrawingMode overlay ──────────────────────────────────────────────
-          if (_drawingMode)
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onPanStart: (d) {
-                  final pt = _screenToLatLng(d.localPosition);
-                  setState(() => _fieldBoundary
-                    ..clear()
-                    ..add(pt));
-                },
-                onPanUpdate: (d) {
-                  final pt = _screenToLatLng(d.localPosition);
-                  if (_shouldAddPoint(pt)) {
-                    setState(() => _fieldBoundary.add(pt));
-                  }
-                },
-                onPanEnd: (_) {
-                  setState(() => _drawingMode = false);
-                  if (_fieldBoundary.length >= 3) _showSaveFieldDialog();
-                },
-                child: Container(
-                  color: Colors.transparent,
-                  alignment: Alignment.topCenter,
-                  padding: const EdgeInsets.only(top: 48),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Text(
-                      '✍  Rysuj granicę — przeciągnij palcem',
-                      style: TextStyle(
-                          color: Colors.orange, fontWeight: FontWeight.bold),
-                    ),
+                // ── Granica pola — obejście RTK, nagrywanie na żywo ─────────────
+                if (_boundaryRecording && _boundaryRecordedPoints.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _boundaryRecordedPoints,
+                        color: Colors.greenAccent,
+                        strokeWidth: 3.5,
+                      ),
+                      // Podgląd domknięcia pętli — pokazuje, jaki kształt
+                      // przyjmie granica, gdyby użytkownik zakończył teraz.
+                      if (_boundaryRecordedPoints.length >= 3)
+                        Polyline(
+                          points: [
+                            _boundaryRecordedPoints.last,
+                            _boundaryRecordedPoints.first,
+                          ],
+                          color: Colors.greenAccent.withValues(alpha: 0.45),
+                          strokeWidth: 2.0,
+                          pattern: StrokePattern.dashed(segments: const [6, 6]),
+                        ),
+                    ],
                   ),
-                ),
-              ),
-            ),
 
-          // ── Nieaktualna granica zadania + Praca w toku (banery w tle) ───────
-          if (_taskBoundaryStale ||
-              (_activeField != null &&
-                  _activeField!.id == WorkSessionService.instance.fieldId))
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 24,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_taskBoundaryStale) ...[
-                    _StaleTaskBoundaryBanner(
-                      onUpdate: _updateTaskBoundaryFromField,
-                      onDismiss: _dismissTaskBoundaryWarning,
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  if (_activeField != null &&
-                      _activeField!.id == WorkSessionService.instance.fieldId)
-                    _ActiveWorkBanner(
-                      fieldName: _activeField!.name,
-                      onResume: _launchWorkMode,
-                      onFinish: _finishActiveSession,
-                    ),
-                ],
-              ),
-            ),
+                // ── Linia AB — zatwierdzona (stuknięcia lub przejazd) ───────────
+                if (_pointA != null && _pointB != null)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: [_pointA!, _pointB!],
+                        color: Colors.pinkAccent,
+                        strokeWidth: 2.5,
+                      ),
+                    ],
+                  ),
+                if ((_pointA != null && _pointB != null) ||
+                    _abTapPending != null)
+                  CircleLayer(
+                    circles: [
+                      if (_pointA != null)
+                        CircleMarker(
+                          point: _pointA!,
+                          radius: 6,
+                          color: Colors.pinkAccent,
+                          borderColor: Colors.white,
+                          borderStrokeWidth: 1.5,
+                        ),
+                      if (_pointB != null)
+                        CircleMarker(
+                          point: _pointB!,
+                          radius: 6,
+                          color: Colors.purpleAccent,
+                          borderColor: Colors.white,
+                          borderStrokeWidth: 1.5,
+                        ),
+                      if (_abTapPending != null)
+                        CircleMarker(
+                          point: _abTapPending!,
+                          radius: 7,
+                          color: Colors.pinkAccent,
+                          borderColor: Colors.yellow,
+                          borderStrokeWidth: 2,
+                        ),
+                    ],
+                  ),
 
-          // ── Przyciski top-right ──────────────────────────────────────────────
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.all(8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // ── Tryb pracy (widoczny gdy pole + ścieżki są gotowe) ─────
-                    if (_activeField != null && _swaths.isNotEmpty) ...[
-                      Hero(
-                        tag: 'workModeHero',
-                        child: FloatingActionButton.small(
-                          heroTag: null,
-                          tooltip: 'Rozpocznij pracę',
-                          backgroundColor: const Color(0xFF1B5E20),
-                          onPressed: _launchWorkMode,
-                          child: const Icon(
-                            Icons.play_arrow_rounded,
-                            color: Colors.white,
-                            size: 22,
+                // ── Ikona ciągnika ────────────────────────────────────────────────
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _tractorPos,
+                      width: 52,
+                      height: 52,
+                      child: Transform.rotate(
+                        angle: _tractorHeading * math.pi / 180.0,
+                        child: CustomPaint(
+                          painter: _TractorArrow(
+                            valid: _guidanceValid,
+                            crossTrack: _crossTrack,
                           ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                    ],
-
-                    // ── Śledź ciągnik ─────────────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'follow',
-                      tooltip: _followTractor
-                          ? 'Zatrzymaj śledzenie'
-                          : 'Śledź ciągnik',
-                      backgroundColor: _followTractor
-                          ? Colors.green[700]
-                          : const Color(0xAA000000),
-                      onPressed: () =>
-                          setState(() => _followTractor = !_followTractor),
-                      child: Icon(
-                        _followTractor ? Icons.gps_fixed : Icons.gps_not_fixed,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Przełącznik trybu mapy ─────────────────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'mapMode',
-                      tooltip: _mapMode == MapLayerMode.geoportal
-                          ? 'Przełącz na Tryb Pracy (brak kafelków)'
-                          : 'Przełącz na Tryb Konfiguracji (warstwy mapy)',
-                      backgroundColor: _mapMode == MapLayerMode.work
-                          ? const Color(0xFF1B5E20)
-                          : Colors.teal[700],
-                      onPressed: () => setState(() {
-                        _mapMode = _mapMode == MapLayerMode.geoportal
-                            ? MapLayerMode.work
-                            : MapLayerMode.geoportal;
-                      }),
-                      child: Icon(
-                        _mapMode == MapLayerMode.work
-                            ? Icons.agriculture
-                            : Icons.satellite_alt,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-
-                    // ── Menu — panel z pozostałymi opcjami ─────────────────────
-                    FloatingActionButton.small(
-                      heroTag: 'menu',
-                      tooltip: 'Więcej opcji',
-                      backgroundColor: const Color(0xAA000000),
-                      onPressed: _showActionsPanel,
-                      child: const Icon(
-                        Icons.tune,
-                        color: Colors.white,
-                        size: 20,
-                      ),
                     ),
                   ],
                 ),
+              ],
+            ),
+
+            // ── Wskaźnik trwającej optymalizacji kierunku ścieżek ─────────────────
+            if (_optimizingAngle)
+              Positioned(
+                top: 80,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A2A2A),
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black45, blurRadius: 8),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.tealAccent),
+                        ),
+                        SizedBox(width: 10),
+                        Text('Szukam optymalnego kierunku…',
+                            style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+            // ── Panel korekty przesunięcia (Nudge) ──────────────────────────────
+            if (_nudgePanelVisible && _activeField != null)
+              Positioned(
+                left: 12,
+                bottom: 200,
+                child: NudgePanel(
+                  field: _activeField!,
+                  onNudge: (dx, dy) => _nudgeActive(dx, dy),
+                  onReset: _resetActiveNudge,
+                  onClose: () => setState(() => _nudgePanelVisible = false),
+                ),
+              ),
+
+            // ── Panel ręcznego przesunięcia wygenerowanych ścieżek ───────────────
+            if (_swathOffsetPanelVisible && _rawSwaths.isNotEmpty)
+              Positioned(
+                left: 12,
+                bottom: 200,
+                child: _SwathOffsetPanel(
+                  offsetCm: (_manualOffsetM * 100).round(),
+                  onStep: _adjustSwathOffset,
+                  onReset: _resetSwathOffset,
+                  onClose: () =>
+                      setState(() => _swathOffsetPanelVisible = false),
+                ),
+              ),
+
+            // ── Panel korekty punktami kontrolnymi ────────────────────────────────
+            if (_controlPointsMode && _activeField != null)
+              Positioned(
+                left: 12,
+                bottom: 200,
+                child: ControlPointsPanel(
+                  pairCount: _cpPairs.length,
+                  hasPendingSource: _cpPendingSource != null,
+                  onUndo: _undoLastCpPair,
+                  onReset: _resetCpPairs,
+                  onRemovePair: _removeCpPair,
+                  onCancel: _cancelControlPoints,
+                  onConfirm: _confirmControlPoints,
+                ),
+              ),
+
+            // ── Panel nagrywania linii AB (tryb "przejazd") ───────────────────────
+            if (_abRecording)
+              Positioned(
+                left: 12,
+                bottom: 200,
+                child: AbRecordingPanel(
+                  pointCount: _abRecordedPoints.length,
+                  lengthM: _abRecordedPoints.length >= 2
+                      ? GeoUtils.fitLineThroughPoints(_abRecordedPoints)
+                          ?.lengthM
+                      : null,
+                  fixStatus: GpsLocationService.instance.fixStatus,
+                  onStop: _finalizeAbRecording,
+                  onCancel: _cancelAbRecording,
+                ),
+              ),
+
+            // ── Manual Offset — kalibracja warstwy LPIS względem satelity ────────
+            if (_offsetPanelVisible && _lpisLayerVisible)
+              Positioned(
+                left: 12,
+                bottom: 220,
+                child: _ManualOffsetPanel(
+                  latOffset: _parcelLatOffset,
+                  lonOffset: _parcelLonOffset,
+                  onNudge: (dLat, dLon) => setState(() {
+                    _parcelLatOffset += dLat;
+                    _parcelLonOffset += dLon;
+                  }),
+                  onReset: () => setState(() {
+                    _parcelLatOffset = 0;
+                    _parcelLonOffset = 0;
+                  }),
+                  onClose: () => setState(() => _offsetPanelVisible = false),
+                ),
+              ),
+
+            // ── DrawingMode overlay ──────────────────────────────────────────────
+            if (_drawingMode)
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onPanStart: (d) {
+                    final pt = _screenToLatLng(d.localPosition);
+                    setState(() => _fieldBoundary
+                      ..clear()
+                      ..add(pt));
+                  },
+                  onPanUpdate: (d) {
+                    final pt = _screenToLatLng(d.localPosition);
+                    if (_shouldAddPoint(pt)) {
+                      setState(() => _fieldBoundary.add(pt));
+                    }
+                  },
+                  onPanEnd: (_) {
+                    setState(() => _drawingMode = false);
+                    if (_fieldBoundary.length >= 3) _showSaveFieldDialog();
+                  },
+                  child: Container(
+                    color: Colors.transparent,
+                    alignment: Alignment.topCenter,
+                    padding: const EdgeInsets.only(top: 48),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text(
+                        '✍  Rysuj granicę — przeciągnij palcem',
+                        style: TextStyle(
+                            color: Colors.orange, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // ── Nieaktualna granica zadania + Praca w toku (banery w tle) ───────
+            if (_taskBoundaryStale ||
+                (_activeField != null &&
+                    _activeField!.id == WorkSessionService.instance.fieldId))
+              Positioned(
+                left: 16,
+                right: 16,
+                bottom: 24,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_taskBoundaryStale) ...[
+                      _StaleTaskBoundaryBanner(
+                        onUpdate: _updateTaskBoundaryFromField,
+                        onDismiss: _dismissTaskBoundaryWarning,
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (_activeField != null &&
+                        _activeField!.id == WorkSessionService.instance.fieldId)
+                      _ActiveWorkBanner(
+                        fieldName: _activeField!.name,
+                        onResume: _launchWorkMode,
+                        onFinish: _finishActiveSession,
+                      ),
+                  ],
+                ),
+              ),
+
+            // ── Przyciski top-right ──────────────────────────────────────────────
+            SafeArea(
+              child: Align(
+                alignment: Alignment.topRight,
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // ── Tryb pracy (widoczny gdy pole + ścieżki są gotowe) ─────
+                      if (_activeField != null && _swaths.isNotEmpty) ...[
+                        Hero(
+                          tag: 'workModeHero',
+                          child: FloatingActionButton.small(
+                            heroTag: null,
+                            tooltip: 'Rozpocznij pracę',
+                            backgroundColor: const Color(0xFF1B5E20),
+                            onPressed: _launchWorkMode,
+                            child: const Icon(
+                              Icons.play_arrow_rounded,
+                              color: Colors.white,
+                              size: 22,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+
+                      // ── Śledź ciągnik ─────────────────────────────────────────
+                      FloatingActionButton.small(
+                        heroTag: 'follow',
+                        tooltip: _followTractor
+                            ? 'Zatrzymaj śledzenie'
+                            : 'Śledź ciągnik',
+                        backgroundColor: _followTractor
+                            ? Colors.green[700]
+                            : const Color(0xAA000000),
+                        onPressed: () =>
+                            setState(() => _followTractor = !_followTractor),
+                        child: Icon(
+                          _followTractor
+                              ? Icons.gps_fixed
+                              : Icons.gps_not_fixed,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // ── Przełącznik trybu mapy ─────────────────────────────────
+                      FloatingActionButton.small(
+                        heroTag: 'mapMode',
+                        tooltip: _mapMode == MapLayerMode.geoportal
+                            ? 'Przełącz na Tryb Pracy (brak kafelków)'
+                            : 'Przełącz na Tryb Konfiguracji (warstwy mapy)',
+                        backgroundColor: _mapMode == MapLayerMode.work
+                            ? const Color(0xFF1B5E20)
+                            : Colors.teal[700],
+                        onPressed: () => setState(() {
+                          _mapMode = _mapMode == MapLayerMode.geoportal
+                              ? MapLayerMode.work
+                              : MapLayerMode.geoportal;
+                        }),
+                        child: Icon(
+                          _mapMode == MapLayerMode.work
+                              ? Icons.agriculture
+                              : Icons.satellite_alt,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+
+                      // ── Menu — panel z pozostałymi opcjami ─────────────────────
+                      FloatingActionButton.small(
+                        heroTag: 'menu',
+                        tooltip: 'Więcej opcji',
+                        backgroundColor: const Color(0xAA000000),
+                        onPressed: _showActionsPanel,
+                        child: const Icon(
+                          Icons.tune,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
     );
   }
@@ -3827,9 +3824,7 @@ class _ActiveWorkBanner extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: paused
-                ? const Color(0xEE3A2A00)
-                : const Color(0xEE0A3A1E),
+            color: paused ? const Color(0xEE3A2A00) : const Color(0xEE0A3A1E),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: paused
@@ -3883,9 +3878,7 @@ class _ActiveWorkBanner extends StatelessWidget {
                             color: Colors.white,
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
-                            fontFeatures: [
-                              ui.FontFeature.tabularFigures()
-                            ],
+                            fontFeatures: [ui.FontFeature.tabularFigures()],
                           ),
                         ),
                       ],

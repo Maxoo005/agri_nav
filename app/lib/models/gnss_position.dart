@@ -238,7 +238,8 @@ RmcData? parseRmc(String sentence) {
 /// zna szczegółów Bluetootha/NMEA, więc nie ma dostępu do oryginalnej linii.
 String buildGgaSentence(GnssPosition pos) {
   final utc = pos.timestamp.toUtc();
-  final time = '${_pad(utc.hour, 2)}${_pad(utc.minute, 2)}${_pad(utc.second, 2)}.00';
+  final time =
+      '${_pad(utc.hour, 2)}${_pad(utc.minute, 2)}${_pad(utc.second, 2)}.00';
 
   final lat = _formatNmeaLatLon(pos.latitude, integerDigits: 2);
   final latHem = pos.latitude >= 0 ? 'N' : 'S';
