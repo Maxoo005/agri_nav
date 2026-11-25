@@ -139,6 +139,7 @@ TEST_F(FfiTest, SectionRoundTripAndNullHandle) {
     EXPECT_FLOAT_EQ(agrinav_section_add_strip(h, 52, 17, 0, 10), 0.f);
     EXPECT_FLOAT_EQ(agrinav_section_check_overlap(h, 52, 17, 0, 10), 1.f);
     EXPECT_NEAR(agrinav_section_covered_ha(h), agrinav_section_new_area_ha(h), 1e-12);
+    EXPECT_NO_THROW(EXPECT_FLOAT_EQ(agrinav_section_add_strip(h, 52, 17, 0, -10), 0.f));
     agrinav_section_clear(h);
     EXPECT_NEAR(agrinav_section_covered_ha(h), 0, 1e-12);
     agrinav_section_destroy(h);

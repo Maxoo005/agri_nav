@@ -93,6 +93,24 @@ TEST(SectionControlCell, FinerGridConvergesToTrueArea) {
     EXPECT_NEAR(s.coveredAreaHa(), 0.03, 0.03 * 0.05);  // 100 m × 3 m
 }
 
+TEST_F(SectionControlTest, InvalidInputMarksNothingAndDoesNotThrow) {
+    const double inf = INFINITY;
+    add(0.5, 0.5, 0, 4);
+    const double before = s.coveredAreaHa();
+    for (double w : {-10.0, -1e-9, kNaN, inf, -inf}) {
+        EXPECT_NO_THROW({
+            EXPECT_FLOAT_EQ(add(50, 50, 0, w), 0.f);
+            EXPECT_FLOAT_EQ(check(0.5, 0.5, 0, w), 0.f);
+        }) << w;
+        EXPECT_EQ(s.newCellsLastStrip(), 0);
+    }
+    for (double bad : {kNaN, inf}) {
+        EXPECT_FLOAT_EQ(add(bad, 50, 0, 4), 0.f);
+        EXPECT_FLOAT_EQ(add(50, 50, bad, 4), 0.f);
+    }
+    EXPECT_NEAR(s.coveredAreaHa(), before, 1e-12);
+}
+
 // ── Znane błędy ──────────────────────────────────────────────────────────────
 
 TEST_F(SectionControlTest, XfailNarrowToolAreaOverestimated) {
@@ -107,11 +125,6 @@ TEST_F(SectionControlTest, XfailZeroWidthMarksArea) {
     add(0.5, 0.5, 0, 0.0);
     AGRINAV_XFAIL("zerowa szerokość robocza zalicza 1 m²",
                   EXPECT_NEAR(s.coveredAreaHa(), 0.0, 1e-12));
-}
-
-TEST_F(SectionControlTest, XfailNegativeWidthThrows) {
-    AGRINAV_XFAIL("ujemna szerokość: reserve(size_t(ujemne)) → std::length_error przez FFI",
-                  EXPECT_NO_THROW(add(0.5, 0.5, 0, -10.0)));
 }
 
 }  // namespace
