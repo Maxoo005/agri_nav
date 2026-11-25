@@ -142,25 +142,25 @@ void main() {
       expect(f.lastSyncDate, isNull);
     });
 
-    xfail('współrzędne całkowite w JSON są akceptowane', () {
+    test('współrzędne całkowite w JSON są akceptowane', () {
       final m = _json(_field().toJson())
         ..['boundaryLats'] = [52, 52, 53]
         ..['boundaryLons'] = [17, 18, 18];
       expect(FieldModel.fromJson(m).boundary.length, 3);
-    }, reason: 'cast<double>() na liście int rzuca TypeError');
+    });
 
-    xfail('elastic z niezgodnymi listami src/tgt nie rzuca', () {
+    test('elastic z niezgodnymi listami src/tgt nie rzuca', () {
       final f = _field()
         ..correctionMode = FieldCorrectionMode.elastic
         ..elasticSrcLats = [52, 52, 52.1, 52.1]
         ..elasticSrcLons = [17, 17.1, 17.1, 17];
       expect(f.boundary, hasLength(4));
-    }, reason: 'zabezpieczenie sprawdza tylko długość elasticSrcLats');
+    });
 
-    xfail('lineA z samą szerokością → null', () {
+    test('lineA z samą szerokością → null', () {
       final f = _field()..lineALat = 52;
       expect(f.lineA, isNull);
-    }, reason: 'lineALon! rzuca przy niekompletnym zapisie');
+    });
   });
 
   group('LpisParcel', () {
