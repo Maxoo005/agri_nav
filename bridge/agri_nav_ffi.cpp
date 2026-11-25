@@ -259,7 +259,12 @@ void agrinav_guidance_set_swaths(GuidanceHandle h,
                                   int32_t        swathCount,
                                   double         originLat,
                                   double         originLon) {
-    if (!h || !swathData || swathCount <= 0) return;
+    if (!h) return;
+    // Pusta lista = wyczyść prowadzenie (inaczej zostaje poprzednie pole).
+    if (!swathData || swathCount <= 0) {
+        static_cast<agrinav::SwathGuidance*>(h)->setSwaths({}, { originLat, originLon });
+        return;
+    }
 
     // Decode flat buffer: [startLat₀, startLon₀, endLat₀, endLon₀, ...]
     std::vector<agrinav::Swath> swaths;
@@ -508,7 +513,12 @@ void agrinav_headland_set_rings(
     double          originLat,
     double          originLon)
 {
-    if (!h || !ringPointData || !ringPointCounts || ringCount <= 0) return;
+    if (!h) return;
+    // Pusta lista = wyczyść prowadzenie po uwrociach.
+    if (!ringPointData || !ringPointCounts || ringCount <= 0) {
+        static_cast<agrinav::HeadlandGuidance*>(h)->setRings({}, {originLat, originLon});
+        return;
+    }
 
     std::vector<std::vector<agrinav::LatLon>> rings;
     rings.reserve(static_cast<size_t>(ringCount));

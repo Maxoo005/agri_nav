@@ -1180,10 +1180,8 @@ class _MapViewState extends State<MapView> {
     });
 
     SwathGuidanceBridge.instance.setSwaths(_swaths, a.latitude, a.longitude);
-    if (_headlandRings.isNotEmpty) {
-      HeadlandGuidanceBridge.instance
-          .setRings(_headlandRings, a.latitude, a.longitude);
-    }
+    HeadlandGuidanceBridge.instance
+        .setRings(_headlandRings, a.latitude, a.longitude);
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1278,15 +1276,10 @@ class _MapViewState extends State<MapView> {
       _snapInfo = SnapInfo.none;
     });
 
-    // Feed new swaths into the guidance engine
-    if (_swaths.isNotEmpty) {
-      SwathGuidanceBridge.instance.setSwaths(_swaths, ax, ay);
-    }
-
-    // Feed headland rings into the headland guidance engine
-    if (_headlandRings.isNotEmpty) {
-      HeadlandGuidanceBridge.instance.setRings(_headlandRings, ax, ay);
-    }
+    // Feed new swaths / headland rings into the guidance engines. Also when
+    // empty — that clears guidance left over from the previous plan.
+    SwathGuidanceBridge.instance.setSwaths(_swaths, ax, ay);
+    HeadlandGuidanceBridge.instance.setRings(_headlandRings, ax, ay);
   }
 
   // ── Helpers: kierunek ścieżek ─────────────────────────────────────────────

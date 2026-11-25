@@ -430,7 +430,11 @@ class SwathGuidanceBridge {
   ///
   /// BUG#1 FIX: calloc wrapped in try/finally.
   void setSwaths(List<Swath> swaths, double originLat, double originLon) {
-    if (swaths.isEmpty) return;
+    if (swaths.isEmpty) {
+      // Pusta lista czyści prowadzenie po stronie C++.
+      _setSwaths(_handle, nullptr, 0, originLat, originLon);
+      return;
+    }
     final buf = calloc<Double>(swaths.length * 4);
     try {
       for (int i = 0; i < swaths.length; i++) {
@@ -554,7 +558,11 @@ class HeadlandGuidanceBridge {
     double originLat,
     double originLon,
   ) {
-    if (rings.isEmpty) return;
+    if (rings.isEmpty) {
+      // Pusta lista czyści prowadzenie po stronie C++.
+      _setRings(_handle, nullptr, nullptr, 0, originLat, originLon);
+      return;
+    }
 
     final totalPts = rings.fold(0, (s, r) => s + r.length);
     final pointBuf = calloc<Double>(totalPts * 2);

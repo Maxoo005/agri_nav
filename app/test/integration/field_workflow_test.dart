@@ -105,6 +105,21 @@ void main() {
       expect(r.crossTrackM.abs(), closeTo(1, 0.02));
     });
 
+    test('pusta lista czyści prowadzenie', () {
+      final p = plan(laps: 1);
+      final lat = field[0].latitude, lon = field[0].longitude;
+      final ring = [for (final (a, b) in p.headlandRings[0]) LatLng(a, b)];
+      final g = SwathGuidanceBridge.instance..setSwaths(p.swaths, lat, lon);
+      final h = HeadlandGuidanceBridge.instance..setRings([ring], lat, lon);
+      final pos = at(100, 15);
+      expect(g.query(pos.latitude, pos.longitude, 90).swathIndex, 0);
+      expect(h.query(pos.latitude, pos.longitude, 90).ringIndex, 0);
+      g.setSwaths([], lat, lon);
+      h.setRings([], lat, lon);
+      expect(g.query(pos.latitude, pos.longitude, 90).swathIndex, -1);
+      expect(h.query(pos.latitude, pos.longitude, 90).ringIndex, -1);
+    });
+
     test('NavBridge: XTE i ważność', () {
       final nav = NavBridge.instance;
       expect(nav.version, 1);

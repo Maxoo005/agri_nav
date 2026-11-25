@@ -94,15 +94,24 @@ TEST_F(FfiTest, GuidanceRoundTripAndNullHandle) {
     agrinav_guidance_destroy(h);
 }
 
-TEST_F(FfiTest, XfailEmptySwathListDoesNotClearGuidance) {
+TEST_F(FfiTest, EmptyListsClearGuidance) {
     GuidanceHandle h = agrinav_guidance_create();
     const auto a = f.at(0, 0), b = f.at(0, 100);
     const double s[] = {a.lat, a.lon, b.lat, b.lon};
     agrinav_guidance_set_swaths(h, s, 1, a.lat, a.lon);
-    agrinav_guidance_set_swaths(h, s, 0, a.lat, a.lon);
+    agrinav_guidance_set_swaths(h, nullptr, 0, a.lat, a.lon);
     const int idx = agrinav_guidance_query(h, a.lat, a.lon, 0).swathIndex;
     agrinav_guidance_destroy(h);
-    AGRINAV_XFAIL("pusta lista ścieżek zostawia prowadzenie po starym polu", EXPECT_EQ(idx, -1));
+    EXPECT_EQ(idx, -1);
+
+    HeadlandHandle hl = agrinav_headland_create();
+    const auto pts = flat(f.rect(100, 100));
+    const int32_t n = 4;
+    agrinav_headland_set_rings(hl, pts.data(), &n, 1, a.lat, a.lon);
+    EXPECT_EQ(agrinav_headland_query(hl, a.lat, a.lon, 0).ringIndex, 0);
+    agrinav_headland_set_rings(hl, nullptr, nullptr, 0, a.lat, a.lon);
+    EXPECT_EQ(agrinav_headland_query(hl, a.lat, a.lon, 0).ringIndex, -1);
+    agrinav_headland_destroy(hl);
 }
 
 TEST_F(FfiTest, HeadlandRoundTripAndNullHandle) {
