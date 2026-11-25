@@ -134,11 +134,27 @@ void main() {
       expect((await f).remainingVolume, closeTo(1000, 1e-9));
     });
 
-    xfail('dolewka przy poziomie ponad pojemność nie tworzy zużycia', () {
+    test('dolewka przy poziomie ponad pojemność nie tworzy zużycia', () {
       m.start(_task(tank: 1000));
       m.refill(addedVolume: 10, currentAreaHa: 0, maxCapacity: 800);
+      expect(m.state.remainingVolume, closeTo(800, 1e-9));
+      expect(m.state.fillFraction, closeTo(1, 1e-12));
       expect(m.totalConsumed, closeTo(0, 1e-9));
-    }, reason: 'obcięcie do pojemności liczone jako zużyte 200 l');
+      m.updateArea(1);
+      expect(m.state.remainingVolume, closeTo(700, 1e-9));
+      expect(m.totalConsumed, closeTo(100, 1e-9));
+    });
+
+    test('obcięcie zachowuje wcześniejsze zużycie (dolewka i pełny zbiornik)',
+        () {
+      m.start(_task(tank: 1000));
+      m.updateArea(1); // zużyte 100, zostało 900
+      m.refill(addedVolume: 10, currentAreaHa: 1, maxCapacity: 800);
+      expect(m.totalConsumed, closeTo(100, 1e-9));
+      m.fullRefill(currentAreaHa: 1, maxCapacity: 700);
+      expect(m.state.remainingVolume, closeTo(700, 1e-9));
+      expect(m.totalConsumed, closeTo(100, 1e-9));
+    });
 
     test('po stop() zużycie nie rośnie do całego zbiornika', () {
       m.start(_task());
