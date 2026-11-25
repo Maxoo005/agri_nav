@@ -326,4 +326,4 @@ Testy integracyjne w `app/test/integration` wołają prawdziwą bibliotekę C++.
 
 Testy są deterministyczne: bez sieci zewnętrznej (ULDK na mocku HTTP, NTRIP na loopbacku) i bez sprzętu GPS. Dane testowe leżą w `core/test/fixtures` i `app/test/fixtures`. Test oznaczony `XFAIL` opisuje poprawne zachowanie, którego kod jeszcze nie spełnia — po naprawie błędu zacznie się wywalać i trzeba go zamienić na zwykły test.
 
-**CI** ([ci.yml](.github/workflows/ci.yml)) działa na każdym pull requeście i pushu do `main`: buduje i testuje rdzeń na GCC (z pokryciem) oraz Clang (ASan + UBSan), a dla aplikacji sprawdza format testów, uruchamia `flutter analyze` i testy razem z FFI. Raporty pokrycia są artefaktami przebiegu (`coverage-cpp`, `coverage-dart`).
+**CI** ([ci.yml](.github/workflows/ci.yml)) działa na każdym pull requeście i pushu do `main`: buduje i testuje rdzeń na GCC (z pokryciem) oraz Clang (ASan + UBSan), a dla aplikacji sprawdza format `lib/` i testów, uruchamia `flutter analyze` i testy razem z FFI. Raporty pokrycia są artefaktami przebiegu (`coverage-cpp`, `coverage-dart`).

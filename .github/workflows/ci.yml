@@ -116,12 +116,9 @@ jobs:
         working-directory: app
         run: flutter pub get --enforce-lockfile
 
-      # lib/ nie jest dziś sformatowane przez `dart format` (31 plików) —
-      # egzekwujemy format tylko dla testów; lib/ dołączyć po jednorazowym
-      # sformatowaniu całości.
-      - name: Format (testy)
+      - name: Format
         working-directory: app
-        run: dart format --output=none --set-exit-if-changed test
+        run: dart format --output=none --set-exit-if-changed lib test
 
       - name: Lint i kontrola typów
         working-directory: app
