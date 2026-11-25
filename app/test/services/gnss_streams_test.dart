@@ -235,26 +235,35 @@ void main() {
       expect(n.lastError, contains('mountpoint'));
     });
 
-    xfail('treść odpowiedzi błędu nie trafia do odbiornika jako RTCM',
-        () async {
-      final got = <int>[];
-      final sub = n.rtcmStream.listen(got.addAll);
-      addTearDown(sub.cancel);
-      onRequest = (c) async {
-        c.write('HTTP/1.1 404 Not Found\r\n\r\n');
-        await c.flush();
-        // Osobny pakiet TCP — treść dochodzi po nagłówku.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        c.write('<html>blad</html>');
-        await c.flush();
-      };
-      await connect();
-      for (var i = 0; i < 200 && got.isEmpty; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-      expect(got, isEmpty);
-    },
-        reason:
-            'po kodzie ≠ 200 gniazdo zostaje otwarte, a _headerParsed = true');
+    for (final status in [
+      'HTTP/1.1 404 Not Found',
+      'HTTP/1.1 503 wait 200 s'
+    ]) {
+      test('treść odpowiedzi „$status” nie trafia do odbiornika', () async {
+        final got = <int>[];
+        final sub = n.rtcmStream.listen(got.addAll);
+        addTearDown(sub.cancel);
+        final sent = Completer<void>();
+        onRequest = (c) async {
+          c.write('$status\r\n\r\n<html>');
+          await c.flush();
+          // Osobny pakiet TCP — treść dochodzi po nagłówku.
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          try {
+            c.write('<html>blad</html>');
+            await c.flush();
+          } catch (_) {
+            // Klient zamknął gniazdo — dokładnie tego oczekujemy.
+          }
+          sent.complete();
+        };
+        await connect();
+        await waitState(NtripState.reconnecting);
+        await sent.future;
+        await pumpEventQueue();
+        expect(got, isEmpty);
+        expect(n.lastError, contains(status));
+      });
+    }
   });
 }
