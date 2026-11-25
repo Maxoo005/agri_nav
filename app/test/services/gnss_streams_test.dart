@@ -74,6 +74,15 @@ void main() {
       expect(out.single.fixQuality, GnssFixQuality.rtkFixed);
     });
 
+    test('RMC bez kursu: prędkość zachowana, kurs nieznany (nie NaN)',
+        () async {
+      final stop = nmea('GNRMC,1,A,5213.7,N,01730.0,E,0.10,,010525,,,A');
+      final out = await feed(['$rmc\n$gga\n$stop\n$gga\n']);
+      expect(
+          out.map((p) => p.heading), [closeTo(45, 1e-9), closeTo(-1, 1e-12)]);
+      expect(out.last.speed, closeTo(0.0514444, 1e-9));
+    });
+
     test('bez RMC kurs i prędkość = -1', () async {
       final out = await feed(['$gga\r\n']);
       expect(out.single.heading, closeTo(-1, 1e-12));

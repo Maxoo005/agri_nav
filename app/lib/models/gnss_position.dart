@@ -195,7 +195,8 @@ GgaData? parseGga(String sentence) {
 class RmcData {
   const RmcData({required this.heading, required this.speed});
 
-  /// [°] kurs nad ziemią (true course).
+  /// [°] kurs nad ziemią (true course), −1 gdy odbiornik go nie podał
+  /// (u-blox zostawia pole puste na postoju) — jak [GnssPosition.heading].
   final double heading;
 
   /// [m/s] prędkość nad ziemią.
@@ -217,8 +218,11 @@ RmcData? parseRmc(String sentence) {
   if (fields[2] != 'A') return null; // odbiornik zgłasza dane jako nieważne
 
   final speedKnots = double.tryParse(fields[7]);
-  final courseDeg = double.tryParse(fields[8]);
+  // Pusty kurs = nieznany (prędkość nadal ważna); śmieci = uszkodzone zdanie.
+  final courseDeg = fields[8].isEmpty ? -1.0 : double.tryParse(fields[8]);
   if (speedKnots == null || courseDeg == null) return null;
+  // double.tryParse przyjmuje też "NaN"/"Infinity".
+  if (!speedKnots.isFinite || !courseDeg.isFinite) return null;
 
   const knotsToMs = 0.514444;
   return RmcData(heading: courseDeg, speed: speedKnots * knotsToMs);
