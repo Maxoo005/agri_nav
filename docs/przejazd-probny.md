@@ -36,7 +36,7 @@ Checklista przed scaleniem gałęzi `add-ci-tests`, `format-lib` i `fixes-2`. Te
 | 6 m, zakładka 0, uwrocie 1 | 3,00 m | 9,00 m |
 | uwrocie 0 | brak | bez zmian względem poprzedniej wersji |
 
-- Odstęp tor–pas i pas–pas to 5,50 m. Ostatni odstęp może być mniejszy, bo ostatni pas jest dosuwany do przeciwległej granicy.
+- Odstęp tor–pas to zawsze 5,50 m. Odstępy pas–pas są równe i wynoszą najwyżej 5,50 m: planer zagęszcza je po równo, żeby ostatni pas też przylegał do uwrocia.
 - Plan zapisany przed aktualizacją po ponownym wygenerowaniu różni się o 0,25 m. Jeśli praca na polu została zaczęta w starej wersji, dokończ ją albo skoryguj ręcznym przesunięciem.
 
 **Błąd oznacza:** tor 2,75 m — działa stara wersja biblioteki C++ (sprawdź build). Odstęp tor–pas inny niż 5,50 m — niespójne przesunięcie uwrocia i pasów, powstanie omijak lub podwójna dawka.
