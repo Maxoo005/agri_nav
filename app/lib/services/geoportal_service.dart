@@ -342,7 +342,12 @@ class GeoportalService {
       throw ULDKException('Serwer zwrócił ${response.statusCode}');
     }
 
-    final body = utf8.decode(response.bodyBytes).trim();
+    final String body;
+    try {
+      body = utf8.decode(response.bodyBytes).trim();
+    } on FormatException catch (e) {
+      throw ULDKException('Odpowiedź serwera nie jest poprawnym UTF-8: $e');
+    }
     dev.log('ULDK odpowiedź: ${body.substring(0, body.length.clamp(0, 200))}',
         name: 'GeoportalService');
 

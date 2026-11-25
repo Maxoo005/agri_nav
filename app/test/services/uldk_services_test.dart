@@ -80,11 +80,11 @@ void main() {
       expect(FieldService.instance.getAll(), isEmpty);
     });
 
-    xfail('niepoprawny UTF-8 w odpowiedzi → ULDKException', () async {
+    test('niepoprawny UTF-8 w odpowiedzi → ULDKException', () async {
       _respond = (_) => http.Response.bytes([0x30, 0x0A, 0xF3, 0x77], 200);
       await expectLater(
           g.fetchAndCacheByTeryt('x'), throwsA(isA<ULDKException>()));
-    }, reason: 'utf8.decode bez allowMalformed wypuszcza FormatException');
+    });
 
     test('brak sieci → NoNetworkException, bez żądania HTTP', () async {
       online = false;
