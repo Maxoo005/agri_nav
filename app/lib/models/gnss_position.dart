@@ -178,8 +178,8 @@ GgaData? parseGga(String sentence) {
   if (qualityRaw == null) return null; // strukturalnie uszkodzone pole
 
   return GgaData(
-    latitude: _parseNmeaLatLon(fields[2], fields[3]),
-    longitude: _parseNmeaLatLon(fields[4], fields[5]),
+    latitude: _parseNmeaLatLon(fields[2], fields[3], maxDegrees: 90),
+    longitude: _parseNmeaLatLon(fields[4], fields[5], maxDegrees: 180),
     altitude: double.tryParse(fields[9]),
     fixQuality: GnssFixQuality.fromGgaValue(qualityRaw),
     satellitesCount: int.tryParse(fields[7]) ?? 0,
@@ -274,9 +274,11 @@ int _ggaValueFor(GnssFixQuality quality) => switch (quality) {
 /// [_parseNmeaLatLon]. [integerDigits] to liczba cyfr części stopni przed
 /// minutami (2 dla szerokości, 3 dla długości geograficznej).
 String _formatNmeaLatLon(double decimalDegrees, {required int integerDigits}) {
-  final abs = decimalDegrees.abs();
-  final degrees = abs.floor();
-  final minutes = (abs - degrees) * 60.0;
+  // Zaokrąglenie na całości (1e-4 minuty), zanim rozdzielimy stopnie i minuty —
+  // inaczej 59.99999' stałoby się niepoprawnym „60.0000”.
+  final total = (decimalDegrees.abs() * 600000.0).round();
+  final degrees = total ~/ 600000;
+  final minutes = (total % 600000) / 10000.0;
   return '${_pad(degrees, integerDigits)}${minutes.toStringAsFixed(4).padLeft(7, '0')}';
 }
 
@@ -290,7 +292,10 @@ String _pad(int value, int width) => value.toString().padLeft(width, '0');
 /// długości geograficznej) + literę półkuli na stopnie dziesiętne.
 ///
 /// Przykład: `5213.7247,N` → 52° + 13.7247/60 = 52.228745.
-double? _parseNmeaLatLon(String raw, String hemisphere) {
+///
+/// Zwraca `null` poza zakresem ±[maxDegrees] (uszkodzone zdanie).
+double? _parseNmeaLatLon(String raw, String hemisphere,
+    {required double maxDegrees}) {
   if (raw.isEmpty || hemisphere.isEmpty) return null;
   final value = double.tryParse(raw);
   if (value == null) return null;
@@ -298,6 +303,8 @@ double? _parseNmeaLatLon(String raw, String hemisphere) {
   final degrees = (value / 100).floorToDouble();
   final minutes = value - degrees * 100;
   double decimal = degrees + minutes / 60.0;
+
+  if (!(decimal.abs() <= maxDegrees)) return null;
 
   if (hemisphere == 'S' || hemisphere == 'W') decimal = -decimal;
   return decimal;

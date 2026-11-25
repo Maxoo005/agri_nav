@@ -94,11 +94,14 @@ void main() {
           isNull);
     });
 
-    xfail('szerokość spoza zakresu jest odrzucana', () {
+    test('współrzędne spoza zakresu są odrzucane', () {
       final g =
           parseGga(nmea('GNGGA,1,9959.0,N,01700.0,E,4,10,0.5,1.0,M,,M,,'));
       expect(g?.latitude, isNull);
-    }, reason: 'parser nie sprawdza zakresu ±90°/±180°');
+      final h =
+          parseGga(nmea('GNGGA,1,5200.0,N,18100.0,E,4,10,0.5,1.0,M,,M,,'));
+      expect(h?.longitude, isNull);
+    });
   });
 
   test('fromGgaValue — mapowanie specyfikacji NMEA', () {
@@ -171,10 +174,12 @@ void main() {
       }
     });
 
-    xfail('minuty nigdy nie są zaokrąglane do 60', () {
+    test('minuty nigdy nie są zaokrąglane do 60', () {
       expect(buildGgaSentence(_pos(51.99999999, 17)),
           isNot(contains(',5160.0000,')));
-    }, reason: 'zaokrąglenie daje niepoprawne „5160.0000” zamiast „5200.0000”');
+      expect(buildGgaSentence(_pos(51.99999999, 16.99999999)),
+          contains(',5200.0000,N,01700.0000,E,'));
+    });
   });
 
   test('toString zawiera współrzędne', () {
