@@ -125,15 +125,15 @@ TEST_F(ParcelTest, AllClockwiseInputWorks) {
     EXPECT_NEAR(outer(ParcelMerger::merge({a, b})), 20030.0, 5.0);
 }
 
-// ── Znane błędy ──────────────────────────────────────────────────────────────
-
-TEST_F(ParcelTest, XfailMixedWindingLosesParcel) {
+TEST_F(ParcelTest, MixedWindingKeepsAllParcels) {
     Ring cw = f.rect(100, 100, 100, 0);
     std::reverse(cw.begin(), cw.end());
-    const double a = outer(ParcelMerger::merge({f.rect(100, 100), cw}));
-    AGRINAV_XFAIL("działki o różnym kierunku obiegu: odwrotna traktowana jak otwór",
-                  EXPECT_NEAR(a, 20030.0, 30.0));
+    const std::vector<Ring> in = {f.rect(100, 100), cw};
+    EXPECT_NEAR(outer(ParcelMerger::merge(in)), 20030.0, 5.0);
+    EXPECT_NEAR(outer(GeometryProcessor::processLpis(in)), 20012.0, 5.0);  // bufor 2 cm
 }
+
+// ── Znane błędy ──────────────────────────────────────────────────────────────
 
 TEST_F(ParcelTest, XfailHoleAssignedToWrongPart) {
     auto parcels = frame();

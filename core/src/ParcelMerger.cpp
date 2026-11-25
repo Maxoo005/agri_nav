@@ -80,6 +80,9 @@ MergeResult ParcelMerger::merge(
         path.reserve(poly.size());
         for (const auto& pt : poly)
             path.push_back(ref.toLocal(pt));
+        // Kierunek obiegu wejścia jest dowolny — działka CW obok CCW byłaby
+        // potraktowana przez Clipper2 jak otwór i zniknęłaby z wyniku.
+        if (signedArea(path) < 0.0) std::reverse(path.begin(), path.end());
         localPaths.push_back(std::move(path));
     }
 
